@@ -1,0 +1,3660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--SEO_HEAD-->
+<!--SITE_CONFIG-->
+<!--ANALYTICS-->
+<script>
+// Apply theme before paint to avoid a flash of the wrong colour scheme.
+// A theme-locked site ships the right palette from the server and stays put
+// (light = data-theme attribute, dark = the attribute-less default).
+(function () {
+    if (window.__SITE && window.__SITE.theme) return;
+    const t = localStorage.getItem('susi_theme') || 'system';
+    if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else if (t === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+        document.documentElement.setAttribute('data-theme', 'light');
+    }
+})();
+</script>
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png?v=2">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/favicon-180.png?v=2">
+<link rel="stylesheet" href="/docs/easymde.css">
+<script src="/docs/easymde.js" defer></script>
+<style>
+:root {
+    /* Top bar height and brand logo height; a site's logo_height setting
+       overrides both via an injected style (see render_shell). */
+    --topbar-h: 56px;
+    --brand-logo-h: 28px;
+    --bg: #000000;
+    --bg2: #161922;
+    --bg3: #1d212c;
+    --border: #262b38;
+    --text1: #e6e8ec;
+    --text2: #9aa0aa;
+    --accent: #6aa9ff;
+    --accent-soft: rgba(106,169,255,0.15);
+    --code-bg: #11141b;
+    /* Zebra tint: translucent so a background photo stays visible. */
+    --table-stripe: rgba(255,255,255,0.055);
+    --radius: 6px;
+    --sidebar-width: 280px;
+    /* Body font; a site's font setting overrides via an injected style. */
+    --font-body: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Ubuntu, "Helvetica Neue", sans-serif;
+}
+:root[data-theme="light"] {
+    --bg: #ffffff;
+    --bg2: #f5f6f8;
+    --bg3: #eceef2;
+    --border: #d8dbe1;
+    --text1: #1a1d23;
+    --text2: #5c6470;
+    --accent: #2563eb;
+    --accent-soft: rgba(37,99,235,0.10);
+    --code-bg: #f1f3f6;
+    --table-stripe: rgba(26,29,35,0.05);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+* { scrollbar-width: thin; scrollbar-color: var(--bg3) var(--bg2); }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: var(--bg2); }
+*::-webkit-scrollbar-thumb {
+    background: var(--bg3);
+    border-radius: 5px;
+    border: 2px solid var(--bg2);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--border); }
+*::-webkit-scrollbar-corner { background: var(--bg2); }
+body {
+    background: var(--bg);
+    color: var(--text1);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.43;
+    min-height: 100vh;
+}
+/* Photo background theme (SiteConfig.bg_image): one fixed image layer under
+   the whole page with a single theme-tinted veil over it - the one global
+   transparency knob (the color-mix percentage below). All surfaces above stay
+   transparent; browsers without color-mix keep the flat opaque theme. */
+.site-bg {
+    position: fixed; inset: 0; z-index: -1;
+    background: var(--bg) url('/static/bg.jpg') center / cover no-repeat;
+}
+.site-bg::after {
+    content: ""; position: absolute; inset: 0;
+    background: var(--bg);
+    background: color-mix(in srgb, var(--bg) var(--bg-veil, 72%), transparent);
+}
+/* Parallax: overscan the image layer so it can drift with the scroll
+   without exposing an edge. */
+body.bg-parallax .site-bg {
+    inset: -120px 0;
+    will-change: transform;
+}
+body.has-bg { background: transparent; }
+body.has-bg .header,
+body.has-bg .sidebar,
+body.has-bg .toc-rail,
+body.has-bg .site-footer { background: transparent; }
+/* Scrolling happens inside .page-scroll, clipped below the top bar, so
+   content never passes under it. The sticky rails re-anchor to the
+   container top; sticky admin bars anchor to 0 instead of the header. */
+body.has-bg { height: 100dvh; overflow: hidden; }
+body.has-bg .page-scroll { height: calc(100dvh - var(--topbar-h)); overflow-y: auto; }
+body.has-bg .sidebar,
+body.has-bg .toc-rail { top: 0; }
+body.has-bg .editor-toolbar { top: 0; }
+.header {
+    height: var(--topbar-h);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 24px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+.header .brand {
+    color: inherit; text-decoration: none;
+    font-size: 16px; font-weight: 600; letter-spacing: 0.02em;
+    display: flex; align-items: center;
+}
+.header .brand img { height: var(--brand-logo-h); display: block; }
+.header .brand img.logo-light,
+.content img.logo-light { display: none; }
+:root[data-theme="light"] .header .brand img.logo-dark,
+:root[data-theme="light"] .content img.logo-dark { display: none; }
+:root[data-theme="light"] .header .brand img.logo-light { display: block; }
+:root[data-theme="light"] .content img.logo-light { display: block; }
+.header-right { display: flex; gap: 10px; align-items: center; margin-left: auto; }
+.btn {
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text1);
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+    min-height: 32px;
+}
+.btn:hover { background: var(--bg3); }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+.nav-toggle {
+    display: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text1);
+    width: 40px; height: 36px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    padding: 0;
+    align-items: center;
+    justify-content: center;
+}
+.nav-toggle:hover { background: var(--bg3); }
+.nav-toggle svg { width: 20px; height: 20px; display: block; stroke: currentColor; }
+.nav-overlay {
+    position: fixed; inset: var(--topbar-h) 0 0 0;
+    background: rgba(0,0,0,0.4);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s;
+    z-index: 140;
+}
+.nav-overlay.open { opacity: 1; pointer-events: auto; }
+.btn.primary { background: var(--accent); color: white; border-color: var(--accent); }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.danger { color: #e2615e; }
+
+.layout {
+    display: grid;
+    /* minmax(0,...) keeps wide content (spec tables) from stretching the track. */
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--sidebar-width);
+    min-height: calc(100vh - var(--topbar-h));
+}
+.layout.no-sidebar { grid-template-columns: minmax(0, 1fr) var(--sidebar-width); }
+.layout.no-sidebar .sidebar { display: none; }
+.layout.no-toc { grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
+.layout.no-toc .toc-rail { display: none; }
+.layout.no-sidebar.no-toc { grid-template-columns: minmax(0, 1fr); }
+.site-footer {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    padding: 18px 16px;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+}
+.site-footer a { color: var(--text2); text-decoration: none; }
+.site-footer #langSwitch span { color: var(--text2); }
+.lang-switch-top { font-size: 13px; white-space: nowrap; }
+.lang-switch-top span { color: var(--text2); }
+.lang-switch-top a { color: var(--accent); text-decoration: none; }
+.site-footer a:hover { color: var(--text1); }
+.sidebar {
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+    /* Rails and content share a 24px top inset (.content, .toc-rail). */
+    padding: 24px 0;
+    overflow-y: auto;
+    /* Reserve the scrollbar lane so the brand logo keeps one width whether
+       the nav overflows or not. */
+    scrollbar-gutter: stable;
+    max-height: calc(100vh - var(--topbar-h));
+    position: sticky;
+    top: var(--topbar-h);
+}
+.sidebar h3 {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 16px 16px 8px;
+}
+.sidebar a {
+    display: block;
+    color: var(--text1);
+    text-decoration: none;
+    font-size: 16px;
+    padding: 6px 16px 6px 24px;
+    border-left: 2px solid transparent;
+}
+.sidebar a:hover { color: var(--accent); }
+.sidebar a.active {
+    border-left-color: var(--accent);
+    color: var(--accent);
+    font-weight: 500;
+}
+.sidebar a.section-head {
+    padding-left: 24px;
+}
+.sidebar a .chev {
+    display: inline-block;
+    width: 14px;
+    font-size: 9px;
+    color: var(--text2);
+}
+.sidebar .sidebar-children.collapsed { display: none; }
+.sidebar .sidebar-children a { padding-left: 40px; }
+.sidebar .empty { padding: 16px; color: var(--text2); font-size: 14px; }
+.sidebar a.sidebar-brand {
+    display: block;
+    margin: 0 40px 22px 50px;
+    padding: 0;
+    border-left: none;
+    color: inherit; text-decoration: none;
+    font-size: 16px; font-weight: 600; letter-spacing: 0.02em;
+}
+.sidebar-brand img { display: block; max-width: 100%; height: auto; }
+.sidebar-brand img.logo-light { display: none; }
+:root[data-theme="light"] .sidebar-brand img.logo-dark { display: none; }
+:root[data-theme="light"] .sidebar-brand img.logo-light { display: block; }
+
+/* Topbar-less mode (SiteConfig.no_topbar): the header is hidden for
+   visitors (admins keep it - the edit controls live there). The sidebar
+   brand is its own flag (SiteConfig.sidebar_logo). */
+body.no-topbar .header { display: none; }
+/* The sidebar carries the brand - don't repeat it in the top bar. */
+body.sidebar-logo .header .brand { display: none; }
+/* The admin's restored top bar skips the brand - the sidebar carries it. */
+body.admin-topbar .header .brand { display: none; }
+body.admin-topbar .header { justify-content: flex-end; }
+body.no-topbar .layout { min-height: 100vh; }
+body.no-topbar .sidebar { top: 0; max-height: 100vh; }
+body.no-topbar .toc-rail { top: 0; max-height: 100vh; }
+body.no-topbar .nav-overlay { inset: 0; }
+body.no-topbar.has-bg .page-scroll { height: 100dvh; }
+.nav-toggle-float {
+    display: none;
+    position: fixed; top: 10px; left: 10px; z-index: 160;
+    width: 40px; height: 36px; padding: 0;
+    align-items: center; justify-content: center;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text1);
+    border-radius: var(--radius); cursor: pointer;
+}
+.nav-toggle-float svg { width: 20px; height: 20px; display: block; stroke: currentColor; }
+
+.content {
+    padding: 24px 56px 40px;
+    max-width: 880px;
+    margin-left: auto;
+    margin-right: auto;
+    width: 100%;
+    font-size: 16px;
+    line-height: 1.71;
+}
+.content h1 { font-size: 28px; margin: 0 0 18px; font-weight: 400; line-height: 1.14; }
+.content h2 { font-size: 21px; margin: 32px 0 12px; font-weight: 600; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.content h3 { font-size: 16px; margin: 24px 0 10px; font-weight: 600; }
+.content h4 { font-size: 14px; margin: 18px 0 8px; font-weight: 600; color: var(--text2); }
+.content p { margin: 10px 0; }
+.content code {
+    background: var(--code-bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-family: "SF Mono", "Consolas", "Fira Code", monospace;
+    font-size: 12.5px;
+}
+.content pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin: 14px 0;
+}
+.content pre code { background: transparent; padding: 0; font-size: inherit; }
+.content blockquote {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 8px 14px;
+    margin: 14px 0;
+    color: var(--text1);
+    border-radius: 0 var(--radius) var(--radius) 0;
+}
+.content table { border-collapse: collapse; margin: 14px 0; width: 100%; }
+.content .table-scroll { overflow-x: auto; max-width: 100%; margin: 14px 0; -webkit-overflow-scrolling: touch; }
+.content .table-scroll table { margin: 0; }
+.content th, .content td {
+    border: 1px solid var(--border);
+    padding: 7px 11px; text-align: left; vertical-align: top;
+}
+.content th { background: var(--bg3); font-weight: 600; border-bottom: 2px solid var(--border); }
+.content tr:nth-child(even) td { background: var(--table-stripe); }
+.content div.grid,
+.EasyMDEContainer .editor-preview div.grid,
+.EasyMDEContainer .editor-preview-side div.grid {
+    display: grid;
+    grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+    gap: 28px; align-items: start; margin: 16px 0;
+}
+div.grid.cols-3 { --cols: 3; }
+div.grid.cols-4 { --cols: 4; }
+div.grid.cols-5 { --cols: 5; }
+div.grid.cols-6 { --cols: 6; }
+@media (max-width: 760px) {
+    .content div.grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* People grids skip the two-column stage: one person per row, cells
+       reordered column-major so name and role follow their photo. */
+    .content div.grid.people { grid-template-columns: 1fr; }
+    .content div.grid.people.cols-2 > div:nth-child(2n) { order: 1; }
+    .content div.grid.people.cols-3 > div:nth-child(3n+2) { order: 1; }
+    .content div.grid.people.cols-3 > div:nth-child(3n) { order: 2; }
+    .content div.grid.people.cols-4 > div:nth-child(4n+2) { order: 1; }
+    .content div.grid.people.cols-4 > div:nth-child(4n+3) { order: 2; }
+    .content div.grid.people.cols-4 > div:nth-child(4n) { order: 3; }
+    .content div.grid.people > div:has(img) { margin-top: 14px; }
+    .content div.grid.people > div:first-child { margin-top: 0; }
+}
+@media (max-width: 640px) {
+    .content div.grid.cols-2 { grid-template-columns: 1fr; }
+}
+@media (max-width: 460px) {
+    .content div.grid { grid-template-columns: 1fr; }
+    .content div.grid.cols-4, .content div.grid.cols-5,
+    .content div.grid.cols-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.content .video-embed { position: relative; padding-top: 56.25%; margin: 16px 0; }
+.content .video-embed iframe {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; border: 0;
+    border-radius: var(--radius);
+}
+.content .audio-embed { margin: 16px 0; }
+.content .audio-embed iframe { width: 100%; height: 166px; border: 0; border-radius: var(--radius); }
+.content .audio-embed.set iframe { height: 450px; }
+.content ul, .content ol { margin: 10px 0; padding-left: 24px; }
+.content li { margin: 4px 0; }
+.content a { color: var(--accent); text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content img { max-width: 100%; height: auto; border-radius: var(--radius); display: block; margin: 16px auto; }
+.content video { max-width: 100%; height: auto; border-radius: var(--radius); display: block; margin: 16px auto; }
+.content img.no-radius, .EasyMDEContainer .editor-preview img.no-radius,
+.EasyMDEContainer .editor-preview-side img.no-radius { border-radius: 0; }
+.content hr { border: none; border-top: 1px solid var(--border); margin: 22px 0; }
+.content td img, .content th img, .content div.grid img { display: inline-block; margin: 0; }
+.content h1, .content h2, .content h3, .content h4 { scroll-margin-top: 72px; }
+
+.meta {
+    color: var(--text2);
+    font-size: 14px;
+    margin-bottom: 24px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Blog index (/blog): full posts inline, separated by a rule; the date line
+   above each post links to its permalink. */
+.blog-index-item { margin: 28px 0; }
+.blog-index-item + .blog-index-item {
+    border-top: 1px solid var(--border);
+    padding-top: 32px;
+}
+.blog-index-item .meta {
+    margin-bottom: 4px;
+    padding-bottom: 0;
+    border-bottom: none;
+    font-size: 13px;
+}
+.blog-index-item .meta a { color: inherit; text-decoration: none; }
+.blog-index-item .meta a:hover { text-decoration: underline; }
+.blog-index-item .meta a.edit-post { color: var(--accent); }
+/* The headline is the primary link to the post - style it like the heading
+   it replaces, not like body copy. */
+.blog-index-item h1 a { color: inherit; text-decoration: none; }
+.blog-index-item h1 a:hover { color: var(--accent); }
+.blog-pager { display: flex; align-items: center; gap: 16px; margin: 28px 0; }
+.blog-pager a { color: var(--accent); text-decoration: none; }
+.blog-pager span { color: var(--text2); font-size: 14px; }
+
+/* EasyMDE theme overrides - match the surrounding dark UI. */
+.EasyMDEContainer { background: var(--bg); }
+.EasyMDEContainer .CodeMirror {
+    background: var(--code-bg);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 0 0 var(--radius) var(--radius);
+    min-height: 480px;
+    font-family: "SF Mono", "Consolas", "Fira Code", monospace;
+    font-size: 13px;
+}
+.EasyMDEContainer .CodeMirror-cursor { border-color: var(--text1); }
+.EasyMDEContainer .CodeMirror-selected { background: var(--accent-soft) !important; }
+.EasyMDEContainer .CodeMirror-line { color: var(--text1); }
+.editor-toolbar {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    border-bottom: none;
+    opacity: 1 !important;
+    position: sticky;
+    top: var(--topbar-h);
+    z-index: 9;
+}
+.editor-toolbar button {
+    color: var(--text1) !important;
+    border: 1px solid transparent !important;
+    border-radius: 4px !important;
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+    font-weight: 500;
+    background: transparent !important;
+    min-width: 32px;
+    text-align: center;
+}
+.editor-toolbar button:hover, .editor-toolbar button.active {
+    background: var(--bg3) !important;
+    border-color: var(--border) !important;
+}
+.editor-toolbar i.separator { border-left: 1px solid var(--border); margin: 0 4px; }
+.editor-statusbar {
+    background: var(--bg2);
+    color: var(--text2);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius) var(--radius);
+    padding: 4px 10px;
+    font-size: 11px;
+}
+.EasyMDEContainer .editor-preview, .EasyMDEContainer .editor-preview-side {
+    background: var(--bg); color: var(--text1);
+    border: 1px solid var(--border); padding: 16px 20px;
+}
+.EasyMDEContainer .editor-preview-active-side { display: block; }
+.EasyMDEContainer .editor-preview img, .EasyMDEContainer .editor-preview-side img {
+    max-width: 100%; border-radius: var(--radius);
+}
+.EasyMDEContainer .editor-preview h1, .EasyMDEContainer .editor-preview-side h1 { font-size: 22px; margin: 0 0 12px; }
+.EasyMDEContainer .editor-preview h2, .EasyMDEContainer .editor-preview-side h2 {
+    font-size: 17px; margin: 18px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--border);
+}
+.EasyMDEContainer .editor-preview code, .EasyMDEContainer .editor-preview-side code {
+    background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 12px;
+}
+.EasyMDEContainer .editor-preview pre, .EasyMDEContainer .editor-preview-side pre {
+    background: var(--code-bg); border: 1px solid var(--border); padding: 12px; border-radius: var(--radius);
+}
+.EasyMDEContainer .editor-preview table, .EasyMDEContainer .editor-preview-side table {
+    border-collapse: collapse; width: 100%; font-size: 12px;
+}
+.EasyMDEContainer .editor-preview th, .EasyMDEContainer .editor-preview td,
+.EasyMDEContainer .editor-preview-side th, .EasyMDEContainer .editor-preview-side td {
+    border: 1px solid var(--border); padding: 5px 8px; text-align: left;
+}
+.EasyMDEContainer .editor-preview th, .EasyMDEContainer .editor-preview-side th { background: var(--bg3); }
+
+.edit-meta-row {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    margin-bottom: 12px; align-items: center;
+}
+.edit-meta-row label { font-size: 12px; color: var(--text2); }
+.edit-meta-row input, .edit-meta-row select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text1);
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-family: inherit;
+}
+.edit-actions {
+    display: flex; gap: 8px; margin-top: 14px;
+    position: sticky; bottom: 0;
+    background: var(--bg);
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+    z-index: 9;
+}
+
+.preview-banner {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 9;
+    background: var(--bg);
+    padding: 10px 0; margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px; color: var(--text2);
+}
+.preview-pill {
+    padding: 3px 12px; border-radius: 999px;
+    background: rgba(251,191,36,0.15); color: #b45309;
+    font-size: 12px; font-weight: 600;
+}
+
+.toast {
+    position: fixed; bottom: 24px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text1); padding: 10px 18px;
+    border-radius: var(--radius); font-size: 13px;
+    z-index: 100; opacity: 0; transition: opacity 0.2s;
+}
+.toast.visible { opacity: 1; }
+.toast.error { border-color: #e2615e; color: #e2615e; }
+.toast.success { border-color: #5fb878; color: #5fb878; }
+
+.empty-state {
+    color: var(--text2); text-align: center;
+    padding: 80px 20px; font-size: 14px;
+}
+.empty-state h2 { color: var(--text1); margin-bottom: 8px; font-weight: 500; }
+
+/* Admin modals (history + assets) */
+.admin-modal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    z-index: 200;
+}
+.admin-modal.visible { display: flex; }
+.admin-modal-inner {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: min(1000px, 95vw); max-height: 90vh;
+    display: flex; flex-direction: column;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+}
+.admin-modal-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.admin-modal-head h3 { margin: 0; font-size: 16px; font-weight: 600; flex: 1; }
+.admin-modal-body { flex: 1; overflow-y: auto; padding: 16px 18px; font-size: 13px; }
+.admin-modal-foot {
+    display: flex; gap: 8px; padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    align-items: center;
+}
+
+.rev-list { display: flex; flex-direction: column; gap: 6px; }
+.rev-item {
+    display: flex; gap: 10px; align-items: center;
+    padding: 10px 12px; border: 1px solid var(--border);
+    border-radius: var(--radius); cursor: pointer;
+}
+.rev-item:hover { background: var(--bg2); }
+.rev-item.selected { border-color: var(--accent); background: var(--bg2); }
+.rev-when { font-size: 12px; color: var(--text2); width: 170px; flex-shrink: 0; }
+.rev-author { font-size: 12px; color: var(--text2); width: 140px; flex-shrink: 0; }
+.rev-title { flex: 1; color: var(--text1); }
+.rev-size { color: var(--text2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.rev-preview {
+    margin-top: 14px; padding: 12px;
+    background: var(--bg2); border-radius: var(--radius);
+    max-height: 300px; overflow: auto;
+    font-family: ui-monospace, monospace; font-size: 12px;
+    white-space: pre-wrap; word-break: break-word;
+}
+
+.asset-toolbar {
+    display: flex; gap: 8px; align-items: center;
+    margin-bottom: 14px; flex-wrap: wrap;
+}
+.asset-toolbar input[type="search"] {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text1); padding: 6px 10px;
+    border-radius: var(--radius); font-size: 13px;
+    font-family: inherit; flex: 1; min-width: 180px;
+}
+.asset-toolbar label { font-size: 12px; color: var(--text2); }
+.asset-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+}
+.asset-tile {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; background: var(--bg2);
+    display: flex; flex-direction: column;
+}
+.asset-tile.orphan { border-color: #e2615e; }
+.asset-thumb {
+    height: 120px; display: flex; align-items: center; justify-content: center;
+    background:
+        repeating-conic-gradient(var(--bg) 0% 25%, var(--bg2) 0% 50%)
+        50% / 16px 16px;
+}
+.asset-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.asset-meta { padding: 8px 10px; font-size: 12px; }
+.asset-name {
+    font-family: ui-monospace, monospace;
+    word-break: break-all; color: var(--text1);
+    max-height: 32px; overflow: hidden;
+}
+.asset-info {
+    display: flex; justify-content: space-between;
+    color: var(--text2); font-size: 11px; margin-top: 4px;
+}
+.asset-usage-pill {
+    display: inline-block;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 999px; padding: 1px 8px; font-size: 11px;
+}
+.asset-usage-pill.orphan {
+    color: #e2615e; border-color: #e2615e;
+}
+.asset-actions {
+    display: flex; gap: 4px; padding: 4px 6px 6px;
+    border-top: 1px solid var(--border);
+}
+.asset-actions button {
+    flex: 1; font-size: 11px; padding: 4px 6px;
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text1); border-radius: var(--radius); cursor: pointer;
+}
+.asset-actions button:hover { background: var(--bg3); }
+.asset-actions button.danger { color: #e2615e; border-color: #e2615e; }
+
+/* Right-side table of contents */
+.toc-rail {
+    border-left: 1px solid var(--border);
+    background: var(--bg);
+    padding: 24px 18px;
+    overflow-y: auto;
+    max-height: calc(100vh - var(--topbar-h));
+    position: sticky; top: var(--topbar-h);
+    font-size: 16px;
+}
+.toc-rail .toc-title {
+    font-size: 11px; font-weight: 400;
+    color: var(--text2);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 8px;
+}
+.toc-rail a {
+    display: block; color: var(--text2);
+    text-decoration: none;
+    padding: 4px 0; border-left: 2px solid transparent;
+    padding-left: 10px; line-height: 1.4;
+}
+.toc-rail a:hover { color: var(--text1); }
+.toc-rail a.active {
+    color: var(--accent); border-left-color: var(--accent);
+    font-weight: 500;
+}
+.toc-rail a.lvl-3 { padding-left: 22px; }
+.toc-rail a.lvl-4 { padding-left: 34px; color: var(--text2); }
+
+@media (max-width: 1100px) {
+    .layout,
+    .layout.no-sidebar,
+    .layout.no-toc { grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
+    .layout.no-sidebar { grid-template-columns: minmax(0, 1fr); }
+    .toc-rail { display: none; }
+}
+@media (max-width: 900px) {
+    :root { --sidebar-width: 200px; }
+    .content { padding: 24px 32px 32px; }
+}
+@media (max-width: 720px) {
+    .layout,
+    .layout.no-sidebar,
+    .layout.no-toc,
+    .layout.no-sidebar.no-toc { grid-template-columns: minmax(0, 1fr); }
+    .sidebar {
+        position: fixed;
+        top: var(--topbar-h);
+        left: 0;
+        width: 280px;
+        max-width: 80vw;
+        height: calc(100vh - var(--topbar-h));
+        max-height: none;
+        border-right: 1px solid var(--border);
+        border-bottom: none;
+        z-index: 150;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+    }
+    .sidebar.open { transform: translateX(0); }
+    .layout.no-sidebar .sidebar { display: none; }
+    .nav-toggle { display: inline-flex; }
+    /* No header on mobile: a floating toggle opens the drawer; drawer and
+       content start below it. */
+    body.no-topbar .nav-toggle-float { display: inline-flex; }
+    body.no-topbar .sidebar { top: 0; height: 100vh; padding-top: 56px; }
+    body.no-topbar .content { padding-top: 56px; }
+    .content { padding: 20px 16px; max-width: 100%; }
+    /* The slide-in sidebar overlays content and needs its own backing. It
+       also anchors below the top bar again - the global has-bg top: 0 is for
+       the desktop scroll-container layout and would cover the hamburger. */
+    body.has-bg .sidebar {
+        top: var(--topbar-h);
+        height: calc(100vh - var(--topbar-h));
+        background: var(--bg);
+        background: color-mix(in srgb, var(--bg) 88%, transparent);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+    }
+    .content h1 { font-size: 26px; }
+    .content h2 { font-size: 19px; }
+    .header { padding: 0 12px; }
+    .header .brand { font-size: 15px; }
+    /* Never let a wide logo push the switcher and cart off the bar. */
+    .header .brand img { max-width: 42vw; object-fit: contain; object-position: left center; }
+    .header-right { gap: 4px; }
+    .header-right .btn { padding: 8px 10px; font-size: 13px; min-height: 36px; }
+    .cart-badge { margin-left: 4px; padding: 0 5px; }
+}
+
+/* ---- Shop ---- */
+.shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; margin-top: 24px; }
+.shop-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; text-decoration: none; color: inherit; }
+.shop-card:hover { border-color: var(--accent); }
+.shop-card-img { aspect-ratio: 4/3; background: var(--bg3); display: flex; align-items: center; justify-content: center; color: var(--text2); overflow: hidden; }
+.shop-card-img img { width: 100%; height: 100%; object-fit: cover; }
+.shop-card-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.shop-card-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; }
+.shop-card-price { color: var(--text2); font-size: 13px; }
+.shop-card-actions { margin-top: auto; padding-top: 8px; }
+.shop-card-actions button { width: 100%; }
+
+.shop-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 8px; }
+@media (max-width: 800px) { .shop-detail { grid-template-columns: 1fr; } }
+.shop-detail-img { background: var(--bg3); border-radius: 8px; aspect-ratio: 4/3; overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--text2); }
+.shop-detail-img img { width: 100%; height: 100%; object-fit: cover; }
+.shop-detail-buy { display: flex; align-items: center; gap: 10px; margin-top: 18px; }
+.shop-detail-buy input { width: 70px; text-align: center; padding: 6px 8px; background: var(--bg2); color: var(--text1); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; }
+
+/* Cart button + badge in header */
+.cart-btn { position: relative; }
+.cart-badge { display: inline-block; min-width: 18px; height: 18px; line-height: 18px; text-align: center; background: var(--accent); color: white; border-radius: 9px; font-size: 11px; font-weight: 600; margin-left: 6px; padding: 0 6px; }
+
+/* Cart drawer */
+.cart-drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 380px; max-width: 100vw; background: var(--bg2); border-left: 1px solid var(--border); transform: translateX(100%); transition: transform 0.2s ease; display: flex; flex-direction: column; z-index: 200; }
+.cart-drawer.open { transform: translateX(0); }
+.cart-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.cart-head h3 { margin: 0; font-size: 15px; }
+.cart-body { flex: 1; overflow-y: auto; padding: 12px 18px; }
+.cart-item { display: grid; grid-template-columns: 48px 1fr auto; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); align-items: center; }
+.cart-item-img { width: 48px; height: 48px; background: var(--bg3); border-radius: 4px; overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--text2); font-size: 11px; }
+.cart-item-img img { width: 100%; height: 100%; object-fit: cover; }
+.cart-item-title { font-size: 13px; font-weight: 500; }
+.cart-item-meta { font-size: 12px; color: var(--text2); display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.cart-item-meta input { width: 54px; padding: 4px 8px; font-size: 12px; background: var(--bg); color: var(--text1); border: 1px solid var(--border); border-radius: 4px; font: inherit; }
+.cart-item-price { font-size: 13px; }
+.cart-foot { padding: 14px 18px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.cart-total { display: flex; justify-content: space-between; font-weight: 600; }
+.cart-hint { font-size: 11px; color: var(--text2); }
+.cart-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 199; }
+.cart-overlay.open { opacity: 1; pointer-events: auto; }
+.cart-error { background: rgba(226,97,94,0.12); border: 1px solid #e2615e; color: #e2615e; padding: 8px 10px; border-radius: var(--radius); font-size: 12px; }
+.cart-drawer select { width: 100%; padding: 7px 10px; background: var(--bg); color: var(--text1); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; }
+
+/* Buy callout on sensor pages */
+.buy-callout { margin-top: 36px; padding-top: 24px; border-top: 1px solid var(--border); }
+.buy-callout h2 { font-size: 18px; margin: 0 0 14px; padding-bottom: 0; border-bottom: none; }
+.buy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.buy-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; text-decoration: none; color: inherit; display: flex; gap: 12px; align-items: center; }
+.buy-card:hover { border-color: var(--accent); }
+.buy-card-img { width: 56px; height: 56px; background: var(--bg3); border-radius: 4px; overflow: hidden; display: flex; align-items: center; justify-content: center; color: var(--text2); font-size: 11px; flex-shrink: 0; }
+.buy-card-img img { width: 100%; height: 100%; object-fit: cover; }
+.buy-card-body { flex: 1; min-width: 0; }
+.buy-card-title { font-weight: 500; font-size: 13px; line-height: 1.3; }
+.buy-card-price { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+/* Contact form */
+.contact-form { margin: 24px 0; max-width: 560px; display: flex; flex-direction: column; gap: 12px; }
+.contact-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text2); }
+.contact-form input, .contact-form textarea { padding: 8px 10px; background: var(--bg); color: var(--text1); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; font-size: 14px; }
+.contact-form input:focus, .contact-form textarea:focus { outline: none; border-color: var(--accent); }
+.contact-form textarea { min-height: 140px; resize: vertical; }
+.contact-form .hp-field { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+.contact-form .note { font-size: 12px; color: var(--text2); }
+.contact-form .row-actions { display: flex; gap: 10px; align-items: center; }
+.contact-form .status { font-size: 13px; }
+.contact-form .status.ok { color: #4caf75; }
+.contact-form .status.err { color: #e2615e; }
+/* The signup input sits directly on the background photo; a translucent fill
+   keeps it from reading as a black bar. Firms up on focus for typing; without
+   color-mix the base opaque rule stands. */
+.newsletter-signup input { background: color-mix(in srgb, var(--bg) 55%, transparent); }
+.newsletter-signup input:focus { background: color-mix(in srgb, var(--bg) 80%, transparent); }
+.contact-success { margin: 24px 0; max-width: 560px; padding: 28px 24px; text-align: center; border: 1px solid #4caf75; border-radius: var(--radius); background: color-mix(in srgb, #4caf75 10%, transparent); }
+.contact-success .mark { font-size: 34px; line-height: 1; color: #4caf75; }
+.contact-success .msg { margin-top: 10px; font-size: 16px; font-weight: 600; color: var(--text1); }
+.contact-form .turnstile-slot { min-height: 65px; }
+.content table td a { white-space: nowrap; }
+.email-obf { cursor: pointer; color: var(--accent); text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <button class="nav-toggle" id="navToggle" onclick="toggleSidebar()" aria-label="Open menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+    </button>
+    <a href="/site" class="brand" aria-label="Xikaku">
+        <img class="logo-dark" src="/static/logo-dark.png?v=2" alt="">
+        <img class="logo-light" src="/static/logo.png?v=3" alt="">
+    </a>
+    <div class="header-right">
+        <a id="dashBtn" class="btn" href="/" style="display:none;">Dashboard</a>
+        <button id="editBtn" class="btn" onclick="enterEditMode()" style="display:none;">Edit</button>
+        <button id="newPageBtn" class="btn" onclick="newPage()" style="display:none;">+ Page</button>
+        <button id="newPostBtn" class="btn" onclick="newPost()" style="display:none;">+ Post</button>
+        <span id="langSwitchTop" class="lang-switch-top" style="display:none;"></span>
+        <button id="btnCart" class="btn cart-btn" onclick="openCart()">Cart<span id="cartBadge" class="cart-badge" style="display:none;">0</span></button>
+        <button id="btnTheme" class="btn" onclick="cycleTheme()" title="Toggle theme">🌓</button>
+        <button id="navLogoutBtn" class="btn" onclick="logoutFromSite()" style="display:none;">Logout</button>
+    </div>
+</div>
+
+<button class="nav-toggle-float" onclick="toggleSidebar()" aria-label="Open menu">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+</button>
+
+<div class="page-scroll" id="pageScroll">
+<div class="layout no-sidebar no-toc" id="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="content" id="content"><!--BODY_CONTENT--></main>
+    <aside class="toc-rail" id="tocRail" aria-label="On this page"></aside>
+</div>
+
+<footer class="site-footer">
+    <a href="/privacy" data-site-link="/privacy">Privacy Policy</a>
+    <a href="/imprint" data-site-link="/imprint">Imprint</a>
+    <a href="#" data-cookie-settings style="display:none">Cookie settings</a>
+    <span id="langSwitch" style="display:none;"></span>
+</footer>
+</div>
+
+<div id="navOverlay" class="nav-overlay" onclick="closeSidebar()"></div>
+
+<div id="toast" class="toast"></div>
+
+<!-- Cart drawer -->
+<div class="cart-overlay" id="cartOverlay" onclick="closeCart()"></div>
+<div class="cart-drawer" id="cartDrawer">
+    <div class="cart-head">
+        <h3>Your cart</h3>
+        <button class="btn" onclick="closeCart()">&times;</button>
+    </div>
+    <div class="cart-body" id="cartBody"></div>
+    <div class="cart-foot">
+        <div id="cartShipRow" style="display:none;">
+            <label style="display:block;font-size:12px;color:var(--text2);margin-bottom:4px;">Ship to</label>
+            <select id="cartCountry" onchange="persistShipCountry()"></select>
+        </div>
+        <div class="cart-total"><span>Subtotal</span><span id="cartTotal">$0.00</span></div>
+        <div class="cart-hint">Tax + shipping calculated at checkout.</div>
+        <button class="btn primary" id="checkoutBtn" onclick="checkout()" disabled>Checkout</button>
+        <div id="cartError" class="cart-error" style="display:none;"></div>
+    </div>
+</div>
+
+<script>
+const THEME_LOCK = (window.__SITE && window.__SITE.theme) || '';
+function applyTheme(t) {
+    if (THEME_LOCK) {
+        if (THEME_LOCK === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        else document.documentElement.removeAttribute('data-theme');
+        const b = document.getElementById('btnTheme');
+        if (b) b.style.display = 'none';
+        return;
+    }
+    const root = document.documentElement;
+    if (t === 'system') {
+        root.removeAttribute('data-theme');
+        const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+        if (prefersLight) root.setAttribute('data-theme', 'light');
+    } else {
+        root.setAttribute('data-theme', t);
+    }
+    const btn = document.getElementById('btnTheme');
+    if (btn) {
+        btn.textContent = t === 'dark' ? '🌙' : t === 'light' ? '☀️' : '🌓';
+        btn.title = 'Theme: ' + t + ' (click to cycle)';
+    }
+}
+function toggleSidebar() {
+    const sb = document.getElementById('sidebar');
+    const ov = document.getElementById('navOverlay');
+    if (!sb) return;
+    const open = sb.classList.toggle('open');
+    if (ov) ov.classList.toggle('open', open);
+}
+function closeSidebar() {
+    const sb = document.getElementById('sidebar');
+    const ov = document.getElementById('navOverlay');
+    if (sb) sb.classList.remove('open');
+    if (ov) ov.classList.remove('open');
+}
+document.addEventListener('click', (e) => {
+    const sb = document.getElementById('sidebar');
+    if (!sb || !sb.classList.contains('open')) return;
+    const a = e.target.closest('a');
+    if (a && sb.contains(a)) closeSidebar();
+});
+
+function cycleTheme() {
+    if (THEME_LOCK) return;
+    const cur = localStorage.getItem('susi_theme') || 'system';
+    const next = cur === 'dark' ? 'light' : cur === 'light' ? 'system' : 'dark';
+    localStorage.setItem('susi_theme', next);
+    applyTheme(next);
+}
+applyTheme(localStorage.getItem('susi_theme') || 'system');
+if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+        if ((localStorage.getItem('susi_theme') || 'system') === 'system') applyTheme('system');
+    });
+}
+
+// Light parallax: the photo drifts opposite to the scroll, spending its
+// overscan across the page's full scroll range.
+(function () {
+    const bg = document.querySelector('.site-bg');
+    const ps = document.getElementById('pageScroll');
+    if (!bg || !ps || !document.body.classList.contains('bg-parallax')) return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const OVERSCAN = 120;
+    let ticking = false;
+    function apply() {
+        ticking = false;
+        const max = ps.scrollHeight - ps.clientHeight;
+        const y = max > 0 ? (ps.scrollTop / max) * OVERSCAN : 0;
+        bg.style.transform = 'translate3d(0,' + y.toFixed(1) + 'px,0)';
+    }
+    ps.addEventListener('scroll', () => {
+        if (!ticking) { ticking = true; requestAnimationFrame(apply); }
+    }, { passive: true });
+})();
+
+const API = '/api/v1';
+
+// Per-site config injected by the server (sites.rs). The fallback keeps the
+// shell working if the marker was not replaced (e.g. a stale cached page).
+const SITE = window.__SITE || { id: 'xikaku', name: 'Xikaku', hosts: ['xikaku.com', 'www.xikaku.com'], brand_logo: '/static/logo.png', brand_logo_dark: '/static/logo-dark.png', has_shop: true, has_newsletter: true, newsletter_signup: false, has_blog: true };
+// Content language of this render, injected by the server ("" = default).
+// A translated page lives at the same URLs one /{lang}/ segment deeper.
+const LANG = SITE.lang || '';
+const LANGS = SITE.langs || [];
+const LANG_PREFIX = LANG ? '/' + LANG : '';
+function langPages() { return pages.filter(p => (p.lang || '') === LANG); }
+// Chrome strings for translated renders; anything unlisted stays English.
+const L10N = {
+    ja: {
+        'Blog': 'ブログ', 'Newsletter': 'ニュースレター', 'Shop': 'ショップ',
+        'Privacy Policy': 'プライバシーポリシー', 'Imprint': '運営者情報',
+        'Cookie settings': 'クッキー設定', 'On this page': 'このページの内容',
+        // Sidebar group titles from the shared nav_structure setting.
+        'Product': '製品', 'Technology': '技術情報', 'Order': 'ご注文',
+        'Company': '会社情報', 'Legal': '規約・ポリシー',
+        'Online Shop': 'オンラインショップ',
+        'Support': 'サポート', 'Documentation': 'ドキュメント',
+        'Customer Area': 'カスタマーエリア',
+        'Thanks - your message is on its way.': 'お問い合わせありがとうございます。メッセージを送信しました。',
+        'show email': 'メールを表示',
+        // Shop storefront chrome.
+        'Your cart': 'カート', 'Ship to': 'お届け先', 'Subtotal': '小計',
+        'Tax + shipping calculated at checkout.': '税金と送料はチェックアウト時に計算されます。',
+        'Checkout': 'レジに進む', 'Redirecting…': 'リダイレクト中…',
+        'Your cart is empty.': 'カートは空です。',
+        'Added to cart': 'カートに追加しました', 'Add to cart': 'カートに追加',
+        'remove': '削除', 'no image': '画像なし', 'Coming soon.': '近日公開。',
+        'Back to shop': 'ショップに戻る', 'Product not found': '製品が見つかりません',
+        'Continue shopping': '買い物を続ける', 'Home': 'ホーム',
+        'Thank you!': 'ありがとうございます！',
+        'Your order has been placed. A receipt will arrive in your inbox shortly.': 'ご注文を承りました。まもなく確認メールが届きます。',
+        'Checkout cancelled': 'チェックアウトはキャンセルされました',
+        'Your cart is still saved. No charge was made.': 'カートの内容は保存されています。請求は発生していません。',
+        'Review cart': 'カートを確認', 'Available variants': '製品バリエーション',
+        'Order %s products directly.': '%sの製品を直接ご注文いただけます。',
+    },
+};
+function t(s) { return (LANG && L10N[LANG] && L10N[LANG][s]) || s; }
+
+// Website API calls carry the site explicitly so editing keeps targeting the
+// rendered site even from a host that resolves to none (dashboard preview);
+// the language rides along so page reads and edits stay in this translation.
+function siteQ(sep) {
+    return (sep || '?') + 'site=' + encodeURIComponent(SITE.id)
+        + (LANG ? '&lang=' + encodeURIComponent(LANG) : '');
+}
+
+// On a site's canonical hosts the website lives at clean URLs (/contact,
+// /about, etc.). On other hosts (susi.lp-research.com) it stays under
+// /site/{slug} so the admin dashboard at / isn't shadowed.
+const CANONICAL_HOSTS = SITE.hosts;
+const SITE_PATH_PREFIX = CANONICAL_HOSTS.includes(location.host) ? '' : '/site';
+
+// The brand/asset endpoints resolve the site from the Host header. Off the
+// canonical hosts (dashboard preview) that resolves to the default site, so
+// those URLs must carry ?site= explicitly to serve THIS site's files.
+function previewAssetUrl(u) {
+    if (!SITE_PATH_PREFIX || !u || !u.startsWith('/')) return u;
+    if (!u.startsWith('/static/') && !u.startsWith(API + '/website/assets/') && !u.startsWith('/favicon.ico')) return u;
+    const p = new URL(u, location.origin);
+    if (!p.searchParams.has('site')) p.searchParams.set('site', SITE.id);
+    return p.pathname + p.search;
+}
+
+// Top-level paths that must NOT be intercepted as website slugs on xikaku.com.
+const RESERVED_TOP_PATHS = new Set(['site', 'shop', 'api', 'static', 'docs', 'robots.txt', 'sitemap.xml', 'llms.txt', 'favicon.ico', 'health', '.well-known', 'customer-area', 'login']);
+LANGS.forEach(l => RESERVED_TOP_PATHS.add(l));
+
+// Root-relative links authored in page bodies use the clean-URL form; under
+// /site they need the prefix (and the site param, so open-in-new-tab and
+// reload keep the context) or they fall into the dashboard's namespace.
+function previewPageLink(u) {
+    if (!SITE_PATH_PREFIX) return u;
+    if (u.startsWith('/static/') || u.startsWith(API + '/')) return previewAssetUrl(u);
+    const head = u.split(/[\/?#]/).filter(Boolean)[0] || '';
+    if (RESERVED_TOP_PATHS.has(head)) return u;
+    const p = new URL(SITE_PATH_PREFIX + (u === '/' ? '' : u), location.origin);
+    if (!p.searchParams.has('site')) p.searchParams.set('site', SITE.id);
+    return p.pathname + p.search + p.hash;
+}
+
+// Apply per-site branding to the static header markup (authored for the
+// default site): logo images when the site has them, text brand otherwise.
+(function () {
+    // Restore the top bar for a likely admin before first paint; the async
+    // auth check in updateAdminChrome settles it either way.
+    if (SITE.no_topbar && localStorage.getItem('auth_token')) {
+        document.body.classList.remove('no-topbar');
+        document.body.classList.add('admin-topbar');
+    }
+    const brand = document.querySelector('.brand');
+    if (!brand) return;
+    brand.setAttribute('aria-label', SITE.name);
+    const dark = brand.querySelector('.logo-dark');
+    const light = brand.querySelector('.logo-light');
+    if (SITE.brand_logo) {
+        if (dark) { dark.src = previewAssetUrl(SITE.brand_logo_dark || SITE.brand_logo); dark.alt = SITE.name; }
+        if (light) { light.src = previewAssetUrl(SITE.brand_logo); light.alt = SITE.name; }
+    } else {
+        brand.textContent = SITE.name;
+    }
+    // The cart button stays visible even while the shop is paused
+    // (has_shop off) - the drawer just shows an empty cart.
+})();
+
+// Same Host-resolution problem for the favicon links and the background
+// artwork the server injected into the shell; and SPA navigation writes
+// clean /site URLs that would lose the site context on reload - keep the
+// ?site= on every history write instead of threading it through each URL
+// builder.
+if (SITE_PATH_PREFIX) {
+    document.querySelectorAll('link[rel="icon"], link[rel="apple-touch-icon"]').forEach(l => {
+        l.href = previewAssetUrl(l.getAttribute('href'));
+    });
+    const bg = document.querySelector('.site-bg');
+    const bgm = bg && bg.style.backgroundImage.match(/url\(["']?([^"')]+)["']?\)/);
+    if (bgm) bg.style.backgroundImage = 'url("' + previewAssetUrl(bgm[1]) + '")';
+
+    // The SSR body is rendered host-agnostically too; patch it before first
+    // paint so the preview never flashes the default site's artwork while
+    // the SPA boots (this script runs before the browser renders).
+    document.querySelectorAll('#content img[src^="/"], #sidebar img[src^="/"]').forEach(el => {
+        el.src = previewAssetUrl(el.getAttribute('src'));
+    });
+    document.querySelectorAll('#content a[href^="/"]').forEach(el => {
+        el.setAttribute('href', previewPageLink(el.getAttribute('href')));
+    });
+
+    const keepSite = (url) => {
+        if (typeof url !== 'string') return url;
+        if (url !== '/site' && !/^\/site[\/?#]/.test(url)) return url;
+        const p = new URL(url, location.origin);
+        if (!p.searchParams.has('site')) p.searchParams.set('site', SITE.id);
+        return p.pathname + p.search + p.hash;
+    };
+    const rawPush = history.pushState.bind(history);
+    const rawReplace = history.replaceState.bind(history);
+    history.pushState = (s, t, url) => rawPush(s, t, keepSite(url));
+    history.replaceState = (s, t, url) => rawReplace(s, t, keepSite(url));
+}
+function pageHref(slug) {
+    // Posts live under /blog/{slug}; everything else is /{slug}. Both sit
+    // one /{lang}/ segment deeper on a translated render.
+    const p = langPages().find(x => x.slug === slug) || pages.find(x => x.slug === slug);
+    const prefix = (p && p.page_kind === 'post') ? '/blog/' : '/';
+    return SITE_PATH_PREFIX + LANG_PREFIX + prefix + encodeURIComponent(slug);
+}
+function siteRootHref() { return (SITE_PATH_PREFIX + LANG_PREFIX) || '/'; }
+// Carry the ad click IDs across in-app navigation. Analytics only loads once
+// the visitor accepts cookies, which may happen after they have left the
+// landing page - without this the click ID is gone and the conversion cannot
+// be attributed to the campaign that paid for the visit.
+function adClickQuery() {
+    const keep = new URLSearchParams();
+    new URLSearchParams(location.search).forEach((v, k) => {
+        if (k === 'gclid' || k === 'gbraid' || k === 'wbraid') keep.set(k, v);
+    });
+    const s = keep.toString();
+    return s ? '?' + s : '';
+}
+// Footer links carry clean paths; prefix them on non-canonical hosts. The
+// labels follow the render language; the targets stay default-language until
+// those pages have translations.
+document.querySelectorAll('.site-footer a[data-site-link]').forEach(a => {
+    a.href = SITE_PATH_PREFIX + LANG_PREFIX + a.getAttribute('data-site-link');
+    a.textContent = t(a.textContent);
+});
+document.querySelectorAll('.site-footer a[data-cookie-settings]').forEach(a => {
+    a.textContent = t(a.textContent);
+});
+
+// Footer language switcher: the current page's counterpart in each language,
+// or that language's home when the page has no translation. Full page loads -
+// the server re-renders the shell in the target language.
+function renderLangSwitch() {
+    const el = document.getElementById('langSwitch');
+    if (!el || !LANGS.length) return;
+    // The same switcher also lives in the top bar, next to the cart.
+    const elTop = document.getElementById('langSwitchTop');
+    const names = { ja: '日本語' };
+    const hrefFor = (l, p) => {
+        const seg = p ? (p.page_kind === 'post' ? '/blog/' : '/') + encodeURIComponent(p.slug) : '';
+        // The path carries the target language; off the canonical hosts the
+        // site still travels by query (the render language must NOT - the
+        // full load re-resolves it from the path).
+        const q = SITE_PATH_PREFIX ? '?site=' + encodeURIComponent(SITE.id) : '';
+        return ((SITE_PATH_PREFIX + (l ? '/' + l : '') + seg) || '/') + q;
+    };
+    const parts = [];
+    if (LANG) {
+        const cur = langPages().find(p => p.slug === currentSlug);
+        const en = cur && cur.translation_of
+            ? pages.find(p => !(p.lang || '') && p.slug === cur.translation_of)
+            : null;
+        parts.push('<a href="' + escHtml(hrefFor('', en)) + '">English</a>');
+    } else {
+        parts.push('<span>English</span>');
+    }
+    LANGS.forEach(l => {
+        const label = names[l] || l.toUpperCase();
+        if (l === LANG) { parts.push('<span>' + escHtml(label) + '</span>'); return; }
+        const tr = currentSlug
+            ? pages.find(p => (p.lang || '') === l && p.translation_of === currentSlug)
+            : null;
+        parts.push('<a href="' + escHtml(hrefFor(l, tr)) + '">' + escHtml(label) + '</a>');
+    });
+    const html = parts.join(' <span class="lang-sep">·</span> ');
+    el.innerHTML = html;
+    el.style.display = '';
+    if (elTop) {
+        elTop.innerHTML = html;
+        elTop.style.display = '';
+    }
+}
+// Send a visitor to a retired page's replacement. Mirrors the server's 301
+// target rules: full URL, site-root path, or a bare slug.
+function followRedirect(target) {
+    const t = (target || '').trim();
+    if (!t) return;
+    if (/^https?:\/\//i.test(t)) { location.href = t; return; }
+    if (t.startsWith('/')) { location.href = SITE_PATH_PREFIX + t; return; }
+    navigateTo(t);
+}
+function formatPostDate(s) {
+    if (!s) return '';
+    const d = new Date(s + 'T00:00:00');
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleDateString(LANG === 'ja' ? 'ja-JP' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+// Byline appended to a post's date line; empty without a known author.
+function bylineSuffix(name) {
+    return name ? ' &middot; by ' + escHtml(name) : '';
+}
+// Wrap the first <h1> of a post body in a link to its permalink, so the
+// headline on the blog index leads to the post's own page.
+function linkFirstHeading(html, href) {
+    const open = html.indexOf('<h1');
+    if (open < 0) return html;
+    const gt = html.indexOf('>', open);
+    if (gt < 0) return html;
+    const close = html.indexOf('</h1>', gt);
+    if (close < 0) return html;
+    return html.slice(0, gt + 1) + '<a href="' + escHtml(href) + '">'
+        + html.slice(gt + 1, close) + '</a>' + html.slice(close);
+}
+let pages = [];
+let assets = [];
+// Sidebar group config from the "nav_structure" site setting (null = flat nav).
+let navStructure = null;
+let currentSlug = null;
+let currentPage = null;
+let editMode = false;
+let previewMode = false;
+let editDraft = null;
+// Slug whose editor should open as soon as that page finishes loading.
+let pendingEdit = null;
+let isAdmin = false;
+
+function authToken() { return localStorage.getItem('auth_token') || ''; }
+function isPotentialAdmin() { return !!authToken(); }
+
+// A dashboard "Open site" navigation carries a single-use SSO ticket in the
+// URL fragment; redeem it against this origin so the admin chrome shows up
+// on the live host without a separate login. Runs before resolveAdminStatus.
+async function redeemSsoTicket() {
+    const m = (location.hash || '').match(/^#susi-sso=([a-f0-9]{64})$/);
+    if (!m) return;
+    history.replaceState(null, '', location.pathname + location.search);
+    try {
+        const r = await fetch(API + '/auth/sso-redeem', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticket: m[1], device_label: navigator.userAgent }),
+        });
+        if (r.ok) {
+            const d = await r.json();
+            if (d.token) localStorage.setItem('auth_token', d.token);
+        }
+    } catch (e) {}
+}
+
+async function resolveAdminStatus() {
+    if (!authToken()) { isAdmin = false; return; }
+    try {
+        const r = await fetch('/api/v1/auth/status', { headers: { 'Authorization': 'Bearer ' + authToken() }});
+        if (r.ok) {
+            const d = await r.json();
+            isAdmin = (d.role === 'admin' || d.role === 'owner');
+        } else if (r.status === 401) {
+            localStorage.removeItem('auth_token');
+            isAdmin = false;
+        }
+    } catch (e) { isAdmin = false; }
+    updateAdminChrome();
+}
+
+function updateAdminChrome() {
+    if (SITE.no_topbar) {
+        document.body.classList.toggle('no-topbar', !isAdmin);
+        document.body.classList.toggle('admin-topbar', isAdmin);
+        renderCartBadge();
+    }
+    // Back to this site's Website section: same origin under the dashboard
+    // preview, the configured dashboard URL on a canonical host.
+    const dashBtn = document.getElementById('dashBtn');
+    const dashBase = SITE_PATH_PREFIX ? '' : (SITE.dashboard_url || '');
+    const dashHref = (SITE_PATH_PREFIX || dashBase) ? dashBase + '/#/website/' + encodeURIComponent(SITE.id) : '';
+    dashBtn.href = dashHref || '/';
+    dashBtn.style.display = (isAdmin && dashHref) ? '' : 'none';
+    document.getElementById('navLogoutBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('newPageBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('newPostBtn').style.display = isAdmin ? '' : 'none';
+    document.getElementById('editBtn').style.display = (isAdmin && currentPage) ? '' : 'none';
+}
+
+function logoutFromSite() {
+    const t = localStorage.getItem('auth_token');
+    if (t) {
+        fetch(API + '/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + t } }).catch(() => {});
+    }
+    localStorage.removeItem('auth_token');
+    isAdmin = false;
+    location.reload();
+}
+
+function toast(msg, kind) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast visible' + (kind ? ' ' + kind : '');
+    setTimeout(() => el.classList.remove('visible'), 2400);
+}
+
+function escHtml(s) {
+    return (s || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function decodeEntities(s) {
+    const el = document.createElement('textarea');
+    el.innerHTML = s;
+    return el.value;
+}
+
+// ---------------------------------------------------------------------------
+// Markdown renderer (same as docs.html)
+// ---------------------------------------------------------------------------
+
+function videoEmbedSrc(url) {
+    let m = url.match(/^https?:\/\/(?:www\.)?vimeo\.com\/(\d+)(?:\/([a-f0-9]+))?/);
+    if (m) return 'https://player.vimeo.com/video/' + m[1] + (m[2] ? '?h=' + m[2] : '');
+    m = url.match(/^https?:\/\/player\.vimeo\.com\/video\/\d+/);
+    if (m) return url;
+    m = url.match(/^https?:\/\/(?:www\.)?youtube\.com\/watch\?v=([A-Za-z0-9_-]+)/);
+    if (m) return 'https://www.youtube.com/embed/' + m[1];
+    m = url.match(/^https?:\/\/youtu\.be\/([A-Za-z0-9_-]+)/);
+    if (m) return 'https://www.youtube.com/embed/' + m[1];
+    m = url.match(/^https?:\/\/(?:www\.)?youtube\.com\/embed\/[A-Za-z0-9_-]+/);
+    if (m) return url;
+    return null;
+}
+
+function audioEmbedSrc(url) {
+    // Track or playlist permalink: soundcloud.com/{user}/{track} or /{user}/sets/{name}.
+    const clean = url.split(/[?#]/)[0];
+    const m = clean.match(/^https?:\/\/(?:www\.)?soundcloud\.com\/[\w-]+\/(?:sets\/)?[\w-]+\/?$/);
+    if (!m) return null;
+    return 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(clean)
+        + '&visual=false&show_teaser=false&hide_related=true&show_comments=false';
+}
+
+function renderInline(s) {
+    // Backslash escapes (\* \_ \# ...) become literal characters, held as
+    // placeholders so the emphasis/format passes below can't touch them.
+    // The SSR renderer (pulldown-cmark) already handles these - without this
+    // the client render showed stray backslashes and runaway italics on the
+    // spec-table footnotes.
+    const escLits = [];
+    s = s.replace(/\\([\\`*_{}\[\]()#+\-.!|~])/g, (_, c) => {
+        escLits.push(c);
+        return '\u0000' + (escLits.length - 1) + '\u0000';
+    });
+    let out = escHtml(s);
+    // Allow explicit <br> line breaks (needed for multi-line table cells);
+    // the SSR renderer passes them through as inline HTML too.
+    out = out.replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+    out = out.replace(/`([^`]+)`/g, (_, c) => '<code>' + c + '</code>');
+    out = out.replace(/\{\{email:([^\s}]+)\}\}/g, (_, addr) => {
+        const at = addr.indexOf('@');
+        if (at <= 0 || at === addr.length - 1) return escHtml(addr);
+        const u = addr.slice(0, at);
+        const d = addr.slice(at + 1);
+        return '<span class="email-obf" data-u="' + btoa(u) + '" data-d="' + btoa(d) + '" tabindex="0" role="button">' + t('show email') + '</span>';
+    });
+    out = out.replace(/!\[([^\]]*)\]\(([^)]+)\)(\{[^}]*\})?/g, (_, alt, url, attrs) => {
+        const vsrc = videoEmbedSrc(url);
+        if (vsrc) {
+            return '<div class="video-embed"><iframe src="' + vsrc
+                + '" title="' + alt
+                + '" allow="autoplay; fullscreen; picture-in-picture"'
+                + ' allowfullscreen loading="lazy"></iframe></div>';
+        }
+        const asrc = audioEmbedSrc(url);
+        if (asrc) {
+            return '<div class="audio-embed' + (/\/sets\//.test(url.split(/[?#]/)[0]) ? ' set' : '')
+                + '"><iframe src="' + asrc
+                + '" title="' + alt
+                + '" allow="autoplay" loading="lazy"></iframe></div>';
+        }
+        let extra = '';
+        const isVideo = /\.(mp4|webm)([?#]|$)/i.test(url);
+        if (attrs) {
+            const w = attrs.match(/\bwidth\s*=\s*(\d+)(px|%)?/i);
+            const h = attrs.match(/\bheight\s*=\s*(\d+(?:px|%)?)/i);
+            // A px width is a desktop cap: full column width on narrower screens.
+            if (w && !isVideo && w[2] !== '%') extra += ' style="width:100%;max-width:' + w[1] + 'px"';
+            else if (w) extra += ' width="' + w[1] + (w[2] || '') + '"';
+            if (h) extra += ' height="' + h[1] + '"';
+            const classes = [...attrs.matchAll(/\.([A-Za-z][\w-]*)/g)].map(m => m[1]);
+            if (classes.length) extra += ' class="' + classes.join(' ') + '"';
+        }
+        if (isVideo) {
+            return '<video src="' + resolveAssetUrl(url) + '"' + extra
+                + ' autoplay muted loop playsinline></video>';
+        }
+        return '<img alt="' + alt + '" src="' + resolveAssetUrl(url) + '"' + extra + '>';
+    });
+    out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+        const safe = url.startsWith('http') || url.startsWith('#') ? url
+            : url.startsWith('/') ? previewPageLink(url)
+            : pageHref(url);
+        return '<a href="' + safe + '">' + text + '</a>';
+    });
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+    out = out.replace(/\u0000(\d+)\u0000/g, (_, i) => escHtml(escLits[+i]));
+    return out;
+}
+
+function resolveAssetUrl(url) {
+    if (url.startsWith('http') || url.startsWith('data:')) return url;
+    if (url.startsWith('/')) return previewAssetUrl(url);
+    return API + '/website/assets/' + encodeURIComponent(url) + siteQ();
+}
+
+function renderMarkdown(src) {
+    if (!src) return '';
+    const lines = src.replace(/\r\n/g, '\n').split('\n');
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        if (line.trim() === '{{contact-form}}') {
+            out.push('<div data-contact-form></div>');
+            i++;
+            continue;
+        }
+        if (line.trim() === '{{newsletter-archive}}') {
+            if (SITE.has_newsletter) out.push('<div data-newsletter-archive></div>');
+            i++;
+            continue;
+        }
+        if (line.trim() === '{{newsletter-signup}}') {
+            // Only sites with a public signup render the form; elsewhere the
+            // marker disappears rather than leaking as text.
+            if (SITE.newsletter_signup) out.push('<div data-newsletter-signup></div>');
+            i++;
+            continue;
+        }
+        const fence = line.match(/^```(.*)$/);
+        if (fence) {
+            const lang = fence[1].trim();
+            const buf = [];
+            i++;
+            while (i < lines.length && !lines[i].match(/^```\s*$/)) {
+                buf.push(lines[i]); i++;
+            }
+            i++;
+            out.push('<pre><code' + (lang ? ' class="lang-' + escHtml(lang) + '"' : '') + '>'
+                + escHtml(buf.join('\n')) + '</code></pre>');
+            continue;
+        }
+        const h = line.match(/^(#{1,6})\s+(.*)$/);
+        if (h) {
+            const level = h[1].length;
+            out.push('<h' + level + '>' + renderInline(h[2]) + '</h' + level + '>');
+            i++;
+            continue;
+        }
+        if (/^---+\s*$/.test(line)) { out.push('<hr>'); i++; continue; }
+        if (line.startsWith('> ')) {
+            const buf = [];
+            while (i < lines.length && lines[i].startsWith('> ')) {
+                buf.push(lines[i].slice(2)); i++;
+            }
+            out.push('<blockquote>' + renderMarkdown(buf.join('\n')) + '</blockquote>');
+            continue;
+        }
+        if (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]+\|?\s*$/.test(lines[i+1])) {
+            const headers = splitTableRow(line);
+            i += 2;
+            const rows = [];
+            while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+                rows.push(splitTableRow(lines[i])); i++;
+            }
+            const isGrid = headers.every(h => h.trim() === '');
+            let html;
+            if (isGrid) {
+                // A people/variant grid - a row of photos with caption rows
+                // beneath - stacks column-major on phones so each caption
+                // stays with its photo.
+                const isPeople = rows.length > 1
+                    && rows[0].some(c => /^!\[/.test((c || '').trim()))
+                    && rows[0].every(c => { const t = (c || '').trim(); return !t || /^!\[/.test(t); })
+                    && rows.slice(1).every(r => r.every(c => !/^!\[/.test((c || '').trim())));
+                html = '<div class="grid cols-' + headers.length + (isPeople ? ' people' : '') + '">';
+                rows.forEach(r => {
+                    for (let c = 0; c < headers.length; c++)
+                        html += '<div>' + renderInline(r[c] || '') + '</div>';
+                });
+                html += '</div>';
+            } else {
+                html = '<div class="table-scroll"><table><thead><tr>';
+                headers.forEach(hh => html += '<th>' + renderInline(hh) + '</th>');
+                html += '</tr></thead><tbody>';
+                rows.forEach(r => {
+                    html += '<tr>';
+                    r.forEach(c => html += '<td>' + renderInline(c) + '</td>');
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+            out.push(html);
+            continue;
+        }
+        if (/^[-*]\s+/.test(line)) {
+            const buf = [];
+            while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+                buf.push(lines[i].replace(/^[-*]\s+/, '')); i++;
+            }
+            out.push('<ul>' + buf.map(b => '<li>' + renderInline(b) + '</li>').join('') + '</ul>');
+            continue;
+        }
+        const ol = line.match(/^(\d+)\.\s+(.*)$/);
+        if (ol) {
+            const start = ol[1];
+            const buf = [ol[2]];
+            i++;
+            while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+                buf.push(lines[i].replace(/^\d+\.\s+/, '')); i++;
+            }
+            const startAttr = start === '1' ? '' : ' start="' + start + '"';
+            out.push('<ol' + startAttr + '>' + buf.map(b => '<li>' + renderInline(b) + '</li>').join('') + '</ol>');
+            continue;
+        }
+        if (line.trim() === '') { i++; continue; }
+        const para = [line];
+        i++;
+        while (i < lines.length && lines[i].trim() !== ''
+               && !/^(#{1,6}\s|```|>|---+\s*$|[-*]\s|\d+\.\s)/.test(lines[i])
+               && !(lines[i].includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|/.test(lines[i+1]))) {
+            para.push(lines[i]); i++;
+        }
+        const joined = para.map((ln, k) =>
+            (k < para.length - 1 && /  +$/.test(ln)) ? ln.replace(/\s+$/, '') + '\u0001' : ln
+        ).join(' ');
+        out.push('<p>' + renderInline(joined).replace(/\u0001/g, '<br>') + '</p>');
+    }
+    return out.join('\n');
+}
+
+function splitTableRow(line) {
+    let s = line.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    const cells = [];
+    let cur = '';
+    for (let j = 0; j < s.length; j++) {
+        if (s[j] === '\\' && j + 1 < s.length && s[j+1] === '|') { cur += '|'; j++; }
+        else if (s[j] === '|') { cells.push(cur.trim()); cur = ''; }
+        else cur += s[j];
+    }
+    cells.push(cur.trim());
+    return cells;
+}
+
+// ---------------------------------------------------------------------------
+// Data fetch
+// ---------------------------------------------------------------------------
+
+async function loadIndex() {
+    const resp = await fetch(API + '/website/pages' + siteQ());
+    if (!resp.ok) { return false; }
+    const data = await resp.json();
+    pages = data.pages || [];
+    assets = data.assets || [];
+    navStructure = Array.isArray(data.nav) ? data.nav : null;
+    return true;
+}
+
+async function loadPage(slug) {
+    currentSlug = slug;
+    // Send the token when present: hidden pages 404 for anonymous visitors
+    // but stay reachable for admins so they can be previewed and edited.
+    const opts = authToken() ? { headers: { 'Authorization': 'Bearer ' + authToken() } } : {};
+    const resp = await fetch(API + '/website/pages/' + encodeURIComponent(slug) + siteQ(), opts);
+    if (!resp.ok) {
+        currentPage = null;
+        // The /blog index works without a page row of its own (the row only
+        // supplies title/intro).
+        if (slug !== 'blog') {
+            renderEmptyState('Page "' + slug + '" not found.');
+            return;
+        }
+    } else {
+        currentPage = await resp.json();
+    }
+    editMode = false;
+    previewMode = false;
+    editDraft = null;
+    if (easymde) { try { easymde.toTextArea(); } catch (e) {} easymde = null; }
+    // An "Edit" click on the blog index parks its intent here; honour it now
+    // that the post is loaded, and clear it so a later visit renders normally.
+    if (pendingEdit === slug && currentPage && isPotentialAdmin()) editMode = true;
+    pendingEdit = null;
+    // A retired page sends visitors on. Admins stay so they can edit it or
+    // clear the redirect - they would otherwise never reach the editor.
+    if (currentPage && currentPage.redirect_to && !isAdmin) {
+        followRedirect(currentPage.redirect_to);
+        return;
+    }
+    renderSidebar();
+    renderPage();
+}
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+
+function sidebarBrandHtml() {
+    if (!SITE.sidebar_logo) return '';
+    const home = SITE_PATH_PREFIX ? SITE_PATH_PREFIX + LANG_PREFIX + siteQ() : (LANG_PREFIX || '/');
+    let inner;
+    if (SITE.brand_logo) {
+        inner = '<img class="logo-dark" src="' + escHtml(previewAssetUrl(SITE.brand_logo_dark || SITE.brand_logo)) + '" alt="' + escHtml(SITE.name) + '">'
+            + '<img class="logo-light" src="' + escHtml(previewAssetUrl(SITE.brand_logo)) + '" alt="' + escHtml(SITE.name) + '">';
+    } else {
+        inner = escHtml(SITE.name);
+    }
+    return '<a href="' + escHtml(home) + '" class="sidebar-brand" aria-label="' + escHtml(SITE.name) + '">' + inner + '</a>';
+}
+
+function renderSidebar() {
+    const sb = document.getElementById('sidebar');
+    const layout = document.getElementById('layout');
+    const brand = sidebarBrandHtml();
+    // Treat /shop as a non-empty sidebar context too - even when there are
+    // no pages we still want to show the Shop link.
+    const onShop = currentSlug === '__shop__';
+    // Posts never appear in the nav; readers reach them via the /blog index.
+    // The optional "blog" intro page is covered by the fixed Blog link below.
+    // A translated render lists its own language's pages only.
+    const navPages = langPages().filter(p => p.page_kind !== 'post' && p.slug !== 'blog');
+    if (navPages.length <= 1 && !onShop) {
+        // A site with a sidebar logo keeps the sidebar - the brand lives there.
+        sb.innerHTML = brand;
+        if (layout) layout.classList.toggle('no-sidebar', !brand);
+        return;
+    }
+    if (layout) layout.classList.remove('no-sidebar');
+    const byParent = new Map();
+    const topLevel = [];
+    const slugSet = new Set(navPages.map(p => p.slug));
+    navPages.forEach(p => {
+        if (p.parent_slug && slugSet.has(p.parent_slug)) {
+            if (!byParent.has(p.parent_slug)) byParent.set(p.parent_slug, []);
+            byParent.get(p.parent_slug).push(p);
+        } else {
+            topLevel.push(p);
+        }
+    });
+    topLevel.sort((a, b) => a.ord - b.ord || a.title.localeCompare(b.title));
+    const renderTop = p => {
+        const children = byParent.get(p.slug) || [];
+        children.sort((a, b) => a.ord - b.ord || a.title.localeCompare(b.title));
+        const hasChildren = children.length > 0;
+        const expanded = hasChildren && (p.slug === currentSlug || children.some(c => c.slug === currentSlug));
+        let h = renderSidebarItem(p, true, hasChildren, expanded);
+        if (hasChildren) {
+            h += '<div class="sidebar-children' + (expanded ? '' : ' collapsed') + '">';
+            children.forEach(c => h += renderSidebarItem(c, false, false, false));
+            h += '</div>';
+        }
+        return h;
+    };
+    // Fixed Blog/Shop links; '__blog__'/'__shop__' place them inside groups.
+    // No fixed Newsletter entry: the archive lives on whatever page the
+    // author gives the {{newsletter-archive}} tag, named and placed like any
+    // other page.
+    const onPost = currentPage && currentPage.page_kind === 'post';
+    const blogActive = (currentSlug === 'blog' || onPost) ? ' active' : '';
+    const blogLink = (SITE.has_blog === false ? ''
+            : '<a class="section-head' + blogActive + '" href="' + SITE_PATH_PREFIX + LANG_PREFIX + '/blog">' + escHtml(t('Blog')) + '</a>');
+    const shopActive = currentSlug === '__shop__' ? ' active' : '';
+    const shopLink = SITE.has_shop ? '<a class="section-head' + shopActive + '" href="' + shopHref() + '">' + escHtml(t('Shop')) + '</a>' : '';
+    const bySlug = new Map(topLevel.map(p => [LANG ? (p.translation_of || p.slug) : p.slug, p]));
+    let html = '';
+    if (navStructure && navStructure.length) {
+        // Grouped nav from the "nav_structure" site setting. Ungrouped pages
+        // (Home, any newly created top-level page) come first, in ord order;
+        // legal pages (ord >= 900) stay footer-only unless placed explicitly.
+        const groupedSlugs = new Set(navStructure.flatMap(g => g.items || [])
+            .map(s => (s && typeof s === 'object' && s.slug) ? s.slug : s)
+            .filter(s => typeof s === 'string'));
+        const groupKey = p => (LANG ? (p.translation_of || p.slug) : p.slug);
+        topLevel.filter(p => !groupedSlugs.has(groupKey(p)) && p.ord < 900).forEach(p => html += renderTop(p));
+        navStructure.forEach(g => {
+            let body = '';
+            (g.items || []).forEach(s => {
+                if (s && typeof s === 'object' && s.slug) {
+                    // {title, slug}: an in-site page under a custom nav label.
+                    const pg = bySlug.get(s.slug);
+                    if (pg) body += renderTop(Object.assign({}, pg, { title: s.title }));
+                }
+                else if (s && typeof s === 'object') {
+                    body += '<a class="section-head" href="' + escHtml(s.url) + '">'
+                        + escHtml(t(s.title)) + '</a>';
+                }
+                else if (s === '__blog__') body += blogLink;
+                else if (s === '__shop__') body += shopLink;
+                else if (bySlug.has(s)) body += renderTop(bySlug.get(s));
+            });
+            // An empty group title renders as a headingless block.
+            if (body) html += (g.title && g.title.trim() ? '<h3>' + escHtml(t(g.title)) + '</h3>' : '') + body;
+        });
+        // Links no group placed keep their flat-nav position at the end.
+        if (!groupedSlugs.has('__blog__')) html += blogLink;
+        if (!groupedSlugs.has('__shop__')) html += shopLink;
+    } else {
+        // No nav config: flat top-level list with Blog and Shop at the end.
+        // Legal pages (ord >= 900, the seed convention) stay footer-only
+        // here; a grouped nav can still place them explicitly.
+        topLevel.filter(p => p.ord < 900).forEach(p => html += renderTop(p));
+        html += blogLink + shopLink;
+    }
+    const orphans = navPages.filter(p => p.parent_slug && !slugSet.has(p.parent_slug));
+    if (orphans.length) {
+        const groups = new Map();
+        orphans.forEach(o => {
+            if (!groups.has(o.parent_slug)) groups.set(o.parent_slug, []);
+            groups.get(o.parent_slug).push(o);
+        });
+        for (const [g, items] of groups) {
+            html += '<h3>' + escHtml(g) + '</h3>';
+            items.sort((a, b) => a.ord - b.ord || a.title.localeCompare(b.title));
+            items.forEach(it => html += renderSidebarItem(it, false, false, false));
+        }
+    }
+    sb.innerHTML = brand + html;
+    renderLangSwitch();
+}
+
+function renderSidebarItem(p, isHead, hasChildren, expanded) {
+    const cls = (p.slug === currentSlug ? 'active' : '') + (isHead ? ' section-head' : '');
+    const chev = hasChildren ? '<span class="chev">' + (expanded ? '▼' : '▶') + '</span>' : '';
+    return '<a class="' + cls + '" href="' + pageHref(p.slug) + '">'
+        + chev + escHtml(p.title) + '</a>';
+}
+
+function renderEmptyState(msg) {
+    const layout = document.getElementById('layout');
+    if (layout) { layout.classList.add('no-toc'); layout.classList.add('no-sidebar'); }
+    document.getElementById('content').innerHTML =
+        '<div class="empty-state"><h2>' + escHtml(msg) + '</h2></div>';
+    document.getElementById('editBtn').style.display = 'none';
+}
+
+// Public /blog view: optional intro from the "blog" page row, then a page of
+// full posts, newest first, with the date linking to the permalink. Mirrors
+// the SSR index (render_blog_index) including the ?page= query state.
+// Admins also see hidden (draft) posts, marked as such.
+const BLOG_POSTS_PER_PAGE = 3;
+
+function blogIndexHref(pageNum) {
+    return SITE_PATH_PREFIX + LANG_PREFIX + '/blog' + (pageNum > 1 ? '?page=' + pageNum : '');
+}
+
+async function renderBlogIndexView() {
+    const c = document.getElementById('content');
+    updateAdminChrome();
+    let pageNum = Math.max(1, parseInt(new URLSearchParams(location.search).get('page'), 10) || 1);
+    let html = currentPage
+        ? renderMarkdown(currentPage.body_md || '')
+        : '<h1>Blog</h1>';
+    const posts = langPages().filter(p => p.page_kind === 'post')
+        .sort((a, b) => (b.published_at || '').localeCompare(a.published_at || '')
+            || a.title.localeCompare(b.title));
+    if (!posts.length) {
+        html += '<p>No posts yet.</p>';
+    } else {
+        const totalPages = Math.ceil(posts.length / BLOG_POSTS_PER_PAGE);
+        pageNum = Math.min(pageNum, totalPages);
+        const visible = posts.slice((pageNum - 1) * BLOG_POSTS_PER_PAGE, pageNum * BLOG_POSTS_PER_PAGE);
+        // Full posts inline - bodies are fetched for the visible page only.
+        const opts = authToken() ? { headers: { 'Authorization': 'Bearer ' + authToken() } } : {};
+        const bodies = await Promise.all(visible.map(async p => {
+            try {
+                const r = await fetch(API + '/website/pages/' + encodeURIComponent(p.slug) + siteQ(), opts);
+                return r.ok ? (await r.json()).body_md || '' : '';
+            } catch (e) { return ''; }
+        }));
+        html += '<div class="blog-index">';
+        visible.forEach((p, i) => {
+            const permalink = pageHref(p.slug);
+            // Admins edit a post straight from the index - otherwise the only
+            // way in is the dashboard page list.
+            const edit = isAdmin
+                ? ' &middot; <a href="#" class="edit-post" onclick="event.preventDefault();editPost('
+                  + escHtml(JSON.stringify(p.slug)) + ')">Edit</a>'
+                : '';
+            html += '<article class="blog-index-item">'
+                + '<div class="meta"><a href="' + permalink + '">'
+                + escHtml(formatPostDate(p.published_at)) + '</a>'
+                + bylineSuffix(p.author_name)
+                + (p.hidden ? ' (hidden)' : '')
+                + (p.redirect_to ? ' (retired)' : '') + edit + '</div>'
+                + linkFirstHeading(renderMarkdown(bodies[i]), permalink)
+                + '</article>';
+        });
+        html += '</div>';
+        if (totalPages > 1) {
+            html += '<nav class="blog-pager">'
+                + (pageNum > 1 ? '<a href="' + escHtml(blogIndexHref(pageNum - 1)) + '">← Newer</a>' : '')
+                + '<span>Page ' + pageNum + ' of ' + totalPages + '</span>'
+                + (pageNum < totalPages ? '<a href="' + escHtml(blogIndexHref(pageNum + 1)) + '">Older →</a>' : '')
+                + '</nav>';
+        }
+    }
+    const { html: withIds, headings } = injectHeadingIds(html);
+    c.innerHTML = withIds;
+    renderToc(headings);
+    revealEmailObfs(c);
+    mountContactForms(c);
+    mountNewsletterSignup(c);
+    mountNewsletterArchive(c);
+    startAmbientVideos(c);
+}
+
+async function fetchNewsletterIssues() {
+    try {
+        const r = await fetch(API + '/newsletter/public' + siteQ());
+        if (r.ok) return (await r.json()).issues || [];
+    } catch (e) {}
+    return [];
+}
+
+// The published-issue listing behind every {{newsletter-archive}} marker
+// (kept in sync with website.rs's newsletter_archive_html).
+function renderNewsletterIssuesHtml(issues) {
+    if (!issues.length) return '<p>No newsletters yet.</p>';
+    // The email-only [TOC] marker has no meaning here - the site renders
+    // its own TOC sidebar from the headings.
+    const tocMarkers = new Set(['[toc]', '[[toc]]', '[[_toc_]]', '[_toc_]']);
+    let html = '<div class="blog-index">';
+    issues.forEach(i => {
+        const body = (i.body_md || '').split('\n')
+            .filter(l => !tocMarkers.has(l.trim().toLowerCase())).join('\n');
+        html += '<article class="blog-index-item">'
+            + '<div class="meta">' + escHtml(formatPostDate((i.sent_at || '').slice(0, 10))) + '</div>'
+            + '<h1>' + escHtml(i.subject) + '</h1>'
+            + renderMarkdown(body)
+            + '</article>';
+    });
+    return html + '</div>';
+}
+
+function renderNoPages() {
+    const layout = document.getElementById('layout');
+    if (layout) { layout.classList.add('no-toc'); layout.classList.add('no-sidebar'); }
+    const c = document.getElementById('content');
+    if (isAdmin) {
+        c.innerHTML =
+            '<div class="empty-state">' +
+                '<h2>No pages yet</h2>' +
+                '<p>Create the first page to get started.</p>' +
+                '<p style="margin-top:20px;"><button class="btn primary" onclick="newPage()">+ New page</button></p>' +
+            '</div>';
+    } else {
+        c.innerHTML = '<div class="empty-state"><h2>Coming soon</h2></div>';
+    }
+}
+
+function renderPage() {
+    const c = document.getElementById('content');
+    const layout = document.getElementById('layout');
+    // The blog index has its own public view; edit/preview of the optional
+    // "blog" intro page still uses the normal editor flow below.
+    if (currentSlug === 'blog' && !editMode && !(previewMode && editDraft)) {
+        renderBlogIndexView();
+        return;
+    }
+    if (!currentPage) {
+        renderEmptyState('Select a page.');
+        return;
+    }
+    updateAdminChrome();
+    if (previewMode && editDraft) {
+        renderPreviewView();
+        return;
+    }
+    if (editMode) {
+        if (layout) layout.classList.add('no-toc');
+        renderEditor();
+        return;
+    }
+    const meta = currentPage.page_kind === 'post'
+        ? (currentPage.published_at
+            ? '<div class="meta">' + escHtml(formatPostDate(currentPage.published_at))
+              + bylineSuffix(currentPage.author_name) + '</div>'
+            : '')
+        : (currentPage.updated_at
+            ? '<div class="meta">Updated ' + escHtml(formatDate(currentPage.updated_at)) + '</div>'
+            : '');
+    // Only admins ever receive hidden pages, so this notice is admin-only.
+    const hiddenNotice = currentPage.hidden
+        ? '<div style="display:inline-block;margin-bottom:14px;padding:4px 12px;border-radius:999px;'
+          + 'background:rgba(251,191,36,0.15);color:#b45309;font-size:12px;font-weight:600;">'
+          + 'Hidden - this page is not visible to the public</div>'
+          + '<button class="btn" style="margin:0 0 14px 8px;" onclick="publishPage()">Publish</button>'
+        : '';
+    // Same for a retired page: only an admin ever renders one, everyone else
+    // has already been redirected away.
+    const retiredNotice = currentPage.redirect_to
+        ? '<div style="display:inline-block;margin-bottom:14px;padding:4px 12px;border-radius:999px;'
+          + 'background:rgba(251,191,36,0.15);color:#b45309;font-size:12px;font-weight:600;">'
+          + 'Retired - redirects to ' + escHtml(currentPage.redirect_to) + '</div>'
+        : '';
+    let html = hiddenNotice + retiredNotice + meta + renderMarkdown(currentPage.body_md || '');
+    const { html: withIds, headings } = injectHeadingIds(html);
+    c.innerHTML = withIds;
+    renderToc(headings);
+    revealEmailObfs(c);
+    mountContactForms(c);
+    mountNewsletterSignup(c);
+    mountNewsletterArchive(c);
+    startAmbientVideos(c);
+    // Append a "buy" callout for sensor pages whose slug maps to live SKUs
+    // (translated pages resolve through the page they mirror).
+    const skuSlug = SITE.has_shop && currentSlug ? skuSlugFor(currentSlug) : null;
+    if (skuSlug) {
+        loadShopProducts().then(() => injectBuyCallout(skuSlug));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Table of contents
+// ---------------------------------------------------------------------------
+
+function injectHeadingIds(html) {
+    const used = new Map();
+    const headings = [];
+    function slugify(text) {
+        const base = text.toLowerCase()
+            .replace(/<[^>]+>/g, '')
+            .replace(/&[a-z]+;/g, ' ')
+            .replace(/[^\p{L}\p{N}]+/gu, '-')
+            .replace(/^-+|-+$/g, '')
+            || 'section';
+        const n = used.get(base) || 0;
+        used.set(base, n + 1);
+        return n === 0 ? base : base + '-' + n;
+    }
+    const out = html.replace(/<h([1-4])(?![^>]*\bid=)([^>]*)>([\s\S]*?)<\/h\1>/g,
+        (_m, lvl, attrs, inner) => {
+            const level = parseInt(lvl, 10);
+            // Decode entities so downstream escHtml doesn't double-escape.
+            const text = decodeEntities(inner.replace(/<[^>]+>/g, '')).trim();
+            if (!text) return _m;
+            const id = slugify(text);
+            headings.push({ level, text, id });
+            return '<h' + lvl + attrs + ' id="' + id + '">' + inner + '</h' + lvl + '>';
+        });
+    return { html: out, headings };
+}
+
+let tocActiveObserver = null;
+
+function renderToc(headings) {
+    const rail = document.getElementById('tocRail');
+    const layout = document.getElementById('layout');
+    if (!rail) return;
+    if (tocActiveObserver) { tocActiveObserver.disconnect(); tocActiveObserver = null; }
+
+    let items = headings.slice();
+    const pageTitle = (previewMode && editDraft)
+        ? (editDraft.title || '')
+        : ((currentPage && currentPage.title) || '');
+    if (items.length && items[0].level === 1
+        && items[0].text.toLowerCase() === pageTitle.toLowerCase()) {
+        items = items.slice(1);
+    }
+    // A single heading still gets the rail: the content column would
+    // otherwise shift between pages with one and several headings.
+    if (items.length < 1) {
+        rail.innerHTML = '';
+        if (layout) layout.classList.add('no-toc');
+        return;
+    }
+    if (layout) layout.classList.remove('no-toc');
+
+    // Indent by depth relative to the shallowest heading so pages built on
+    // h1 (blog/newsletter indexes) nest the same as h2-based pages.
+    const minLevel = Math.min(...items.map(h => h.level));
+    const links = items.map(h => {
+        const cls = 'lvl-' + Math.min(4, h.level - minLevel + 2);
+        return '<a class="' + cls + '" href="#' + h.id + '" data-toc-id="' + h.id + '">' + escHtml(h.text) + '</a>';
+    }).join('');
+    rail.innerHTML = '<div class="toc-title">' + escHtml(t('On this page')) + '</div>' + links;
+
+    rail.querySelectorAll('a').forEach(a => {
+        a.addEventListener('click', (e) => {
+            e.preventDefault();
+            const id = a.getAttribute('data-toc-id');
+            const el = document.getElementById(id);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            history.replaceState({}, '', location.pathname + location.search + '#' + encodeURIComponent(id));
+        });
+    });
+
+    const observed = items.map(h => document.getElementById(h.id)).filter(Boolean);
+    const linkById = new Map();
+    rail.querySelectorAll('a').forEach(a => linkById.set(a.getAttribute('data-toc-id'), a));
+    const setActive = (id) => {
+        rail.querySelectorAll('a.active').forEach(a => a.classList.remove('active'));
+        const a = linkById.get(id);
+        if (a) a.classList.add('active');
+    };
+    tocActiveObserver = new IntersectionObserver((entries) => {
+        const visible = entries
+            .filter(e => e.isIntersecting)
+            .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length) setActive(visible[0].target.id);
+    }, { rootMargin: '-72px 0px -60% 0px', threshold: 0 });
+    observed.forEach(el => tocActiveObserver.observe(el));
+    if (observed[0]) setActive(observed[0].id);
+}
+
+// ---------------------------------------------------------------------------
+// Editor
+// ---------------------------------------------------------------------------
+
+let easymde = null;
+
+function renderEditor() {
+    const c = document.getElementById('content');
+    // A pending draft (returning from preview) takes precedence over saved state.
+    const d = editDraft;
+    editDraft = null;
+    const title = d ? d.title : (currentPage.title || '');
+    const parent = d ? d.parent : (currentPage.parent_slug || '');
+    const ord = d ? d.ord : (currentPage.ord || 0);
+    const body = d ? d.body_md : (currentPage.body_md || '');
+    const metaDesc = d ? d.meta_description : (currentPage.meta_description || '');
+    const ogImage = d ? (d.og_image || '') : (currentPage.og_image || '');
+    const redirect = d ? (d.redirect_to || '') : (currentPage.redirect_to || '');
+    const slugVal = d ? d.slug : currentSlug;
+    const isPost = (d ? d.page_kind : currentPage.page_kind) === 'post';
+    const published = d ? (d.published_at || '') : (currentPage.published_at || '');
+    const author = d ? (d.author_username || '') : (currentPage.author_username || '');
+    // Posts have a publish date and a byline author instead of nav placement.
+    const placementFields = isPost
+        ? '<label>Published</label><input id="editPublished" type="date" style="width:150px;">' +
+          '<label>Author</label><select id="editAuthor" style="min-width:160px;">' + buildAuthorOptions(author) + '</select>'
+        : '<label>Parent</label><select id="editParent" style="min-width:200px;">' + buildParentOptions(parent, currentSlug) + '</select>' +
+          '<label>Order</label><input id="editOrd" type="text" inputmode="numeric" style="width:80px;">';
+    c.innerHTML =
+        '<div class="edit-meta-row">' +
+            '<label>Title</label><input id="editTitle" type="text" style="flex:1;min-width:200px;">' +
+            '<label>Slug</label><input id="editSlug" type="text" style="width:160px;">' +
+            '<label>Kind</label><select id="editKind" onchange="switchKind(this.value)">' +
+                '<option value="page"' + (isPost ? '' : ' selected') + '>Page</option>' +
+                '<option value="post"' + (isPost ? ' selected' : '') + '>Post</option>' +
+            '</select>' +
+            placementFields +
+        '</div>' +
+        '<div class="edit-meta-row" style="margin-top:8px;">' +
+            '<label title="Overrides the auto-derived description for SEO / AI crawlers. Leave empty to auto-derive from body.">SEO description</label>' +
+            '<input id="editMetaDesc" type="text" maxlength="300" '
+                + 'style="flex:1;min-width:200px;">' +
+        '</div>' +
+        '<div class="edit-meta-row" style="margin-top:8px;">' +
+            '<label title="Link preview image (og:image): an uploaded asset name, a /path, or a full URL. Empty = first body image, else the site card.">OG image</label>' +
+            '<input id="editOgImage" type="text" style="flex:1;min-width:200px;">' +
+        '</div>' +
+        '<div class="edit-meta-row" style="margin-top:8px;">' +
+            '<label title="Retire this page: it stops rendering and permanently redirects here. A slug, a /path, or a full URL. Empty = live.">Redirects to</label>' +
+            '<input id="editRedirect" type="text" style="flex:1;min-width:200px;">' +
+        '</div>' +
+        '<textarea id="editBody"></textarea>' +
+        '<div class="edit-actions">' +
+            '<button class="btn primary" onclick="savePage()">Save</button>' +
+            '<button class="btn" onclick="previewPage()" title="See the page as it will appear on the site, without saving">Preview</button>' +
+            '<button class="btn" onclick="cancelEdit()">Cancel</button>' +
+            '<button class="btn" onclick="openHistory()" title="Page edit history">History</button>' +
+            '<button class="btn" onclick="openAssets()" title="Image & asset library">Assets</button>' +
+            '<div style="flex:1"></div>' +
+            '<button class="btn danger" onclick="deletePage()">Delete page</button>' +
+        '</div>';
+    document.getElementById('editTitle').value = title;
+    document.getElementById('editSlug').value = slugVal;
+    if (isPost) {
+        document.getElementById('editPublished').value = published;
+        // The user list arrives after the first paint - refill the select once
+        // it does, keeping whatever the post already had selected.
+        loadAuthors().then(() => {
+            const sel = document.getElementById('editAuthor');
+            if (sel) sel.innerHTML = buildAuthorOptions(sel.value || author);
+        });
+    } else {
+        document.getElementById('editOrd').value = ord;
+    }
+    document.getElementById('editMetaDesc').value = metaDesc;
+    document.getElementById('editOgImage').value = ogImage;
+    document.getElementById('editRedirect').value = redirect;
+    initEasyMDE(body);
+}
+
+// Re-render the editor for the other kind, carrying the current edits along.
+function switchKind(kind) {
+    editDraft = Object.assign(editorValues(), { page_kind: kind });
+    if (easymde) { try { easymde.toTextArea(); } catch (e) {} easymde = null; }
+    renderEditor();
+}
+
+// Authors are loaded lazily on first edit of a post - the list is admin-only,
+// so a visitor never triggers this fetch.
+let authorUsers = null;
+
+async function loadAuthors() {
+    if (authorUsers || !authToken()) return;
+    try {
+        const r = await fetch(API + '/auth/users', {
+            headers: { 'Authorization': 'Bearer ' + authToken() },
+        });
+        authorUsers = r.ok ? await r.json() : [];
+    } catch (e) {
+        authorUsers = [];
+    }
+}
+
+function buildAuthorOptions(selected) {
+    const opts = ['<option value="">(no byline)</option>'];
+    (authorUsers || []).forEach(u => {
+        const name = ((u.first_name || '') + ' ' + (u.last_name || '')).trim();
+        const sel = u.username === selected ? ' selected' : '';
+        opts.push('<option value="' + escHtml(u.username) + '"' + sel + '>'
+            + escHtml(name || u.username + ' (no name set)') + '</option>');
+    });
+    // The list may not have arrived yet, or the author's account is gone -
+    // either way, keep the current value instead of silently dropping it.
+    if (selected && !(authorUsers || []).some(u => u.username === selected)) {
+        opts.push('<option value="' + escHtml(selected) + '" selected>' + escHtml(selected) + '</option>');
+    }
+    return opts.join('');
+}
+
+function buildParentOptions(selected, excludeSlug) {
+    const opts = ['<option value="">(none - top level)</option>'];
+    const sorted = [...langPages()].sort((a, b) => a.title.localeCompare(b.title));
+    const known = new Set();
+    sorted.forEach(p => {
+        if (p.slug === excludeSlug || p.page_kind === 'post') return;
+        known.add(p.slug);
+        const sel = p.slug === selected ? ' selected' : '';
+        opts.push('<option value="' + escHtml(p.slug) + '"' + sel + '>'
+            + escHtml(p.title) + ' (' + escHtml(p.slug) + ')</option>');
+    });
+    if (selected && !known.has(selected)) {
+        opts.push('<option value="' + escHtml(selected) + '" selected>'
+            + escHtml(selected) + ' (orphan)</option>');
+    }
+    return opts.join('');
+}
+
+function initEasyMDE(initialBody) {
+    if (typeof EasyMDE === 'undefined') {
+        toast('Editor failed to load - refresh the page', 'error');
+        return;
+    }
+    if (easymde) { try { easymde.toTextArea(); } catch (e) {} easymde = null; }
+
+    easymde = new EasyMDE({
+        element: document.getElementById('editBody'),
+        initialValue: initialBody,
+        autofocus: true,
+        spellChecker: false,
+        autoDownloadFontAwesome: false,
+        status: ['lines', 'words'],
+        uploadImage: true,
+        imageUploadFunction: easymdeImageUpload,
+        imageMaxSize: 100 * 1024 * 1024,
+        imageAccept: 'image/*, video/mp4, video/webm',
+        imageTexts: {
+            sbInit: 'Attach images by drag-and-drop, paste, or the upload button.',
+            sbOnDrop: 'Uploading #images_names#…',
+            sbProgress: 'Uploading #file_name#: #progress#%',
+            sbOnUploaded: 'Uploaded #image_name#',
+            sizeUnits: ' B, KB, MB',
+        },
+        previewRender: (txt) => renderMarkdown(txt),
+        renderingConfig: { singleLineBreaks: false, codeSyntaxHighlighting: false },
+        toolbar: [
+            { name: 'bold', action: EasyMDE.toggleBold, text: 'B', title: 'Bold' },
+            { name: 'italic', action: EasyMDE.toggleItalic, text: 'I', title: 'Italic' },
+            { name: 'heading', action: EasyMDE.toggleHeadingSmaller, text: 'H', title: 'Heading' },
+            '|',
+            { name: 'quote', action: EasyMDE.toggleBlockquote, text: '❝', title: 'Quote' },
+            { name: 'code', action: EasyMDE.toggleCodeBlock, text: '</>', title: 'Code block' },
+            { name: 'unordered-list', action: EasyMDE.toggleUnorderedList, text: '•', title: 'Bulleted list' },
+            { name: 'ordered-list', action: EasyMDE.toggleOrderedList, text: '1.', title: 'Numbered list' },
+            { name: 'table', action: EasyMDE.drawTable, text: '⊞', title: 'Insert table' },
+            '|',
+            { name: 'link', action: EasyMDE.drawLink, text: '🔗', title: 'Insert link' },
+            { name: 'upload-image', action: EasyMDE.drawUploadedImage, text: '🖼', title: 'Upload image or video' },
+            { name: 'horizontal-rule', action: EasyMDE.drawHorizontalRule, text: '-', title: 'Horizontal rule' },
+            '|',
+            { name: 'preview', action: EasyMDE.togglePreview, text: '👁', title: 'Toggle preview', noDisable: true },
+        ],
+    });
+}
+
+async function easymdeImageUpload(file, onSuccess, onError) {
+    if (!isPotentialAdmin()) { onError('Login required'); return; }
+    const name = generateAssetName(file);
+    try {
+        const fd = new FormData();
+        fd.append('file', file, name);
+        const resp = await fetch(API + '/website/assets' + siteQ(), {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + authToken() },
+            body: fd,
+        });
+        if (resp.status === 401) {
+            onError('Session expired');
+            handleSessionExpired(easymde ? easymde.value() : '');
+            return;
+        }
+        if (!resp.ok) {
+            const d = await resp.json().catch(() => ({}));
+            onError(d.error || ('HTTP ' + resp.status));
+            return;
+        }
+        const data = await resp.json();
+        onSuccess(data.name);
+        toast('Uploaded ' + data.name, 'success');
+    } catch (e) {
+        onError(e.message);
+    }
+}
+
+function inferExtension(file) {
+    const m = (file.type || '').match(/^(?:image|video)\/(\w+)/);
+    if (!m) return 'png';
+    const ext = m[1].toLowerCase();
+    return ext === 'jpeg' ? 'jpg' : ext;
+}
+
+function generateAssetName(file) {
+    const orig = (file.name || '').replace(/[^A-Za-z0-9._-]/g, '_');
+    // Browsers use a generic "image.png" filename for clipboard-pasted
+    // images, which collides across pages - always timestamp those.
+    const isPasteDefault = /^image\.(png|jpe?g|gif|webp|svg)$/i.test(orig);
+    if (orig && !isPasteDefault && /\.[A-Za-z0-9]+$/.test(orig)) return orig;
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '');
+    return 'image-' + ts + '.' + inferExtension(file);
+}
+
+function formatDate(s) {
+    if (!s) return '';
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleString();
+}
+
+function enterEditMode() {
+    if (!currentPage) return;
+    if (!isPotentialAdmin()) { toast('Login required', 'error'); return; }
+    previewMode = false;
+    editMode = true;
+    renderPage();
+}
+
+// Open a post's editor from somewhere the post isn't loaded yet (the blog
+// index). The page load is async, so the intent is parked here and picked up
+// by loadPage once the post has arrived.
+function editPost(slug) {
+    if (!isPotentialAdmin()) { toast('Login required', 'error'); return; }
+    pendingEdit = slug;
+    navigateTo(slug);
+}
+
+function cancelEdit() {
+    if (easymde) { try { easymde.toTextArea(); } catch (e) {} easymde = null; }
+    editMode = false;
+    previewMode = false;
+    editDraft = null;
+    renderPage();
+}
+
+// Current editor values - from the pending draft while previewing, else the DOM.
+function editorValues() {
+    if (previewMode && editDraft) return editDraft;
+    const metaDescEl = document.getElementById('editMetaDesc');
+    const ogImageEl = document.getElementById('editOgImage');
+    // Posts render a date input instead of parent/order controls.
+    const parentEl = document.getElementById('editParent');
+    const ordEl = document.getElementById('editOrd');
+    const publishedEl = document.getElementById('editPublished');
+    const authorEl = document.getElementById('editAuthor');
+    const redirectEl = document.getElementById('editRedirect');
+    const kindEl = document.getElementById('editKind');
+    return {
+        title: document.getElementById('editTitle').value.trim(),
+        parent: parentEl ? parentEl.value.trim() : '',
+        ord: ordEl ? (parseInt(ordEl.value, 10) || 0) : ((currentPage && currentPage.ord) || 0),
+        body_md: easymde ? easymde.value() : document.getElementById('editBody').value,
+        meta_description: metaDescEl ? metaDescEl.value.trim() : '',
+        og_image: ogImageEl ? ogImageEl.value.trim() : ((currentPage && currentPage.og_image) || ''),
+        slug: document.getElementById('editSlug').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
+        page_kind: kindEl ? kindEl.value : ((currentPage && currentPage.page_kind) || 'page'),
+        published_at: publishedEl ? publishedEl.value : ((currentPage && currentPage.published_at) || ''),
+        author_username: authorEl ? authorEl.value : ((currentPage && currentPage.author_username) || ''),
+        redirect_to: redirectEl ? redirectEl.value.trim() : ((currentPage && currentPage.redirect_to) || ''),
+    };
+}
+
+function previewPage() {
+    editDraft = editorValues();
+    if (easymde) { try { easymde.toTextArea(); } catch (e) {} easymde = null; }
+    editMode = false;
+    previewMode = true;
+    renderPage();
+}
+
+function backToEditor() {
+    previewMode = false;
+    editMode = true;
+    renderPage();
+}
+
+// Render the draft exactly like the public page view, with a banner on top.
+function renderPreviewView() {
+    const c = document.getElementById('content');
+    const banner =
+        '<div class="preview-banner">' +
+            '<span class="preview-pill">Preview</span>' +
+            '<span>Unsaved changes - not yet published</span>' +
+            '<div style="flex:1"></div>' +
+            '<button class="btn" onclick="backToEditor()">Back to editor</button>' +
+            '<button class="btn primary" onclick="savePage()">Save</button>' +
+        '</div>';
+    const html = banner + renderMarkdown(editDraft.body_md || '');
+    const { html: withIds, headings } = injectHeadingIds(html);
+    c.innerHTML = withIds;
+    renderToc(headings);
+    revealEmailObfs(c);
+    mountContactForms(c);
+    mountNewsletterSignup(c);
+    mountNewsletterArchive(c);
+    startAmbientVideos(c);
+    const skuSlug = SITE.has_shop && currentSlug ? skuSlugFor(currentSlug) : null;
+    if (skuSlug) {
+        loadShopProducts().then(() => injectBuyCallout(skuSlug));
+    }
+}
+
+async function savePage() {
+    const v = editorValues();
+    const title = v.title;
+    const parent = v.parent;
+    const ord = v.ord;
+    const body_md = v.body_md;
+    const meta_description = v.meta_description;
+    const newSlug = v.slug;
+    if (!title) { toast('Title is required', 'error'); return; }
+    if (!newSlug) { toast('Slug is required', 'error'); return; }
+
+    let targetSlug = currentSlug;
+    if (newSlug !== currentSlug) {
+        const renameResp = await fetch(API + '/website/pages/' + encodeURIComponent(currentSlug) + '/rename' + siteQ(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken() },
+            body: JSON.stringify({ new_slug: newSlug }),
+        });
+        if (renameResp.status === 401) { handleSessionExpired(body_md); return; }
+        if (!renameResp.ok) {
+            const d = await renameResp.json().catch(() => ({}));
+            toast('Rename failed: ' + (d.error || renameResp.status), 'error');
+            return;
+        }
+        targetSlug = newSlug;
+    }
+
+    const resp = await fetch(API + '/website/pages/' + encodeURIComponent(targetSlug) + siteQ(), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken() },
+        body: JSON.stringify({
+            title, body_md, parent_slug: parent || null, ord, meta_description,
+            og_image: v.og_image,
+            page_kind: v.page_kind, published_at: v.published_at,
+            author_username: v.author_username,
+            redirect_to: v.redirect_to,
+        }),
+    });
+    if (resp.status === 401) { handleSessionExpired(body_md); return; }
+    if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        toast('Save failed: ' + (d.error || resp.status), 'error');
+        return;
+    }
+    toast('Saved', 'success');
+    editMode = false;
+    previewMode = false;
+    editDraft = null;
+    await loadIndex();
+    if (targetSlug !== currentSlug) {
+        navigateTo(targetSlug);
+    } else {
+        await loadPage(currentSlug);
+    }
+}
+
+function handleSessionExpired(currentBody) {
+    localStorage.removeItem('auth_token');
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:200;';
+    overlay.innerHTML =
+        '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:480px;color:var(--text1);">' +
+            '<h2 style="margin:0 0 8px;font-size:16px;">Session expired</h2>' +
+            '<p style="margin:0 0 14px;color:var(--text2);font-size:13px;">' +
+                'Your login token is no longer valid. Copy your edits to the clipboard before logging in again so you don\'t lose them.' +
+            '</p>' +
+            '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+                '<button class="btn" id="copyEdits">Copy edits to clipboard</button>' +
+                '<button class="btn primary" id="reloginBtn">Log in again</button>' +
+            '</div>' +
+        '</div>';
+    document.body.appendChild(overlay);
+    overlay.querySelector('#copyEdits').onclick = async () => {
+        try {
+            await navigator.clipboard.writeText(currentBody || '');
+            toast('Copied to clipboard', 'success');
+        } catch (e) {
+            toast('Copy failed - select-all and copy manually', 'error');
+        }
+    };
+    overlay.querySelector('#reloginBtn').onclick = () => {
+        window.open('/', '_blank');
+        overlay.remove();
+        toast('Log in, then come back to this tab and click Save again.', 'success');
+    };
+}
+
+async function deletePage() {
+    if (!confirm('Delete page "' + currentPage.title + '"? This cannot be undone.')) return;
+    const resp = await fetch(API + '/website/pages/' + encodeURIComponent(currentSlug) + siteQ(), {
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + authToken() },
+    });
+    if (!resp.ok) { toast('Delete failed', 'error'); return; }
+    toast('Deleted', 'success');
+    currentSlug = null; currentPage = null;
+    await loadIndex();
+    navigateTo(null);
+}
+
+async function newPage() {
+    if (!isPotentialAdmin()) { toast('Login required', 'error'); return; }
+    const slug = prompt('New page slug (lowercase, no spaces):');
+    if (!slug) return;
+    const cleanSlug = slug.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (!cleanSlug) { toast('Invalid slug', 'error'); return; }
+    const title = prompt('Page title:', cleanSlug) || cleanSlug;
+    const resp = await fetch(API + '/website/pages/' + encodeURIComponent(cleanSlug) + siteQ(), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken() },
+        body: JSON.stringify({ title, body_md: '# ' + title + '\n\n', parent_slug: null, ord: 999 }),
+    });
+    if (!resp.ok) { toast('Create failed', 'error'); return; }
+    await loadIndex();
+    navigateTo(cleanSlug);
+}
+
+// Create a blog post as a hidden draft: kind 'post', no nav placement, no
+// publish date until it is published. Reachable at /blog/{slug} (admins only
+// while hidden) and listed on /blog.
+async function newPost() {
+    if (!isPotentialAdmin()) { toast('Login required', 'error'); return; }
+    const slug = prompt('New post slug (lowercase, no spaces):');
+    if (!slug) return;
+    const cleanSlug = slug.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+    if (!cleanSlug) { toast('Invalid slug', 'error'); return; }
+    const title = prompt('Post title:', cleanSlug) || cleanSlug;
+    const resp = await fetch(API + '/website/pages/' + encodeURIComponent(cleanSlug) + siteQ(), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken() },
+        body: JSON.stringify({ title, body_md: '# ' + title + '\n\n', parent_slug: null, ord: 999, page_kind: 'post', hidden: true }),
+    });
+    if (!resp.ok) { toast('Create failed', 'error'); return; }
+    toast('Draft created', 'success');
+    await loadIndex();
+    navigateTo(cleanSlug);
+}
+
+// Make a hidden page public. A draft post gets today as its publish date.
+async function publishPage() {
+    if (!currentPage || !isPotentialAdmin()) return;
+    const resp = await fetch(API + '/website/pages/' + encodeURIComponent(currentSlug) + '/visibility' + siteQ(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken() },
+        body: JSON.stringify({ hidden: false }),
+    });
+    if (!resp.ok) { toast('Publish failed', 'error'); return; }
+    toast('Published', 'success');
+    await loadIndex();
+    await loadPage(currentSlug);
+}
+
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+// Path-based routing with legacy hash backcompat. On the canonical public
+// domain (xikaku.com) URLs are /{slug}; on susi.lp-research.com they're
+// /site/{slug}. If a visitor lands on /site#/foo we transparently upgrade to
+// the canonical path form via replaceState so crawlers and shared links
+// resolve cleanly.
+function slugFromLocation() {
+    let path = location.pathname || '';
+    // A translated render sees the same URL space one /{lang}/ segment
+    // deeper; strip the prefix (after the optional /site) before matching.
+    if (LANG) {
+        path = path.replace(new RegExp('^(\\/site)?\\/' + LANG + '(?=\\/|$)'), '$1');
+        if (path === '' || path === '/site') return '';
+    }
+    // Blog posts: /blog/{slug} (clean) or /site/blog/{slug} (legacy host).
+    const post = path.match(/^(?:\/site)?\/blog\/([^\/\?#]+)$/);
+    if (post) return decodeURIComponent(post[1]);
+    // Always recognize legacy /site/{slug} so old links keep working.
+    const legacy = path.match(/^\/site\/([^\/\?#]+)/);
+    if (legacy) return decodeURIComponent(legacy[1]);
+    // Clean URL form on the canonical host: /{slug} where slug isn't reserved.
+    if (SITE_PATH_PREFIX === '') {
+        const m = path.match(/^\/([^\/\?#]+)$/);
+        if (m && !RESERVED_TOP_PATHS.has(m[1])) return decodeURIComponent(m[1]);
+    }
+    // Only the legacy #/foo form routes to a page; a plain #foo is an
+    // in-page anchor (see anchorFromLocation).
+    const legacyHash = location.hash.match(/^#\/(.+)/);
+    if (legacyHash) return decodeURIComponent(legacyHash[1].split('/').filter(Boolean)[0] || '');
+    return '';
+}
+
+function anchorFromLocation() {
+    if (!location.hash || location.hash.startsWith('#/')) return '';
+    return decodeURIComponent(location.hash.slice(1));
+}
+
+function scrollToAnchor(id) {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ block: 'start' });
+}
+
+// The bg theme scrolls inside #pageScroll instead of the window.
+function resetScroll() {
+    window.scrollTo(0, 0);
+    const ps = document.getElementById('pageScroll');
+    if (ps) ps.scrollTop = 0;
+}
+
+function navigateTo(slug) {
+    const target = (slug ? pageHref(slug) : siteRootHref()) + adClickQuery();
+    if (location.pathname + location.search !== target) {
+        history.pushState({}, '', target);
+    }
+    if (location.hash) {
+        history.replaceState({}, '', target);
+    }
+    route().then(resetScroll);
+}
+
+async function route() {
+    // Shop routes are handled by a separate render path that reuses the
+    // same chrome (header, sidebar, drawer) but renders product views.
+    const shopRoute = shopRouteFromLocation();
+    if (shopRoute) {
+        await Promise.all([loadIndex(), loadShopProducts()]);
+        if (shopRoute.kind === 'grid')    renderShopGrid();
+        if (shopRoute.kind === 'detail')  renderShopDetail(shopRoute.sku);
+        if (shopRoute.kind === 'success') renderShopSuccess();
+        if (shopRoute.kind === 'cancel')  renderShopCancel();
+        return;
+    }
+
+    const slug = slugFromLocation();
+    const anchor = anchorFromLocation();
+    // Upgrade legacy hash URLs (#/foo) to the canonical path form. Crawlers
+    // don't follow fragments but users still get a clean URL in the address bar.
+    // Plain #foo hashes are in-page anchors and stay in the URL.
+    if (location.hash && !anchor) {
+        const clean = slug ? pageHref(slug) : siteRootHref();
+        history.replaceState({}, '', clean + location.search);
+    }
+    await loadIndex();
+    if (pages.length === 0) { renderNoPages(); return; }
+    if (slug) {
+        await loadPage(slug);
+    } else {
+        // Default: first top-level page by ord (posts never become home).
+        // A translated render homes on the translation of that page.
+        const byOrd = rows => [...rows].sort((a, b) => a.ord - b.ord || a.title.localeCompare(b.title));
+        const en = byOrd(pages.filter(p => !(p.lang || '')));
+        let first = en.find(p => !p.parent_slug && p.page_kind !== 'post')
+            || en.find(p => p.page_kind !== 'post') || en[0];
+        if (LANG) {
+            const mine = byOrd(langPages());
+            first = (first && mine.find(p => p.translation_of === first.slug))
+                || mine.find(p => !p.parent_slug && p.page_kind !== 'post')
+                || mine[0] || first;
+        }
+        history.replaceState({}, '', pageHref(first.slug) + location.search + (anchor ? '#' + encodeURIComponent(anchor) : ''));
+        await loadPage(first.slug);
+    }
+    if (anchor) scrollToAnchor(anchor);
+}
+
+window.addEventListener('popstate', route);
+window.addEventListener('hashchange', () => {
+    // Same-page anchor jump: just scroll, don't re-render.
+    const anchor = anchorFromLocation();
+    if (anchor && slugFromLocation() === currentSlug) { scrollToAnchor(anchor); return; }
+    route();
+});
+
+// Intercept intra-site link clicks for SPA navigation.
+// Lets Ctrl/Cmd/middle-click still open in a new tab (server renders them fine).
+document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a[href^="/"]');
+    if (!a) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+    const href = a.getAttribute('href');
+    if (!href) return;
+    // On a translated render, only same-language links stay in the SPA; a
+    // link out of the language (the switcher, an English cross-link) does a
+    // full load so the server re-renders in the right language.
+    if (LANG) {
+        const lp = new RegExp('^(?:\\/site)?\\/' + LANG + '(?=\\/|$)');
+        if (!lp.test(href)) return;
+        const stripped = href.replace(lp, '') || '/';
+        if (/^\/shop(\/|$|\?)/.test(stripped)) {
+            e.preventDefault();
+            if (location.pathname + location.search !== href) {
+                history.pushState({}, '', href);
+            }
+            route().then(resetScroll);
+            return;
+        }
+        const post = stripped.match(/^\/blog\/([^\/\?#]+)$/);
+        if (post) {
+            if (post[1] === 'rss.xml') return;
+            e.preventDefault();
+            navigateTo(decodeURIComponent(post[1]));
+            return;
+        }
+        if (stripped === '/' || stripped === '/blog' || /^\/blog\?/.test(stripped)) {
+            e.preventDefault();
+            if (location.pathname + location.search !== href) {
+                history.pushState({}, '', href);
+            }
+            route().then(resetScroll);
+            return;
+        }
+        const m = stripped.match(/^\/([^\/\?#]+)$/);
+        if (m && !RESERVED_TOP_PATHS.has(m[1])) {
+            e.preventDefault();
+            navigateTo(decodeURIComponent(m[1]));
+        }
+        return;
+    }
+    if (/^(?:\/site)?\/shop(\/|$|\?)/.test(href)) {
+        // Same-origin /shop, /shop/, /shop/{sku}, /shop/success, /shop/cancel
+        // (with the /site prefix in preview). Fragment-only /shop#... links
+        // stay in-page anchors.
+        e.preventDefault();
+        if (location.pathname + location.search !== href) {
+            history.pushState({}, '', href);
+        }
+        route().then(resetScroll);
+        return;
+    }
+    // Blog post links: /blog/{slug} or /site/blog/{slug}. The RSS feed is a
+    // real document, not a page - let the browser fetch it.
+    const post = href.match(/^(?:\/site)?\/blog\/([^\/\?#]+)$/);
+    if (post) {
+        if (post[1] === 'rss.xml') return;
+        e.preventDefault();
+        navigateTo(decodeURIComponent(post[1]));
+        return;
+    }
+    // Legacy /site/{slug} form (susi.lp-research.com or old links on xikaku).
+    // Single segment only - deeper /site/a/b paths are redirect-map territory
+    // and must reach the server. A query (blog filter/page) rides along.
+    const legacy = href.match(/^\/site\/([^\/\?#]+)(\?[^#]*)?$/);
+    if (legacy) {
+        e.preventDefault();
+        if (legacy[2]) {
+            history.pushState({}, '', href);
+            route().then(resetScroll);
+        } else {
+            navigateTo(decodeURIComponent(legacy[1]));
+        }
+        return;
+    }
+    // Clean form (xikaku.com): /{slug} where slug isn't a reserved top-level path.
+    if (SITE_PATH_PREFIX === '') {
+        const clean = href.match(/^\/([^\/\?#]+)(\?[^#]*)?$/);
+        if (clean && !RESERVED_TOP_PATHS.has(clean[1])) {
+            e.preventDefault();
+            if (clean[2]) {
+                history.pushState({}, '', href);
+                route().then(resetScroll);
+            } else {
+                navigateTo(decodeURIComponent(clean[1]));
+            }
+        }
+    }
+});
+
+// ---------------------------------------------------------------------------
+// History modal
+// ---------------------------------------------------------------------------
+
+let historyState = { slug: null, revisions: [], selectedId: null };
+
+async function openHistory() {
+    if (!currentSlug) { toast('Save the page first to see history', 'error'); return; }
+    historyState = { slug: currentSlug, revisions: [], selectedId: null };
+    document.getElementById('historyModal').classList.add('visible');
+    renderHistory('<div class="empty-state">Loading revisions…</div>');
+    try {
+        const resp = await fetch(API + '/website/pages/' + encodeURIComponent(currentSlug) + '/revisions' + siteQ(), {
+            headers: { 'Authorization': 'Bearer ' + authToken() },
+        });
+        if (!resp.ok) { renderHistory('<div class="empty-state">Failed to load revisions.</div>'); return; }
+        const data = await resp.json();
+        historyState.revisions = data.revisions || [];
+        renderHistoryList();
+    } catch (e) {
+        renderHistory('<div class="empty-state">' + escHtml(e.message) + '</div>');
+    }
+}
+
+function closeHistory() { document.getElementById('historyModal').classList.remove('visible'); }
+
+function renderHistory(html) { document.getElementById('historyBody').innerHTML = html; }
+
+function renderHistoryList() {
+    const revs = historyState.revisions;
+    if (!revs.length) {
+        renderHistory('<div class="empty-state">No revisions yet. This page has been saved only once - history is captured from the next save onward.</div>');
+        return;
+    }
+    const items = revs.map(r => {
+        const when = formatDate(r.captured_at);
+        const author = r.author || '-';
+        const size = r.body_length + ' chars';
+        const sel = r.id === historyState.selectedId ? ' selected' : '';
+        return '<div class="rev-item' + sel + '" onclick="selectRevision(' + r.id + ')">'
+            + '<div class="rev-when">' + escHtml(when) + '</div>'
+            + '<div class="rev-author">' + escHtml(author) + '</div>'
+            + '<div class="rev-title">' + escHtml(r.title) + '</div>'
+            + '<div class="rev-size">' + size + '</div>'
+            + '</div>';
+    }).join('');
+    const preview = '<div id="revPreview"></div>';
+    renderHistory('<div class="rev-list">' + items + '</div>' + preview);
+    if (historyState.selectedId) showRevisionPreview(historyState.selectedId);
+}
+
+async function selectRevision(id) {
+    historyState.selectedId = id;
+    // Update selection class without re-rendering the whole list.
+    document.querySelectorAll('.rev-item').forEach(el => el.classList.remove('selected'));
+    const target = [...document.querySelectorAll('.rev-item')].find(
+        el => el.getAttribute('onclick') === 'selectRevision(' + id + ')'
+    );
+    if (target) target.classList.add('selected');
+    await showRevisionPreview(id);
+}
+
+async function showRevisionPreview(id) {
+    const box = document.getElementById('revPreview');
+    if (!box) return;
+    box.innerHTML = '<div class="empty-state">Loading…</div>';
+    try {
+        const resp = await fetch(
+            API + '/website/pages/' + encodeURIComponent(historyState.slug)
+                + '/revisions/' + id + siteQ(),
+            { headers: { 'Authorization': 'Bearer ' + authToken() } },
+        );
+        if (!resp.ok) { box.innerHTML = '<div class="empty-state">Failed to load.</div>'; return; }
+        const data = await resp.json();
+        const body = data.body_md || '';
+        const snippet = body.length > 4000 ? body.slice(0, 4000) + '\n…[truncated]' : body;
+        box.innerHTML = '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">'
+            + '<strong>' + escHtml(data.title || '') + '</strong>'
+            + '<span style="color:var(--text2);font-size:12px;">' + escHtml(formatDate(data.captured_at || '')) + '</span>'
+            + '<div style="flex:1"></div>'
+            + '<button class="btn primary" onclick="restoreRevision(' + id + ')">Restore this revision</button>'
+            + '</div>'
+            + '<div class="rev-preview">' + escHtml(snippet) + '</div>';
+    } catch (e) {
+        box.innerHTML = '<div class="empty-state">' + escHtml(e.message) + '</div>';
+    }
+}
+
+async function restoreRevision(id) {
+    if (!confirm('Restore this revision? Your current editor content will be overwritten, and the current saved state will be captured as a new revision.')) return;
+    try {
+        const resp = await fetch(
+            API + '/website/pages/' + encodeURIComponent(historyState.slug)
+                + '/revisions/' + id + '/restore' + siteQ(),
+            { method: 'POST', headers: { 'Authorization': 'Bearer ' + authToken() } },
+        );
+        if (!resp.ok) {
+            const d = await resp.json().catch(() => ({}));
+            toast(d.error || ('HTTP ' + resp.status), 'error');
+            return;
+        }
+        toast('Revision restored - reloading page', 'success');
+        closeHistory();
+        // Reload the page content so the editor picks up the restored body.
+        cancelEdit();
+        await route();
+    } catch (e) {
+        toast(e.message, 'error');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Assets modal
+// ---------------------------------------------------------------------------
+
+let assetsState = { all: [], filter: '', orphansOnly: false };
+
+async function openAssets() {
+    document.getElementById('assetsModal').classList.add('visible');
+    document.getElementById('assetsBody').innerHTML = '<div class="empty-state">Loading assets…</div>';
+    try {
+        const resp = await fetch(API + '/website/admin/assets' + siteQ(), {
+            headers: { 'Authorization': 'Bearer ' + authToken() },
+        });
+        if (!resp.ok) {
+            document.getElementById('assetsBody').innerHTML = '<div class="empty-state">Failed to load assets.</div>';
+            return;
+        }
+        const data = await resp.json();
+        assetsState.all = data.assets || [];
+        renderAssets();
+    } catch (e) {
+        document.getElementById('assetsBody').innerHTML = '<div class="empty-state">' + escHtml(e.message) + '</div>';
+    }
+}
+
+function closeAssets() { document.getElementById('assetsModal').classList.remove('visible'); }
+
+function renderAssets() {
+    const q = assetsState.filter.toLowerCase();
+    const orphansOnly = assetsState.orphansOnly;
+    const filtered = assetsState.all.filter(a => {
+        if (orphansOnly && a.usage_count > 0) return false;
+        if (q && !a.name.toLowerCase().includes(q)) return false;
+        return true;
+    });
+    const assetCount = assetsState.all.length;
+    const orphanCount = assetsState.all.filter(a => a.usage_count === 0).length;
+    const bar =
+        '<div class="asset-toolbar">'
+            + '<input type="search" id="assetFilter" placeholder="Filter by name…" value="' + escHtml(assetsState.filter) + '">'
+            + '<label><input type="checkbox" id="assetOrphans" ' + (orphansOnly ? 'checked' : '') + '> Orphans only (' + orphanCount + ')</label>'
+            + '<span style="color:var(--text2);font-size:12px;">'
+                + filtered.length + ' of ' + assetCount + ' shown'
+            + '</span>'
+        + '</div>';
+    if (!filtered.length) {
+        document.getElementById('assetsBody').innerHTML = bar + '<div class="empty-state">No assets match the current filter.</div>';
+        wireAssetFilters();
+        return;
+    }
+    const tiles = filtered.map(a => {
+        const url = API + '/website/assets/' + encodeURIComponent(a.name) + siteQ();
+        const kb = (a.size / 1024).toFixed(0) + ' KB';
+        const orphan = a.usage_count === 0;
+        const pill = orphan
+            ? '<span class="asset-usage-pill orphan">orphan</span>'
+            : '<span class="asset-usage-pill" title="' + escHtml((a.pages || []).join(', ')) + '">used on ' + a.usage_count + '</span>';
+        return '<div class="asset-tile' + (orphan ? ' orphan' : '') + '">'
+            + '<div class="asset-thumb"><img src="' + url + '" alt="' + escHtml(a.name) + '" loading="lazy"></div>'
+            + '<div class="asset-meta">'
+                + '<div class="asset-name">' + escHtml(a.name) + '</div>'
+                + '<div class="asset-info">' + pill + '<span>' + kb + '</span></div>'
+            + '</div>'
+            + '<div class="asset-actions">'
+                + '<button onclick="copyAssetMd(\'' + encodeAttr(a.name) + '\')" title="Copy markdown">Copy MD</button>'
+                + '<button onclick="renameAsset(\'' + encodeAttr(a.name) + '\')" title="Rename (rewrites page refs)">Rename</button>'
+                + '<button class="danger" onclick="deleteAsset(\'' + encodeAttr(a.name) + '\',' + a.usage_count + ')" title="Delete file">Delete</button>'
+            + '</div>'
+        + '</div>';
+    }).join('');
+    document.getElementById('assetsBody').innerHTML = bar + '<div class="asset-grid">' + tiles + '</div>';
+    wireAssetFilters();
+}
+
+function wireAssetFilters() {
+    const f = document.getElementById('assetFilter');
+    if (f) f.oninput = (e) => { assetsState.filter = e.target.value; renderAssets(); f.focus(); f.setSelectionRange(f.value.length, f.value.length); };
+    const o = document.getElementById('assetOrphans');
+    if (o) o.onchange = (e) => { assetsState.orphansOnly = e.target.checked; renderAssets(); };
+}
+
+function encodeAttr(s) { return (s || '').replace(/'/g, "\\'"); }
+
+function copyAssetMd(name) {
+    const md = '![](' + name + '){width=100%}';
+    navigator.clipboard.writeText(md).then(
+        () => toast('Copied: ' + md, 'success'),
+        (e) => toast('Clipboard denied: ' + e.message, 'error'),
+    );
+}
+
+async function renameAsset(oldName) {
+    const next = prompt('New filename (keep the extension):', oldName);
+    if (!next || next === oldName) return;
+    try {
+        const resp = await fetch(API + '/website/assets/' + encodeURIComponent(oldName) + '/rename' + siteQ(), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + authToken(),
+            },
+            body: JSON.stringify({ new_name: next }),
+        });
+        const d = await resp.json().catch(() => ({}));
+        if (!resp.ok) { toast(d.error || ('HTTP ' + resp.status), 'error'); return; }
+        toast('Renamed - rewrote ' + (d.pages_updated || 0) + ' page(s)', 'success');
+        await openAssets(); // refresh
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteAsset(name, usageCount) {
+    const msg = usageCount > 0
+        ? 'This asset is referenced by ' + usageCount + ' page(s). Deleting will break those images. Continue?'
+        : 'Delete ' + name + '?';
+    if (!confirm(msg)) return;
+    try {
+        const resp = await fetch(API + '/website/assets/' + encodeURIComponent(name) + siteQ(), {
+            method: 'DELETE',
+            headers: { 'Authorization': 'Bearer ' + authToken() },
+        });
+        if (!resp.ok) {
+            const d = await resp.json().catch(() => ({}));
+            toast(d.error || ('HTTP ' + resp.status), 'error');
+            return;
+        }
+        toast('Deleted ' + name, 'success');
+        assetsState.all = assetsState.all.filter(a => a.name !== name);
+        renderAssets();
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+// ---------------------------------------------------------------------------
+// Shop - product grid, detail, cart, checkout
+//
+// Cart lives entirely in localStorage. Server-side, /api/v1/shop/checkout
+// looks up authoritative prices and creates a Stripe Checkout Session.
+// ---------------------------------------------------------------------------
+
+const SHOP_API = '/api/v1/shop';
+let shopProducts = [];
+let shopProductBySku = new Map();
+
+// Map sensor-page slug -> SKU prefixes for the buy callout. Most pages share
+// the slug stem with their SKUs (lpms-ig1 → lpms-ig1-…), but the U3 and AL3
+// family pages have variant SKUs that don't share the page's slug stem, so
+// they need explicit lists. The "lpms-ig1-" entry has a trailing hyphen so it
+// won't match lpms-ig1p-* or lpms-ig1w.
+const SLUG_TO_SKU_PREFIXES = {
+    'lpms-b2': ['lpms-b2'],
+    'lpms-u3': ['lpms-cu3', 'lpms-urs3', 'lpms-uttl3'],
+    'lpms-al3': ['lpms-canal3', 'lpms-rs232al3', 'lpms-ttlal3'],
+    'lpms-ig1': ['lpms-ig1-'],
+    'lpms-ig1p': ['lpms-ig1p'],
+    'lpms-ig1w': ['lpms-ig1w'],
+    'lpms-nav3': ['lpms-nav3'],
+    'lpms-curs3': ['lpms-curs3'],
+    'lpms-inc1': ['lpms-inc1'],
+    'lpms-hr': ['lpms-hr'],
+    'xicap-vision-pro-spatial-accessory': ['xicap-avp'],
+    // The lp-research pages kept their WordPress-era slugs.
+    'lpms-u3-usb-and-can-bus-imu': ['lpms-cu3', 'lpms-urs3', 'lpms-uttl3'],
+    'lpms-al3-9-axis-imu-sensor': ['lpms-canal3', 'lpms-rs232al3', 'lpms-ttlal3'],
+    'lpms-curs3-oem-9-axis-imu-ahrs-usb-can-uart': ['lpms-curs3'],
+};
+
+// Shop links keep the render language (and the /site prefix in preview).
+function shopHref(sub) { return SITE_PATH_PREFIX + LANG_PREFIX + '/shop' + (sub || ''); }
+
+// The Japanese storefront shows JPY (whole yen) when a product carries a yen
+// price and falls back to the base USD price otherwise; content follows the
+// same rule for title/description.
+function shopPrice(p) {
+    if (LANG === 'ja' && p.price_jpy > 0) return { amount: p.price_jpy, currency: 'jpy' };
+    return { amount: p.price_cents, currency: p.currency };
+}
+function shopTitle(p) { return (LANG === 'ja' && p.title_ja) ? p.title_ja : p.title; }
+function shopDesc(p) { return (LANG === 'ja' && p.description_md_ja) ? p.description_md_ja : p.description_md; }
+
+// One currency per cart: JPY only when every line item has a yen price.
+function cartCurrencyFor(cart) {
+    const rows = cart.map(r => shopProductBySku.get(r.sku)).filter(Boolean);
+    if (LANG === 'ja' && rows.length && rows.every(p => p.price_jpy > 0)) return 'jpy';
+    return rows[0] ? rows[0].currency : 'usd';
+}
+
+// SKU prefixes key on default-language slugs; a translated page reaches its
+// callout through the page it mirrors.
+function skuSlugFor(slug) {
+    if (SLUG_TO_SKU_PREFIXES[slug]) return slug;
+    const p = pages.find(x => x.slug === slug && (x.lang || '') === LANG);
+    return (p && p.translation_of && SLUG_TO_SKU_PREFIXES[p.translation_of]) ? p.translation_of : null;
+}
+
+// Destinations come from the shop's admin-managed list, fetched once per page.
+let shopCountries = null;
+let shopCountriesPromise = null;
+
+function loadShopCountries() {
+    if (shopCountries) return Promise.resolve(shopCountries);
+    if (!shopCountriesPromise) {
+        shopCountriesPromise = fetch(SHOP_API + '/shipping_countries' + siteQ())
+            .then(r => r.json())
+            .then(d => { shopCountries = d.countries || []; return shopCountries; })
+            .catch(() => { shopCountriesPromise = null; return []; });
+    }
+    return shopCountriesPromise;
+}
+
+function shopFmtMoney(amount, currency) {
+    const cur = (currency || 'usd').toUpperCase();
+    // JPY amounts are whole yen (zero-decimal), everything else hundredths.
+    if (cur === 'JPY') return '¥' + Math.round(amount).toLocaleString('en-US');
+    const val = (amount / 100).toFixed(2);
+    const sym = { USD: '$', EUR: '€', GBP: '£' }[cur] || '';
+    return sym ? sym + val : val + ' ' + cur;
+}
+
+// ---- Cart state ----
+function getCart() {
+    try { return JSON.parse(localStorage.getItem('susi_cart') || '[]'); } catch (e) { return []; }
+}
+function setCart(c) { localStorage.setItem('susi_cart', JSON.stringify(c)); renderCartBadge(); renderCart(); }
+function addToCart(sku, qty) {
+    qty = Math.max(1, parseInt(qty, 10) || 1);
+    const cart = getCart();
+    const row = cart.find(r => r.sku === sku);
+    if (row) row.qty += qty; else cart.push({ sku, qty });
+    setCart(cart);
+    toast(t('Added to cart'), 'success');
+}
+function setCartQty(sku, qty) {
+    qty = parseInt(qty, 10);
+    let cart = getCart();
+    if (!isFinite(qty) || qty <= 0) cart = cart.filter(r => r.sku !== sku);
+    else cart = cart.map(r => r.sku === sku ? { ...r, qty } : r);
+    setCart(cart);
+}
+function removeFromCart(sku) { setCart(getCart().filter(r => r.sku !== sku)); }
+
+function renderCartBadge() {
+    const total = getCart().reduce((s, r) => s + r.qty, 0);
+    const b = document.getElementById('cartBadge');
+    if (b) {
+        if (total > 0) { b.style.display = ''; b.textContent = total; } else { b.style.display = 'none'; }
+    }
+    updateTopbarVisibility(total);
+}
+
+// A topbar-less shop site surfaces the header once the cart has items - the
+// cart button lives there; admins keep the header either way.
+function updateTopbarVisibility(cartCount) {
+    if (!SITE.no_topbar) return;
+    if (document.body.classList.contains('admin-topbar')) return;
+    const show = !!SITE.has_shop && cartCount > 0;
+    document.body.classList.toggle('no-topbar', !show);
+}
+function renderCart() {
+    const cart = getCart();
+    const body = document.getElementById('cartBody');
+    const btn = document.getElementById('checkoutBtn');
+    if (!body || !btn) return;
+    if (!cart.length) {
+        body.innerHTML = '<div class="empty-state" style="padding:32px 12px;">' + escHtml(t('Your cart is empty.')) + '</div>';
+        document.getElementById('cartTotal').textContent = shopFmtMoney(0, LANG === 'ja' ? 'jpy' : 'usd');
+        btn.disabled = true;
+        const ship = document.getElementById('cartShipRow');
+        if (ship) ship.style.display = 'none';
+        return;
+    }
+    btn.disabled = false;
+    let subtotal = 0;
+    const currency = cartCurrencyFor(cart);
+    const html = cart.map(r => {
+        const p = shopProductBySku.get(r.sku);
+        if (!p) {
+            return '<div class="cart-item"><div></div><div>Unknown SKU: ' + escHtml(r.sku) + ' <a href="#" onclick="removeFromCart(\'' + escHtml(r.sku) + '\');return false;">' + escHtml(t('remove')) + '</a></div><div></div></div>';
+        }
+        const amount = currency === 'jpy' ? p.price_jpy : p.price_cents;
+        subtotal += amount * r.qty;
+        const img = p.image_url ? '<img src="' + escHtml(p.image_url) + '" alt="">' : '';
+        return '<div class="cart-item">'
+            + '<div class="cart-item-img">' + img + '</div>'
+            + '<div>'
+            +   '<div class="cart-item-title">' + escHtml(shopTitle(p)) + '</div>'
+            +   '<div class="cart-item-meta">'
+            +     '<input type="number" min="1" value="' + r.qty + '" onchange="setCartQty(\'' + escHtml(r.sku) + '\', this.value)">'
+            +     '<button class="btn danger" onclick="removeFromCart(\'' + escHtml(r.sku) + '\')" style="padding:3px 8px;font-size:12px;">' + escHtml(t('remove')) + '</button>'
+            +   '</div>'
+            + '</div>'
+            + '<div class="cart-item-price">' + escHtml(shopFmtMoney(amount * r.qty, currency)) + '</div>'
+            + '</div>';
+    }).join('');
+    body.innerHTML = html;
+    document.getElementById('cartTotal').textContent = shopFmtMoney(subtotal, currency);
+    const shipRow = document.getElementById('cartShipRow');
+    if (shipRow) shipRow.style.display = '';
+    ensureCountrySelect();
+}
+
+async function ensureCountrySelect() {
+    const sel = document.getElementById('cartCountry');
+    if (!sel || sel.options.length) return;
+    const list = await loadShopCountries();
+    if (!list.length || sel.options.length) return;
+    // A previously saved country may since have been dropped from the list.
+    const saved = localStorage.getItem('susi_ship_country');
+    const pick = list.some(c => c.code === saved) ? saved : list[0].code;
+    sel.innerHTML = list.map(c => '<option value="' + c.code + '"' + (c.code === pick ? ' selected' : '') + '>' + escHtml(c.name) + '</option>').join('');
+}
+function persistShipCountry() {
+    const sel = document.getElementById('cartCountry');
+    if (sel) localStorage.setItem('susi_ship_country', sel.value);
+}
+
+function openCart() {
+    document.getElementById('cartDrawer').classList.add('open');
+    document.getElementById('cartOverlay').classList.add('open');
+    const err = document.getElementById('cartError');
+    if (err) err.style.display = 'none';
+    renderCart();
+}
+function closeCart() {
+    document.getElementById('cartDrawer').classList.remove('open');
+    document.getElementById('cartOverlay').classList.remove('open');
+}
+
+async function checkout() {
+    const cart = getCart();
+    if (!cart.length) return;
+    const country = (document.getElementById('cartCountry') || {}).value || '';
+    const btn = document.getElementById('checkoutBtn');
+    const err = document.getElementById('cartError');
+    err.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = t('Redirecting…');
+    try {
+        const resp = await fetch(SHOP_API + '/checkout' + siteQ(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: cart, destination_country: country, currency: cartCurrencyFor(cart) }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+        if (!data.url) throw new Error('Missing redirect URL');
+        window.location = data.url;
+    } catch (e) {
+        err.textContent = e.message || 'Checkout failed';
+        err.style.display = '';
+        btn.disabled = false;
+        btn.textContent = t('Checkout');
+    }
+}
+
+// ---- Shop data ----
+async function loadShopProducts() {
+    if (shopProducts.length) return; // cache: products rarely change in a session
+    try {
+        const resp = await fetch(SHOP_API + '/products' + siteQ());
+        if (!resp.ok) return;
+        const data = await resp.json();
+        shopProducts = data.products || [];
+        shopProductBySku = new Map(shopProducts.map(p => [p.sku, p]));
+    } catch (e) {
+        shopProducts = []; shopProductBySku = new Map();
+    }
+}
+
+// ---- Shop renderers ----
+function renderShopGrid() {
+    currentSlug = '__shop__';
+    const c = document.getElementById('content');
+    const layout = document.getElementById('layout');
+    if (layout) layout.classList.add('no-toc');
+    document.title = t('Shop') + ' - ' + SITE.name;
+    renderSidebar();
+    if (!shopProducts.length) {
+        c.innerHTML = '<h1>' + escHtml(t('Shop')) + '</h1><div class="empty-state"><p>' + escHtml(t('Coming soon.')) + '</p></div>';
+        return;
+    }
+    const cards = shopProducts.map(p => {
+        const pr = shopPrice(p);
+        const img = p.image_url ? '<img src="' + escHtml(p.image_url) + '" alt="">' : '<div>' + escHtml(t('no image')) + '</div>';
+        return '<a class="shop-card" href="' + shopHref('/' + encodeURIComponent(p.sku)) + '">'
+            + '<div class="shop-card-img">' + img + '</div>'
+            + '<div class="shop-card-body">'
+            +   '<div class="shop-card-title">' + escHtml(shopTitle(p)) + '</div>'
+            +   '<div class="shop-card-price">' + escHtml(shopFmtMoney(pr.amount, pr.currency)) + '</div>'
+            +   '<div class="shop-card-actions">'
+            +     '<button class="btn primary" onclick="event.stopPropagation();event.preventDefault();addToCart(\'' + escHtml(p.sku) + '\', 1)">' + escHtml(t('Add to cart')) + '</button>'
+            +   '</div>'
+            + '</div>'
+            + '</a>';
+    }).join('');
+    const intro = LANG === 'ja'
+        ? t('Order %s products directly.').replace('%s', SITE.name)
+        : (SITE.id === 'xikaku'
+            ? 'Order Xikaku sensors directly. Shipped from our Los Angeles office.'
+            : 'Order ' + SITE.name + ' products directly.');
+    c.innerHTML = '<h1>' + escHtml(t('Shop')) + '</h1>'
+        + '<p style="color:var(--text2);">' + escHtml(intro) + '</p>'
+        + '<div class="shop-grid">' + cards + '</div>';
+}
+
+function renderShopDetail(sku) {
+    currentSlug = '__shop__';
+    const c = document.getElementById('content');
+    const layout = document.getElementById('layout');
+    if (layout) layout.classList.add('no-toc');
+    const p = shopProductBySku.get(sku);
+    if (!p) {
+        c.innerHTML = '<h1>' + escHtml(t('Product not found')) + '</h1><p><a href="' + shopHref() + '">&larr; ' + escHtml(t('Back to shop')) + '</a></p>';
+        return;
+    }
+    document.title = shopTitle(p) + ' - ' + SITE.name;
+    renderSidebar();
+    const pr = shopPrice(p);
+    const img = p.image_url ? '<img src="' + escHtml(p.image_url) + '" alt="">' : escHtml(t('no image'));
+    const desc = renderMarkdown(shopDesc(p) || '');
+    c.innerHTML =
+        '<p style="margin-top:0;"><a href="' + shopHref() + '">&larr; ' + escHtml(t('Back to shop')) + '</a></p>'
+        + '<div class="shop-detail">'
+        +   '<div class="shop-detail-img">' + img + '</div>'
+        +   '<div>'
+        +     '<h1 style="margin-top:0;">' + escHtml(shopTitle(p)) + '</h1>'
+        +     '<p style="font-size:18px;color:var(--text1);margin:0 0 16px;">' + escHtml(shopFmtMoney(pr.amount, pr.currency)) + '</p>'
+        +     '<div class="content">' + desc + '</div>'
+        +     '<div class="shop-detail-buy">'
+        +       '<input id="detailQty" type="number" min="1" value="1">'
+        +       '<button class="btn primary" onclick="addToCart(\'' + escHtml(p.sku) + '\', document.getElementById(\'detailQty\').value)">' + escHtml(t('Add to cart')) + '</button>'
+        +     '</div>'
+        +   '</div>'
+        + '</div>';
+}
+
+function renderShopSuccess() {
+    currentSlug = '__shop__';
+    const c = document.getElementById('content');
+    const layout = document.getElementById('layout');
+    if (layout) layout.classList.add('no-toc');
+    document.title = t('Thank you!') + ' - ' + SITE.name;
+    renderSidebar();
+    const params = new URLSearchParams(location.search);
+    const sid = params.get('session_id') || '';
+    localStorage.removeItem('susi_cart');
+    renderCartBadge();
+    if (window.gtag && window.__adsConv && window.__adsConv.purchase) {
+        const conv = { send_to: window.__adsConv.purchase };
+        if (sid) conv.transaction_id = sid;
+        gtag('event', 'conversion', conv);
+    }
+    c.innerHTML =
+        '<div class="empty-state" style="padding:80px 20px;">'
+        +   '<h1>' + escHtml(t('Thank you!')) + '</h1>'
+        +   '<p>' + escHtml(t('Your order has been placed. A receipt will arrive in your inbox shortly.')) + '</p>'
+        +   (sid ? '<p style="color:var(--text2);font-size:12px;">Ref: ' + escHtml(sid) + '</p>' : '')
+        +   '<p><a href="' + shopHref() + '">' + escHtml(t('Continue shopping')) + '</a> &middot; <a href="' + siteRootHref() + '">' + escHtml(t('Home')) + '</a></p>'
+        + '</div>';
+}
+
+function renderShopCancel() {
+    currentSlug = '__shop__';
+    const c = document.getElementById('content');
+    const layout = document.getElementById('layout');
+    if (layout) layout.classList.add('no-toc');
+    document.title = t('Checkout cancelled') + ' - ' + SITE.name;
+    renderSidebar();
+    c.innerHTML =
+        '<div class="empty-state" style="padding:80px 20px;">'
+        +   '<h1>' + escHtml(t('Checkout cancelled')) + '</h1>'
+        +   '<p>' + escHtml(t('Your cart is still saved. No charge was made.')) + '</p>'
+        +   '<p><button class="btn primary" onclick="openCart()">' + escHtml(t('Review cart')) + '</button> &nbsp; <a href="' + shopHref() + '">' + escHtml(t('Back to shop')) + '</a></p>'
+        + '</div>';
+}
+
+// ---- Buy callout on sensor pages ----
+function injectBuyCallout(slug) {
+    if (!SITE.has_shop) return;
+    const prefixes = SLUG_TO_SKU_PREFIXES[slug];
+    if (!prefixes || !shopProducts.length) return;
+    const matches = shopProducts
+        .filter(p => p.active && prefixes.some(pref => p.sku.startsWith(pref)))
+        .sort((a, b) => a.ord - b.ord);
+    if (!matches.length) return;
+    const c = document.getElementById('content');
+    if (!c) return;
+    const cards = matches.map(p => {
+        const pr = shopPrice(p);
+        const img = p.image_url ? '<img src="' + escHtml(p.image_url) + '" alt="">' : '';
+        return '<a class="buy-card" href="' + shopHref('/' + encodeURIComponent(p.sku)) + '">'
+            + '<div class="buy-card-img">' + img + '</div>'
+            + '<div class="buy-card-body">'
+            +   '<div class="buy-card-title">' + escHtml(shopTitle(p)) + '</div>'
+            +   '<div class="buy-card-price">' + escHtml(shopFmtMoney(pr.amount, pr.currency)) + '</div>'
+            + '</div>'
+            + '</a>';
+    }).join('');
+    // The cards live inside the page's own Order section when it has one;
+    // pages without one get the callout appended with its own heading.
+    const orderHead = [...c.querySelectorAll('h2, h3, h4')].find(h => {
+        const txt = h.textContent.trim();
+        return txt === 'Order' || txt === 'ご注文';
+    });
+    if (orderHead) {
+        orderHead.insertAdjacentHTML('afterend',
+            '<div class="buy-callout" style="margin-top:0;padding-top:6px;border-top:none;">'
+            + '<div class="buy-grid">' + cards + '</div>'
+            + '</div>'
+        );
+    } else {
+        c.insertAdjacentHTML('beforeend',
+            '<div class="buy-callout">'
+            + '<h2>' + escHtml(t('Available variants')) + '</h2>'
+            + '<div class="buy-grid">' + cards + '</div>'
+            + '</div>'
+        );
+    }
+}
+
+// Chrome ignores the muted attribute on innerHTML-inserted video when
+// deciding autoplay, so set the property and kick playback explicitly.
+function startAmbientVideos(root) {
+    root.querySelectorAll('video[autoplay]').forEach(v => {
+        v.muted = true;
+        const p = v.play();
+        if (p) p.catch(() => {});
+    });
+}
+
+// ---- Email obfuscation + contact form ----
+function revealEmailObfs(root) {
+    const els = root.querySelectorAll('span.email-obf[data-u][data-d]');
+    els.forEach(el => {
+        let revealed = false;
+        const reveal = () => {
+            if (revealed) return;
+            revealed = true;
+            try {
+                const u = atob(el.getAttribute('data-u'));
+                const d = atob(el.getAttribute('data-d'));
+                const addr = u + '@' + d;
+                const a = document.createElement('a');
+                a.href = 'mailto:' + addr;
+                a.textContent = addr;
+                a.className = 'email-obf';
+                el.replaceWith(a);
+            } catch (e) {}
+        };
+        el.addEventListener('click', reveal);
+        el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reveal(); } });
+        el.addEventListener('mouseenter', reveal, { once: true });
+    });
+}
+
+let contactConfigPromise = null;
+function loadContactConfig() {
+    if (!contactConfigPromise) {
+        contactConfigPromise = fetch(API + '/contact/config' + siteQ())
+            .then(r => r.ok ? r.json() : { enabled: false, turnstile_site_key: '' })
+            .catch(() => ({ enabled: false, turnstile_site_key: '' }));
+    }
+    return contactConfigPromise;
+}
+
+let turnstileScriptPromise = null;
+function loadTurnstileScript() {
+    if (!turnstileScriptPromise) {
+        turnstileScriptPromise = new Promise((resolve, reject) => {
+            if (window.turnstile) { resolve(); return; }
+            const s = document.createElement('script');
+            s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+            s.async = true; s.defer = true;
+            s.onload = () => resolve();
+            s.onerror = () => reject(new Error('Turnstile script failed to load'));
+            document.head.appendChild(s);
+        });
+    }
+    return turnstileScriptPromise;
+}
+
+function mountContactForms(root) {
+    const slots = root.querySelectorAll('div[data-contact-form]');
+    if (!slots.length) return;
+    loadContactConfig().then(cfg => {
+        slots.forEach(slot => buildContactForm(slot, cfg));
+    });
+}
+
+// Newsletter signup slots: the /newsletter page's built-in one, plus any
+// {{newsletter-signup}} marker in page content (subscriber-based sites only).
+// Markup is kept in sync with the SSR form in website.rs.
+function mountNewsletterSignup(root) {
+    if (!SITE.newsletter_signup) return;
+    root.querySelectorAll('div[data-newsletter-signup]').forEach(buildNewsletterSignup);
+}
+
+// Past-issue listings for {{newsletter-archive}} markers in page content.
+// One fetch fills every slot on the page.
+async function mountNewsletterArchive(root) {
+    const slots = root.querySelectorAll('div[data-newsletter-archive]');
+    if (!slots.length) return;
+    const html = renderNewsletterIssuesHtml(await fetchNewsletterIssues());
+    slots.forEach(slot => { slot.innerHTML = html; });
+}
+
+function buildNewsletterSignup(slot) {
+    slot.innerHTML =
+        '<form class="contact-form newsletter-signup" novalidate>'
+        + '<label>Email<input type="email" name="email" required maxlength="320" autocomplete="email"></label>'
+        + '<div class="hp-field" aria-hidden="true"><label>Website<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>'
+        + '<div class="row-actions">'
+        +   '<button type="submit" class="btn primary">Subscribe</button>'
+        +   '<span class="status"></span>'
+        + '</div>'
+        + '</form>';
+    const form = slot.querySelector('form');
+    const status = form.querySelector('.status');
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        status.className = 'status';
+        status.textContent = '';
+        const fd = new FormData(form);
+        const payload = {
+            email: (fd.get('email') || '').toString().trim(),
+            website: (fd.get('website') || '').toString(),
+        };
+        if (!payload.email) {
+            status.className = 'status err';
+            status.textContent = t('Please enter your email address.');
+            return;
+        }
+        const submitBtn = form.querySelector('button[type=submit]');
+        submitBtn.disabled = true;
+        try {
+            const resp = await fetch(API + '/newsletter/subscribe' + siteQ(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (resp.ok) {
+                slot.innerHTML = '<div class="contact-success"><div class="mark">✓</div>'
+                    + '<div class="msg">' + t('Check your inbox to confirm your subscription.') + '</div></div>';
+                return;
+            }
+            const d = await resp.json().catch(() => ({}));
+            status.className = 'status err';
+            status.textContent = d.error || ('Could not subscribe (HTTP ' + resp.status + ')');
+        } catch (err) {
+            status.className = 'status err';
+            status.textContent = t('Network error - please try again.');
+        } finally {
+            submitBtn.disabled = false;
+        }
+    });
+}
+
+function buildContactForm(slot, cfg) {
+    if (!cfg.enabled) {
+        slot.innerHTML = '<div class="empty-state" style="padding:14px;font-size:13px;">Contact form is currently unavailable. Please email us directly.</div>';
+        return;
+    }
+    slot.innerHTML =
+        '<form class="contact-form" novalidate>'
+        + '<label>Your name<input type="text" name="name" required maxlength="200" autocomplete="name"></label>'
+        + '<label>Company<input type="text" name="company" required maxlength="200" autocomplete="organization"></label>'
+        + '<label>Email address<input type="email" name="email" required maxlength="320" autocomplete="email"></label>'
+        + '<label>Subject<input type="text" name="subject" required maxlength="200"></label>'
+        + '<label>Message<textarea name="message" required minlength="10" maxlength="8000"></textarea></label>'
+        + '<label class="hp-field" aria-hidden="true"><input type="text" name="website" tabindex="-1" autocomplete="off"></label>'
+        + '<div class="note">All fields are required.</div>'
+        + '<div class="turnstile-slot"></div>'
+        + '<div class="row-actions">'
+        +   '<button type="submit" class="btn primary">Send message</button>'
+        +   '<span class="status"></span>'
+        + '</div>'
+        + '</form>';
+    const form = slot.querySelector('form');
+    const status = form.querySelector('.status');
+    const tsSlot = form.querySelector('.turnstile-slot');
+    let tsWidgetId = null;
+    let tsToken = '';
+
+    if (cfg.turnstile_site_key) {
+        loadTurnstileScript().then(() => {
+            const renderWidget = () => {
+                if (!window.turnstile) return;
+                const tsTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+                tsWidgetId = window.turnstile.render(tsSlot, {
+                    sitekey: cfg.turnstile_site_key,
+                    theme: tsTheme,
+                    callback: t => { tsToken = t || ''; },
+                    'error-callback': () => { tsToken = ''; },
+                    'expired-callback': () => { tsToken = ''; },
+                });
+            };
+            // Turnstile attaches a global ready hook when the script finishes.
+            if (window.turnstile && window.turnstile.render) renderWidget();
+            else if (window.turnstile && window.turnstile.ready) window.turnstile.ready(renderWidget);
+            else setTimeout(renderWidget, 200);
+        }).catch(() => {
+            tsSlot.innerHTML = '<span class="status err">Captcha failed to load - try refreshing.</span>';
+        });
+    } else {
+        tsSlot.style.display = 'none';
+    }
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        status.className = 'status';
+        status.textContent = '';
+        const fd = new FormData(form);
+        const payload = {
+            name: (fd.get('name') || '').toString().trim(),
+            company: (fd.get('company') || '').toString().trim(),
+            email: (fd.get('email') || '').toString().trim(),
+            subject: (fd.get('subject') || '').toString().trim(),
+            message: (fd.get('message') || '').toString().trim(),
+            website: (fd.get('website') || '').toString(),
+            turnstile_token: tsToken,
+        };
+        if (!payload.name || !payload.company || !payload.email || !payload.subject || !payload.message) {
+            status.className = 'status err';
+            status.textContent = 'Please fill in all fields.';
+            return;
+        }
+        if (cfg.turnstile_site_key && !tsToken) {
+            status.className = 'status err';
+            status.textContent = 'Please complete the captcha first.';
+            return;
+        }
+        const submitBtn = form.querySelector('button[type=submit]');
+        submitBtn.disabled = true;
+        try {
+            const resp = await fetch(API + '/contact' + siteQ(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (resp.ok) {
+                if (window.gtag && window.__adsConv && window.__adsConv.contact) {
+                    gtag('event', 'conversion', { send_to: window.__adsConv.contact });
+                }
+                slot.innerHTML = '<div class="contact-success"><div class="mark">✓</div>'
+                    + '<div class="msg">' + t('Thanks - your message is on its way.') + '</div></div>';
+                return;
+            } else {
+                const d = await resp.json().catch(() => ({}));
+                status.className = 'status err';
+                status.textContent = d.error || ('Could not send (HTTP ' + resp.status + ')');
+                if (tsWidgetId !== null && window.turnstile) {
+                    try { window.turnstile.reset(tsWidgetId); } catch (e) {}
+                }
+                tsToken = '';
+            }
+        } catch (err) {
+            status.className = 'status err';
+            status.textContent = 'Network error - please try again.';
+        } finally {
+            submitBtn.disabled = false;
+        }
+    });
+}
+
+// ---- Routing for shop ----
+function shopRouteFromLocation() {
+    if (!SITE.has_shop) return null;
+    let path = location.pathname || '';
+    // The shop lives at /shop under the render language, and under /site in
+    // the dashboard preview - strip both before matching.
+    if (SITE_PATH_PREFIX && path.startsWith(SITE_PATH_PREFIX)) path = path.slice(SITE_PATH_PREFIX.length);
+    if (LANG_PREFIX && (path === LANG_PREFIX || path.startsWith(LANG_PREFIX + '/'))) path = path.slice(LANG_PREFIX.length);
+    if (path === '/shop' || path === '/shop/') return { kind: 'grid' };
+    if (path === '/shop/success') return { kind: 'success' };
+    if (path === '/shop/cancel') return { kind: 'cancel' };
+    const m = path.match(/^\/shop\/([^\/]+)$/);
+    if (m) return { kind: 'detail', sku: decodeURIComponent(m[1]) };
+    return null;
+}
+
+// Rewrite static "/site" home-links so on xikaku.com the brand and "Home"
+// links point to "/" directly instead of triggering a 301 hop through nginx.
+// In the dashboard preview they navigate fully, so carry the site along.
+document.querySelectorAll('a[href="/site"]').forEach(a => {
+    a.setAttribute('href', SITE_PATH_PREFIX ? SITE_PATH_PREFIX + LANG_PREFIX + siteQ() : (LANG_PREFIX || '/'));
+});
+
+// Localize the static cart-drawer chrome on translated renders.
+if (LANG) {
+    const set = (sel, s) => { const el = document.querySelector(sel); if (el) el.textContent = t(s); };
+    set('#cartDrawer .cart-head h3', 'Your cart');
+    set('#cartShipRow label', 'Ship to');
+    set('#cartDrawer .cart-total span', 'Subtotal');
+    set('#cartDrawer .cart-hint', 'Tax + shipping calculated at checkout.');
+    set('#checkoutBtn', 'Checkout');
+}
+
+(async () => {
+    await redeemSsoTicket();
+    await resolveAdminStatus();
+    await route();
+    renderCartBadge();
+})();
+</script>
+
+<div id="historyModal" class="admin-modal">
+    <div class="admin-modal-inner">
+        <div class="admin-modal-head">
+            <h3>Page history</h3>
+            <button class="btn" onclick="closeHistory()">Close</button>
+        </div>
+        <div id="historyBody" class="admin-modal-body"></div>
+    </div>
+</div>
+
+<div id="assetsModal" class="admin-modal">
+    <div class="admin-modal-inner">
+        <div class="admin-modal-head">
+            <h3>Asset library</h3>
+            <button class="btn" onclick="closeAssets()">Close</button>
+        </div>
+        <div id="assetsBody" class="admin-modal-body"></div>
+    </div>
+</div>
+
+</body>
+</html>

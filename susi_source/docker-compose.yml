@@ -1,0 +1,109 @@
+services:
+  susi-server:
+    # Image-first by design: AWS Lightsail (1.9 GiB RAM) can build susi
+    # with heavy swap thrashing but it's slow and risks OOM. deploy.sh
+    # builds locally and ships the image via `docker save | scp | docker
+    # load`. The `build: .` directive is kept so local dev can still
+    # `docker compose build` to rebuild on a beefy box.
+    image: susi:latest
+    build: .
+    container_name: susi-server
+    restart: unless-stopped
+    # Bind to loopback only - port is reachable from the on-host nginx
+    # reverse proxy but never directly from the public internet.
+    ports:
+      - "127.0.0.1:3100:3100"
+    environment:
+      - RUST_LOG=info
+      # Magic-link login (leave SUSI_SMTP_HOST empty to disable)
+      - SUSI_SMTP_HOST=${SUSI_SMTP_HOST:-}
+      - SUSI_SMTP_PORT=${SUSI_SMTP_PORT:-587}
+      - SUSI_SMTP_USER=${SUSI_SMTP_USER:-}
+      - SUSI_SMTP_PASSWORD=${SUSI_SMTP_PASSWORD:-}
+      - SUSI_SMTP_FROM_NAME=${SUSI_SMTP_FROM_NAME:-Susi}
+      - SUSI_SMTP_FROM_ADDR=${SUSI_SMTP_FROM_ADDR:-}
+      - SUSI_MAGIC_LINK_BASE_URL=${SUSI_MAGIC_LINK_BASE_URL:-}
+      # Newsletter relay - deliberately separate credentials from the account
+      # mail above, so a campaign that trips a sending limit cannot take
+      # sign-in codes and password resets down with it. Empty host = campaign
+      # sending disabled (drafts and previews still work).
+      - SUSI_NEWSLETTER_SMTP_HOST=${SUSI_NEWSLETTER_SMTP_HOST:-}
+      - SUSI_NEWSLETTER_SMTP_PORT=${SUSI_NEWSLETTER_SMTP_PORT:-587}
+      - SUSI_NEWSLETTER_SMTP_USER=${SUSI_NEWSLETTER_SMTP_USER:-}
+      - SUSI_NEWSLETTER_SMTP_PASSWORD=${SUSI_NEWSLETTER_SMTP_PASSWORD:-}
+      - SUSI_NEWSLETTER_SMTP_FROM_NAME=${SUSI_NEWSLETTER_SMTP_FROM_NAME:-Susi by LP-Research}
+      - SUSI_NEWSLETTER_SMTP_FROM_ADDR=${SUSI_NEWSLETTER_SMTP_FROM_ADDR:-}
+      - SUSI_NEWSLETTER_RATE_PER_MIN=${SUSI_NEWSLETTER_RATE_PER_MIN:-30}
+      # Per-site newsletter relays: SUSI_NEWSLETTER_SMTP_{KEY}_{SITE} (site id
+      # uppercased). Each site sends as its own identity, no cross-site fallback.
+      - SUSI_NEWSLETTER_SMTP_HOST_KLAUS=${SUSI_NEWSLETTER_SMTP_HOST_KLAUS:-}
+      - SUSI_NEWSLETTER_SMTP_PORT_KLAUS=${SUSI_NEWSLETTER_SMTP_PORT_KLAUS:-587}
+      - SUSI_NEWSLETTER_SMTP_USER_KLAUS=${SUSI_NEWSLETTER_SMTP_USER_KLAUS:-}
+      - SUSI_NEWSLETTER_SMTP_PASSWORD_KLAUS=${SUSI_NEWSLETTER_SMTP_PASSWORD_KLAUS:-}
+      - SUSI_NEWSLETTER_SMTP_FROM_NAME_KLAUS=${SUSI_NEWSLETTER_SMTP_FROM_NAME_KLAUS:-}
+      - SUSI_NEWSLETTER_SMTP_FROM_ADDR_KLAUS=${SUSI_NEWSLETTER_SMTP_FROM_ADDR_KLAUS:-}
+      # Optional alternative to the newsletter user/password above: an admin
+      # connects a Google Workspace account from the dashboard and campaign
+      # mail goes out over Gmail with OAuth, so no app password lives on the
+      # host. Static credentials, if set, take precedence.
+      - SUSI_GOOGLE_CLIENT_ID=${SUSI_GOOGLE_CLIENT_ID:-}
+      - SUSI_GOOGLE_CLIENT_SECRET=${SUSI_GOOGLE_CLIENT_SECRET:-}
+      # Comma-separated emails promoted to the `owner` role on every start.
+      # Ownership is otherwise only grantable by an existing owner, so this is
+      # how the first one exists on a database predating the role - and the way
+      # back in if the last owner is ever lost. Idempotent.
+      - SUSI_OWNER_EMAILS=${SUSI_OWNER_EMAILS:-}
+      # FusionHub relay URL handed to workspace members on federation fetch.
+      # Empty disables the relay (members fall back to FUSIONHUB_RELAY_URL
+      # set locally on each member, or direct TCP only).
+      - SUSI_RELAY_URL=${SUSI_RELAY_URL:-}
+      # Shop / Stripe (keys live in /opt/susi/.env on the host). Bare keys =
+      # the default site (xikaku); the LPR shop runs on its own Stripe account.
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      # The shared .env carries _LIVE and _TEST variants so the sandbox key
+      # can never reach production (staging maps the _TEST ones).
+      - STRIPE_SECRET_KEY_LPR=${STRIPE_SECRET_KEY_LPR_LIVE:-}
+      - STRIPE_WEBHOOK_SECRET_LPR=${STRIPE_WEBHOOK_SECRET_LPR_LIVE:-}
+      - SUSI_SHOP_BASE_URL=${SUSI_SHOP_BASE_URL:-}
+      - SUSI_SHOP_NOTIFY_ADDR=${SUSI_SHOP_NOTIFY_ADDR:-}
+      # Contact form (empty contact-to-addr disables; turnstile keys optional)
+      - SUSI_CONTACT_TO_ADDR=${SUSI_CONTACT_TO_ADDR:-}
+      - SUSI_TURNSTILE_SECRET=${SUSI_TURNSTILE_SECRET:-}
+      - SUSI_TURNSTILE_SITE_KEY=${SUSI_TURNSTILE_SITE_KEY:-}
+      # S3 for workspace recordings. Empty SUSI_S3_BUCKET disables the
+      # recording endpoints (they respond 503). AWS SDK reads
+      # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY automatically.
+      - SUSI_S3_BUCKET=${SUSI_S3_BUCKET:-}
+      - SUSI_S3_REGION=${SUSI_S3_REGION:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      # Dropbox backups (keys live in /opt/susi/.env). SUSI_BACKUP_KEY is the
+      # archive encryption key - keep a copy off-server or backups are
+      # unreadable. All three empty = feature disabled.
+      - SUSI_DROPBOX_APP_KEY=${SUSI_DROPBOX_APP_KEY:-}
+      - SUSI_DROPBOX_APP_SECRET=${SUSI_DROPBOX_APP_SECRET:-}
+      - SUSI_BACKUP_KEY=${SUSI_BACKUP_KEY:-}
+      - SUSI_BACKUP_PREFIX=${SUSI_BACKUP_PREFIX:-prod}
+      # CIDRs whose forwarded-IP headers are trusted. Empty = loopback +
+      # private IPv4 (covers the Docker bridge nginx proxies through).
+      - SUSI_TRUSTED_PROXIES=${SUSI_TRUSTED_PROXIES:-}
+    volumes:
+      - susi-data:/data
+    # Cap container log growth: stdout may carry personal data (request
+    # errors, addresses) and must not accumulate indefinitely.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  susi-data:
+    name: susi-data

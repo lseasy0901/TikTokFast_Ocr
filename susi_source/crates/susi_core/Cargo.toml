@@ -1,0 +1,40 @@
+[package]
+name = "susi_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+sha2 = "0.10"
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+rand = "0.8"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+aes-gcm = "0.10"
+hkdf = "0.12"
+
+[features]
+default = []
+db = ["rusqlite"]
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+wmi = "0.18"
+windows = { version = "0.58", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_Foundation",
+] }
+
+[dev-dependencies]
+approx = { workspace = true }

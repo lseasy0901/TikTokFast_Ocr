@@ -1,0 +1,16 @@
+/target
+*.db
+*.db-shm
+*.db-wal
+keys/
+*.pem
+license.json
+.env
+
+# CMake and Conan
+build/
+CMakeUserPresets.json
+
+__pycache__/
+
+.vscode
