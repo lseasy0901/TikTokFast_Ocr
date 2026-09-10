@@ -1650,13 +1650,15 @@
 
 # These belong to later security phases.
 
+# Phase 7.1's self-built license server is a reference implementation, not the final licensing backend.
+
 # 
 
 # \---
 
 # 
 
-# \# 22. PHASE 7.2 — DESKTOP LICENSE CLIENT INTEGRATION
+# \# 22. PHASE 7.2 — SUSI COMPATIBILITY SPIKE
 
 # 
 
@@ -1670,87 +1672,84 @@
 
 # 
 
-# Target:
+# Goal:
 
 # 
 
-# Integrate the existing desktop application with the License Server.
+# Determine whether Susi can support the required entitlement model with minimal adaptation.
 
 # 
 
-# Expected components:
+# Licensing Business Model (AUTHORATIVE):
 
 # 
 
-# \- LicenseProvider abstraction
-
-# \- RemoteLicenseProvider
-
-# \- HTTP client
-
-# \- server URL configuration
-
-# \- device\_id generation/persistence
-
-# \- license activation UI
-
-# \- license validation
-
-# \- AccessStatus integration
-
-# \- 7-day trial integration
-
-# \- expiration handling
-
-# \- revoked handling
-
-# \- device mismatch handling
-
-# \- extension behavior
-
-# \- server-time handling
+# Each License Key is a one-time redeemable time/feature entitlement credential.
 
 # 
 
-# Requirements:
+# After successful redemption:
+# \- the key permanently becomes REDEEMED
+# \- the key can never be redeemed again
+# \- its entitlement is added to the target device's Authorization
 
 # 
 
-# \- no payment processing in desktop app
-
-# \- no website frontend
-
-# \- no fake website URL
-
-# \- one-device binding
-
-# \- server authoritative
-
-# \- local time cannot override server expiry
+# If the target device already has an active Authorization:
+# \- duration is accumulated
+# \- features are unioned
 
 # 
 
-# Do not modify:
+# If the target Authorization is expired:
+# \- expiration restarts from authoritative server time + key duration
 
 # 
 
-# \- stream
-
-# \- FFmpeg
-
-# \- frame buffer
-
-# \- OCR
-
-# \- ROI
-
-# \- clipboard
-
-# \- existing final UI layout
+# Different unused keys may be redeemed on different devices,
+# creating different Authorizations.
 
 # 
 
-# unless a license integration point absolutely requires a minimal interface change.
+# This business model is authoritative.
+# Do NOT replace it with Susi's native License→Machine model.
+# Do NOT impose a global max\_devices=1 business rule.
+
+# 
+
+# Susi Rules:
+# \- Susi must NOT automatically replace the project's entitlement model
+# \- Phase 7.2 should determine whether Susi can support the required model with minimal adaptation
+
+# 
+
+# Scope:
+
+# 
+
+# IN SCOPE:
+# \- inspect Susi's relevant licensing/authorization capabilities
+# \- build a minimal compatibility spike/POC
+# \- test the required entitlement scenarios
+# \- verify signed authorization/device verification where applicable
+# \- determine adaptation cost and migration feasibility
+
+# 
+
+# OUT OF SCOPE:
+# \- production Susi integration
+# \- replacing the current entitlement model
+# \- redesigning the GUI
+# \- payment/website integration
+# \- unrelated refactoring
+
+# 
+
+# Stop Condition:
+
+# 
+
+# Stop after the compatibility result is documented and a go/no-go decision can be made.
 
 # 
 
@@ -2336,7 +2335,7 @@
 
 # 
 
-# Phase 7.2 — Desktop License Client Integration
+# Phase 7.2 — Susi Compatibility Spike
 
 # 
 
@@ -2800,7 +2799,7 @@
 
 # 
 
-# Phase 7.2 — Desktop License Client Integration
+# Phase 7.2 — Susi Compatibility Spike
 
 # Status: NEXT
 
