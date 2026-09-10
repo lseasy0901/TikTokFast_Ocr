@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local environment
+.env
+*.env
+license_server/.env
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime/generated files
+dist/
+build/
+*.log
+
+# Local stream history
+stream_history.json
+
+# OS/editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,10 @@
+stream:
+  width: 1920
+  height: 1080
+
+ffmpeg:
+  cuda: true
+  low_delay: true
+
+performance:
+  monitor_interval: 1
