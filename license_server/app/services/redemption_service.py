@@ -195,7 +195,12 @@ class RedemptionService:
                         "activated_at": license.authorization.activated_at
                     }
                 },
-                activation_data.device_id,
+                # The Authorization's own device_id, not activation_data.device_id:
+                # find_or_create_authorization() selected or created this row by
+                # that value, so the two are equal by construction -- and taking it
+                # off the row guarantees the signed machine_codes binding can never
+                # drift from the Authorization it was issued for.
+                authorization.device_id,
                 license.duration_days
             )
             # If susi_security returned signed_license, include it in response

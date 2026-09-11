@@ -306,7 +306,10 @@ class SusiSecurityService:
 
         Args:
             license_data: License data containing id, license_key, created_at, features
-            device_id: Device identifier
+            device_id: Device identifier of the ACTIVATING CLIENT. This becomes the
+                machine_codes binding in the signed payload. It is the same value
+                RedemptionService keyed the Authorization row by, so the credential
+                and the Authorization always name one device.
             duration_days: License duration in days
 
         Returns:
@@ -314,15 +317,30 @@ class SusiSecurityService:
         """
         logger.debug("Creating signed license for device %s", device_id)
 
+        # The binding must name the client that activated, not this host.
+        #
+        # machine_codes was previously filled from self.get_machine_code(), which
+        # fingerprints whatever machine the License Server runs on. That produced a
+        # credential bound to the SERVER, so it verified only while server and
+        # client happened to be the same machine (the local E2E). Deployed, every
+        # client would fail its own binding check with WRONG_MACHINE -- after the
+        # key had already been consumed. The device is supplied by the activation
+        # flow (schemas.LicenseActivate bounds it to 1..64 chars, matching the
+        # Authorization.device_id column); the server never trusts a machine_codes
+        # list from the client, it constructs the binding from that device_id.
+        bound_device = str(device_id or "").strip()
+        if not bound_device:
+            raise RuntimeError(
+                "Cannot sign a license without a device binding: "
+                "the activation device_id is empty"
+            )
+
         # Resolve the signing key before the try block so a configuration error
         # surfaces with its own message rather than being rewrapped by the generic
         # handler below as an "unexpected error".
         private_key_pem = self._require_private_key()
 
         try:
-            # Generate machine code for this device
-            machine_code = self.get_machine_code()
-
             # Prepare license payload for signing
             # Note: Susi LicensePayload format - we use Susi fields, not our business fields
             payload = {
@@ -334,7 +352,7 @@ class SusiSecurityService:
                 # Map real Authorization.expires_at to Susi expires field
                 "expires": self._to_rfc3339(license_data["authorization"]["expires_at"]),
                 "features": sorted(list(license_data["features"])),  # Convert set to sorted list for deterministic JSON serialization
-                "machine_codes": [machine_code],
+                "machine_codes": [bound_device],
                 "lease_expires": None,
                 "lease_grace_period": None,
                 "require_signed_binary": False
@@ -384,7 +402,10 @@ class SusiSecurityService:
                             logger.debug("Created signed license (%d bytes)", len(signed_license))
                             return {
                                 "signed_license": signed_license,
-                                "machine_code": machine_code
+                                # The device the credential is bound to. Kept under
+                                # the historical key name; it is now the activating
+                                # client's id, not this server's fingerprint.
+                                "machine_code": bound_device
                             }
                         else:
                             raise RuntimeError(f"Invalid signed license data format: {signed_license_data}")
