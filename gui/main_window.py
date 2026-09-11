@@ -225,7 +225,14 @@ class MainWindow(QMainWindow):
 
         # 访问状态管理器
         self._access_status = AccessStatus()
-        self._access_status.set_update_timer(self._status_timer)
+
+        # 访问状态专用定时器（Phase 7.2-6.6）
+        # 低频重新评估访问状态，用于发现「应用运行中到期」。
+        # 刻意不复用 _status_timer：后者随连接启停、周期 1s，属于视频/性能面板，
+        # 且会在断开连接时被停止，不适合承担许可证到期检测。
+        self._access_timer = QTimer(self)
+        self._access_timer.timeout.connect(self._on_access_timer_timeout)
+        self._access_status.set_update_timer(self._access_timer)
         self._access_status.set_callbacks(self._on_access_status_changed, self._on_access_expired)
 
         # 许可证管理器（Phase 7.2-6.5）：激活 / 本地验证 / 启动恢复
@@ -909,6 +916,10 @@ class MainWindow(QMainWindow):
 
     def _connect(self):
         """发起连接：解析直播间 → 获取流地址 → 启动 FFmpegReader"""
+        # 受保护入口：新建连接需要有效访问权限
+        if not self._guard_access("连接直播流"):
+            return
+
         url = self._url_input.text().strip()
         if not url:
             self.statusBar().showMessage("错误：请输入直播间URL")
@@ -1004,7 +1015,8 @@ class MainWindow(QMainWindow):
         self._connect_btn.setEnabled(True)
         self._connect_btn.setText("断开")
         self._url_input.setEnabled(False)
-        self._roi_btn.setEnabled(True)  # 连接后启用 ROI 选择
+        # 连接后启用 ROI 选择（访问被拒绝时保持禁用）
+        self._roi_btn.setEnabled(not self._access_status.is_expired())
 
         # 隐藏连接状态消息
         self._connection_status_label.hide()
@@ -1084,6 +1096,9 @@ class MainWindow(QMainWindow):
         self._connection_status_label.show()
         self.statusBar().showMessage("已断开")
 
+        # 断开后重新套用访问限制：访问已到期时连接入口应保持关闭
+        self._on_access_status_changed()
+
     def _reset_connect_ui(self):
         """重置连接按钮和输入框为初始状态"""
         self._connect_btn.setEnabled(True)
@@ -1108,6 +1123,10 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _on_roi_select_clicked(self):
         """点击"选择识别区域"按钮：从 buffer 取最新帧，弹出 ROI 选择窗口"""
+        # 受保护入口：选择识别区域需要有效访问权限
+        if not self._guard_access("选择识别区域"):
+            return
+
         if self._frame_buffer is None:
             self.statusBar().showMessage("请先连接直播流")
             return
@@ -1172,6 +1191,10 @@ class MainWindow(QMainWindow):
 
     def _start_ocr(self):
         """启动 OCR 识别"""
+        # 受保护入口：OCR 需要有效访问权限
+        if not self._guard_access("启动 OCR 识别"):
+            return
+
         if not self._connected or self._frame_buffer is None:
             self.statusBar().showMessage("请先连接直播流")
             return
@@ -1289,8 +1312,12 @@ class MainWindow(QMainWindow):
 
     def _update_ocr_button_state(self):
         """更新 OCR 按钮状态"""
-        # 只有在已连接且已选择 ROI 时才启用 OCR 按钮
-        enabled = self._connected and self._roi_manager.has_roi
+        # 只有在已连接、已选择 ROI、且访问未被拒绝时才启用 OCR 按钮
+        enabled = (
+            self._connected
+            and self._roi_manager.has_roi
+            and not self._access_status.is_expired()
+        )
         self._ocr_btn.setEnabled(enabled)
 
         if enabled and not self._ocr_running:
@@ -1404,13 +1431,59 @@ class MainWindow(QMainWindow):
                     read_frames, skipped, first_str,
                 )
 
+    # ------------------------------------------------------------------
+    # 访问限制（Phase 7.2-6.6）
+    # ------------------------------------------------------------------
+    def _guard_access(self, action: str) -> bool:
+        """受保护动作的统一切口检查。
+
+        所有需要有效访问权限的入口都必须先经过这里，
+        而不是只在启动时判定一次。
+
+        :param action: 动作名称，用于状态栏提示
+        :return: True 允许继续；False 已拒绝（状态栏已说明原因）
+        """
+        if not self._access_status.is_expired():
+            return True
+
+        self.statusBar().showMessage(
+            f"{self._access_status.get_status_text()}，无法{action}"
+        )
+        logger.info("访问被拒绝: %s", action)
+        return False
+
+    def _on_access_timer_timeout(self):
+        """访问状态专用定时器回调（低频）。
+
+        用于发现「应用运行中到期」：状态到期后无需重启即可生效。
+        """
+        self._access_status.refresh()
+
     def _on_access_status_changed(self):
-        """访问状态变化回调"""
+        """访问状态变化回调：更新文案，并把限制反映到控件可用状态。
+
+        只影响「能否发起新动作」，绝不主动断开已建立的视频连接 ——
+        到期后仍保留画面与「断开」入口，避免把用户困在播放中。
+        """
         status_text = self._access_status.get_status_text()
         self._access_status_label.setText(status_text)
 
-        # 激活入口始终可用：试用期内也应允许用户提前激活许可证
+        denied = self._access_status.is_expired()
+
+        # 激活入口始终可用：任何状态下都应允许用户激活许可证
         self._license_btn.setEnabled(True)
+
+        if not self._connected:
+            # 未连接：把受限的入口可见地关掉
+            self._connect_btn.setEnabled(not denied)
+            self._url_input.setEnabled(not denied)
+        elif denied and self._ocr_running:
+            # 已连接：到期后停止正在运行的 OCR（不主动断开视频流）
+            logger.info("访问已到期，停止正在运行的 OCR")
+            self._stop_ocr()
+
+        self._roi_btn.setEnabled(self._connected and not denied)
+        self._update_ocr_button_state()
 
     def _on_access_expired(self):
         """访问过期回调"""

@@ -33,6 +33,10 @@ class AccessState(Enum):
 class AccessStatus:
     """访问状态管理器"""
 
+    #: 访问状态重新评估周期（毫秒）。
+    #: 只用于发现「应用运行中到期」，因此刻意取低频值（30-60s）。
+    CHECK_INTERVAL_MS = 60000
+
     def __init__(self):
         self._state = AccessState.TRIAL
         self._expiry_time: Optional[datetime] = None
@@ -196,7 +200,14 @@ class AccessStatus:
         self.start_trial(self._trial_days)
 
     def is_expired(self) -> bool:
-        """是否已过期"""
+        """是否已过期。
+
+        这是受保护功能的【唯一访问判定入口】（Phase 7.2-6.6）：
+        只要有效状态为 EXPIRED —— 无论它来自许可证（已过期 / 无效 /
+        不属于本机）还是原有的试用倒计时 —— 调用方都应拒绝发起受保护动作。
+
+        本方法只读取既有状态，不改变任何状态机行为。
+        """
         return self.get_state() == AccessState.EXPIRED
 
     def get_remaining_time(self) -> timedelta:
@@ -220,10 +231,21 @@ class AccessStatus:
         if self._update_timer:
             # 立即更新一次
             self._notify_status_changed()
-            # 然后每分钟更新一次
-            self._update_timer.start(60000)  # 60秒
+            # 然后按 CHECK_INTERVAL_MS 周期重新评估
+            self._update_timer.start(self.CHECK_INTERVAL_MS)
 
     def stop_countdown(self):
         """停止倒计时"""
         if self._update_timer:
             self._update_timer.stop()
+
+    def refresh(self) -> None:
+        """周期性重新评估（由专用定时器低频调用）。
+
+        只通知展示层，用于发现「会话运行中到期」。
+
+        刻意不触发过期弹窗：弹窗仍只由 _notify_status_changed 在状态
+        真正变化时负责，避免每 60 秒重复弹出。
+        """
+        if self._on_status_changed:
+            self._on_status_changed()
