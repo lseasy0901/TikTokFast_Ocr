@@ -21,7 +21,10 @@ class LicenseResponse(BaseModel):
     state: str
     created_at: datetime
     redeemed_at: Optional[datetime]
-    authorization_id: int  # New: which authorization this license extends/redeems
+    # Which authorization this license extends/redeems.
+    # None while the license is still UNUSED: a license acquires an
+    # authorization only when it is redeemed (RedemptionService.redeem_license).
+    authorization_id: Optional[int] = None
 
     class Config:
         from_attributes = True

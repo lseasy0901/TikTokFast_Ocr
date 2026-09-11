@@ -17,7 +17,7 @@
 """
 
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Callable, Optional
 
@@ -47,6 +47,13 @@ class AccessStatus:
         self._trial_start = datetime.now()
         self._expiry_time = self._trial_start + timedelta(days=self._trial_days)
 
+        # 许可证状态（Phase 7.2-6.5）
+        # 一旦由已通过本地验证的 SignedLicense 驱动，就覆盖试用期显示。
+        # 有效期直接使用服务器签名的 expires 字段，客户端不做任何时长计算。
+        self._license_active: bool = False
+        self._license_expires_at: Optional[datetime] = None
+        self._license_note: Optional[str] = None
+
     def set_update_timer(self, timer):
         """设置更新定时器（由外部注入）"""
         self._update_timer = timer
@@ -56,8 +63,60 @@ class AccessStatus:
         self._on_status_changed = on_status_changed
         self._on_expired = on_expired
 
+    # ------------------------------------------------------------------
+    # 许可证状态（Phase 7.2-6.5）
+    # ------------------------------------------------------------------
+    def set_license_active(self, expires_at: Optional[datetime]) -> None:
+        """标记为已激活。
+
+        :param expires_at: 服务器签名凭据里的 expires（UTC aware）；
+                           None 表示永久授权。客户端不计算时长。
+        """
+        self._license_active = True
+        self._license_expires_at = expires_at
+        self._license_note = None
+        self._notify_status_changed()
+
+    def set_license_inactive(self, note: str) -> None:
+        """标记为许可证不可用（未激活/无效/已过期/不属于本机）。
+
+        :param note: 直接展示给用户的状态文案。
+        """
+        self._license_active = False
+        self._license_expires_at = None
+        self._license_note = note
+        self._notify_status_changed()
+
+    def clear_license_state(self) -> None:
+        """回到未被许可证驱动的状态（仍按原有试用逻辑显示）。"""
+        self._license_active = False
+        self._license_expires_at = None
+        self._license_note = None
+        self._notify_status_changed()
+
+    @property
+    def is_license_controlled(self) -> bool:
+        """当前显示是否由许可证状态决定。"""
+        return self._license_active or self._license_note is not None
+
     def get_state(self) -> AccessState:
         """获取当前状态"""
+        # 许可证优先：一旦有已激活凭据或明确的不激活原因，就覆盖试用逻辑
+        if self._license_note is not None:
+            return AccessState.EXPIRED
+
+        if self._license_active:
+            if self._license_expires_at is None:
+                return AccessState.ACTIVE  # 永久授权
+            remaining = (
+                self._license_expires_at - datetime.now(timezone.utc)
+            ).total_seconds()
+            if remaining <= 0:
+                return AccessState.EXPIRED
+            if remaining <= self._warning_hours * 3600:
+                return AccessState.EXPIRING
+            return AccessState.ACTIVE
+
         now = datetime.now()
 
         if self._state == AccessState.EXPIRED:
@@ -79,6 +138,22 @@ class AccessStatus:
 
     def get_status_text(self) -> str:
         """获取状态文本"""
+        # 许可证状态优先
+        if self._license_note is not None:
+            return self._license_note
+
+        if self._license_active:
+            if self._license_expires_at is None:
+                return "已激活"
+            remaining = (
+                self._license_expires_at - datetime.now(timezone.utc)
+            ).total_seconds()
+            if remaining <= 0:
+                return "许可证已过期"
+            if remaining <= self._warning_hours * 3600:
+                return f"即将到期 · 剩余 {int(remaining // 3600)}小时"
+            return f"已激活 · 剩余 {int(remaining // 86400)}天"
+
         state = self.get_state()
         now = datetime.now()
 
@@ -134,8 +209,10 @@ class AccessStatus:
         if self._on_status_changed:
             self._on_status_changed()
 
-        # 如果过期，触发过期回调
-        if self.get_state() == AccessState.EXPIRED and self._on_expired:
+        # 仅试用期到期才弹过期对话框。
+        # 许可证自身的状态（无效/已过期/不属于本机）由顶部文案表达，
+        # 不应弹出「免费试用已结束，请充值」这种与场景不符的提示。
+        if self._license_note is None and self.get_state() == AccessState.EXPIRED and self._on_expired:
             self._on_expired()
 
     def start_countdown(self):

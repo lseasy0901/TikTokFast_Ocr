@@ -43,7 +43,9 @@ class RedemptionService:
         self.db = db
         self.susi_security = susi_security_service
 
-    def find_or_create_authorization(self, device_id: str, duration_days: int) -> Authorization:
+    def find_or_create_authorization(
+        self, device_id: str, duration_days: int
+    ) -> tuple[Authorization, bool]:
         """Find existing authorization for device or create new one
 
         Rules:
@@ -51,6 +53,11 @@ class RedemptionService:
         - ACTIVE Authorization: extends expiry (accumulation)
         - EXPIRED Authorization: renews from server_time
         - REVOKED Authorization: cannot activate
+
+        Returns:
+            ``(authorization, created)``. ``created`` is True when this call
+            inserted the row. A freshly created authorization already carries
+            its full duration, so the caller must not extend it again.
         """
         server_time = datetime.now(timezone.utc)
         authorization = self.db.query(Authorization).filter(
@@ -58,7 +65,7 @@ class RedemptionService:
         ).first()
 
         if not authorization:
-            # Create new authorization with perpetual or time-based expiry
+            # Create new authorization with time-based expiry
             authorization = Authorization(
                 device_id=device_id,
                 expires_at=server_time + timedelta(days=duration_days)
@@ -66,11 +73,12 @@ class RedemptionService:
             self.db.add(authorization)
             self.db.commit()
             self.db.refresh(authorization)
+            return authorization, True
 
-        elif authorization.state == AuthorizationState.REVOKED:
+        if authorization.state == AuthorizationState.REVOKED:
             raise ValueError("revoked")
 
-        return authorization
+        return authorization, False
 
     def find_license_by_key_hash(self, key_hash: str) -> Optional[License]:
         """Get license by key hash"""
@@ -132,13 +140,19 @@ class RedemptionService:
             raise ValueError("already_redeemed")
 
         # STEP 3: Find or create Authorization for device
-        authorization = self.find_or_create_authorization(
+        authorization, created = self.find_or_create_authorization(
             activation_data.device_id,
             license.duration_days
         )
 
         # STEP 4: Update Authorization based on its current state
-        if authorization.state == AuthorizationState.ACTIVE:
+        if created:
+            # Brand new authorization: it already expires at exactly
+            # server_time + duration. Authorization.state defaults to ACTIVE,
+            # so without this guard the accumulation branch below would add the
+            # duration a second time and grant new devices 2x their key.
+            pass
+        elif authorization.state == AuthorizationState.ACTIVE:
             # Extend from current expiry (accumulation)
             authorization.expires_at = authorization.expires_at + timedelta(days=license.duration_days)
         elif authorization.state == AuthorizationState.EXPIRED:
@@ -167,7 +181,13 @@ class RedemptionService:
             signed_license_data = self.susi_security.create_signed_license(
                 {
                     "id": license.id,
-                    "license_key": license.license_key,
+                    # The plaintext key is deliberately never persisted (see
+                    # models.License: there is no license_key column), so it is
+                    # unavailable whenever creation and redemption happen in
+                    # different requests -- i.e. always, over HTTP.
+                    # The key hash is the canonical non-secret identifier for
+                    # this license and is always present.
+                    "license_key": license.key_hash,
                     "created_at": license.created_at,
                     "features": parse_features(license.features),
                     "authorization": {

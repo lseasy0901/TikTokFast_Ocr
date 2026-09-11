@@ -53,11 +53,13 @@ from PySide6.QtWidgets import (
 
 from gui.video_widget import VideoWidget
 from gui.expired_dialog import ExpiredDialog
+from gui.activation_dialog import ActivationDialog, LicenseWorker
+from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
 from stream.douyin import DouyinStream, DouyinStreamError
 from stream.ffmpeg_reader import FFmpegReader
 from stream.frame_buffer import LatestFrameBuffer
 from utils.performance import PerformanceMonitor
-from utils.access_status import AccessStatus, AccessState
+from utils.access_status import AccessStatus
 from ocr.roi_manager import ROI, ROIManager
 from ocr.roi_selector import ROISelector
 from ocr.worker import OCRWorker
@@ -188,6 +190,7 @@ class MainWindow(QMainWindow):
     # 跨线程安全 Signal：后台线程 → GUI 线程
     _connect_success_sig = Signal(dict)
     _connect_error_sig = Signal(str)
+    _license_loaded_sig = Signal(object)  # 启动时许可证校验结果
 
     def __init__(self):
         super().__init__()
@@ -225,6 +228,11 @@ class MainWindow(QMainWindow):
         self._access_status.set_update_timer(self._status_timer)
         self._access_status.set_callbacks(self._on_access_status_changed, self._on_access_expired)
 
+        # 许可证管理器（Phase 7.2-6.5）：激活 / 本地验证 / 启动恢复
+        self._license_manager = LicenseManager()
+        self._license_load_worker: LicenseWorker | None = None
+        self._license_loaded_sig.connect(self._on_license_loaded)
+
         # 上一次显示的 buffer frame_id
         self._last_displayed_frame_id: int = 0
 
@@ -239,6 +247,9 @@ class MainWindow(QMainWindow):
 
         # 更新初始访问状态
         self._on_access_status_changed()
+
+        # 启动时恢复已保存的许可证（读盘 + 本地验签在后台线程完成）
+        self._start_license_load()
 
         # 显示连接状态消息
         self._connection_status_label.show()
@@ -1398,11 +1409,8 @@ class MainWindow(QMainWindow):
         status_text = self._access_status.get_status_text()
         self._access_status_label.setText(status_text)
 
-        # 更新按钮状态
-        if self._access_status.get_state() == AccessState.EXPIRED:
-            self._license_btn.setEnabled(True)
-        else:
-            self._license_btn.setEnabled(False)
+        # 激活入口始终可用：试用期内也应允许用户提前激活许可证
+        self._license_btn.setEnabled(True)
 
     def _on_access_expired(self):
         """访问过期回调"""
@@ -1410,16 +1418,48 @@ class MainWindow(QMainWindow):
         dialog = ExpiredDialog(self)
         dialog.exec()
 
+    # ------------------------------------------------------------------
+    # 许可证激活（Phase 7.2-6.5）
+    # ------------------------------------------------------------------
+    def _start_license_load(self):
+        """后台加载并本地验证已保存的许可证，不阻塞 GUI。"""
+        self._license_load_worker = LicenseWorker(
+            task=self._license_manager.load_stored,
+            on_done=self._license_loaded_sig.emit,
+            name="license-startup",
+        )
+        self._license_load_worker.start()
+
+    def _on_license_loaded(self, result: LicenseResult):
+        """启动恢复结果（经 Qt 排队回到 GUI 线程）。"""
+        logger.info("启动许可证校验结果: %s", result.status.value)
+        self._apply_license_result(result)
+
     def _on_license_clicked(self):
-        """激活许可证按钮点击事件（占位）"""
-        # 演示功能：重置试用期
-        if self._access_status.get_state() == AccessState.EXPIRED:
-            self._access_status.reset_trial()
+        """激活许可证按钮点击事件：打开激活对话框。"""
+        dialog = ActivationDialog(self._license_manager, self)
+        dialog.exec()
+
+        # 只有真正建立起的本地许可证状态才更新顶部状态；
+        # 激活失败（网络不可达 / 密钥无效等）不会改变本地状态，
+        # 其错误信息已在对话框中展示。
+        result = dialog.result_data()
+        if result is not None:
+            self._apply_license_result(result)
             QMessageBox.information(
-                self,
-                "提示",
-                "已重置7天试用期限。"
+                self, "提示", f"{result.display_text}，许可证已保存到本机。"
             )
+
+    def _apply_license_result(self, result: LicenseResult):
+        """把许可证结果映射到顶部状态显示。"""
+        if result.status is LicenseStatus.NOT_ACTIVATED:
+            # 本地没有许可证：保持原有的试用期显示
+            self._access_status.clear_license_state()
+        elif result.status is LicenseStatus.ACTIVATED:
+            # 有效期直接来自服务器签名的凭据，客户端不做时长计算
+            self._access_status.set_license_active(result.expires_at)
+        else:
+            self._access_status.set_license_inactive(result.display_text)
 
     # ------------------------------------------------------------------
     # 窗口事件处理

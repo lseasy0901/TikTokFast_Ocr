@@ -2736,6 +2736,90 @@
 #
 # NEXT: Phase 7.2-6.5
 
+# 7.2-6.5: REAL CLIENT LICENSE ACTIVATION
+# Status: COMPLETED
+#
+# Goal: implement the real client activation flow - user enters a key, the client
+# sends it to the License Server, the Business Layer redeems the one-time key, the
+# server returns a Susi SignedLicense, the client verifies it LOCALLY (signature,
+# machine binding, expiry), stores it, reflects it in the UI, and re-verifies it on
+# every subsequent startup.
+#
+# Architecture (division of responsibility unchanged):
+# Business Layer (server) is authoritative for one-time redemption, Authorization,
+# duration, max_hosts, key state and authorization state.
+# Susi owns the signed artifact, signature verification, machine binding, expiry
+# verification and local security verification.
+# The CLIENT implements NO duration logic and NO key-consumption logic: its expiry
+# comes only from the server-signed `expires` field, and redeemability is decided
+# only by the server. Susi's native activate() is NOT treated as redemption.
+#
+# Files Created (client):
+# - utils/susi_verifier.py    susi_helper.exe bridge: machine code + signature verify
+#                             (public key only; the client never holds a private key)
+# - utils/license_client.py   HTTP POST to /api/v1/licenses/activate, typed failures
+# - utils/license_store.py    atomic local persistence (tmp + os.replace)
+# - utils/license_manager.py  orchestration + local verification + startup restore
+# - gui/activation_dialog.py  activation UI + background worker (Qt queued signal)
+# - license_server/test_phase_7_2_6_5.py  55-check acceptance suite over the real path
+#
+# Files Modified:
+# - gui/main_window.py        wires LicenseManager; button always enabled and opens
+#                             the real dialog; background startup restore; maps the
+#                             result onto the header. Placeholder trial-reset removed.
+# - utils/access_status.py    server-driven license state overrides the trial display
+# - license_server/app/schemas.py                        (Defect 5 fix)
+# - license_server/app/services/redemption_service.py    (Defect 6 + Defect 7 fixes)
+# - .gitignore                ignore the provisioned client public key file
+#
+# Storage:
+# - %APPDATA%/DouyinLowLatencyViewer/license.json (NOT the source tree)
+# - contains the signed artifact plus non-secret metadata only; never a private key,
+#   never the plaintext license key, never a locally computed expiry
+# - written ONLY after local verification passes, so every failure path leaves the
+#   stored license byte-identical
+#
+# Local verification order (the order IS the security property):
+#   1. structure parses  2. signature valid  3. machine_codes contains this machine
+#   4. expires is in the future
+#
+# Defects found by exercising the REAL path (the 7.2-6 suite could not see these;
+# it uses a plain-dict config and calls services in a single session):
+# - Defect 5: POST /admin/licenses returned HTTP 500 (authorization_id required but
+#   None for a fresh license) - there was no way to obtain a key through the API.
+#   Fixed: authorization_id is now Optional.
+# - Defect 6: signing failed for every real redemption with
+#   'License' object has no attribute 'license_key' - models.License deliberately has
+#   no plaintext-key column, so creation and redemption (always different requests)
+#   could never sign. Fixed: the signed payload's identifier is the key_hash.
+# - Defect 7: a device's FIRST redemption granted 2x the key duration (a new
+#   Authorization defaults to ACTIVE, so redeem_license's accumulation branch added a
+#   second duration; measured 5,184,000s instead of 2,592,000s for a 30-day key).
+#   Fixed with user approval: find_or_create_authorization returns (auth, created)
+#   and a brand-new authorization is not extended again. Accumulation for
+#   pre-existing authorizations and restart-on-expiry are unchanged.
+#
+# Validation (actually executed):
+# - license_server/test_phase_7_2_6_5.py : 55/55 checks PASSED (exit 0)
+# - license_server/test_phase_7_2_6.py   : 8/8 PASSED (exit 0)  [baseline intact]
+# - license_server/test_validate_route.py: 2/2 PASSED (exit 0)  [baseline intact]
+# - GUI activation path (real server, offscreen dialog) : 16/16 checks PASSED
+# - application startup (offscreen QApplication + MainWindow) : OK
+# - cargo build --release : SUCCESS (0 errors; 2 pre-existing warnings)
+# - git diff --check : no whitespace errors
+#
+# Security:
+# - no private signing key on the client; only a public key, provisioned per
+#   deployment via SUSI_PUBLIC_KEY / license_public_key.pem (gitignored)
+# - no secret written to logs; client logs URLs, statuses and reason codes only
+# - no key material tracked by Git; susi_source unmodified
+#
+# Phase 7.2-6.5 Complete: the client can activate a real license against the real
+# server through the real Susi signer, verify it locally, persist it, and restore it
+# on the next startup - with all 10 required error cases verified.
+#
+# NEXT: Phase 7.2-7
+
 # Do NOT return to:
 
 # 
@@ -3198,9 +3282,9 @@
 
 # Phase 7.2 — Susi Compatibility Spike
 
-# Status: 7.2-6 COMPLETED (business licensing fully integrated with real Susi)
+# Status: 7.2-6.5 COMPLETED (real client license activation working end to end)
 
-# Phase 7.2-6.5 — NEXT PHASE
+# Phase 7.2-7 — NEXT PHASE
 
 # Status: NOT STARTED
 

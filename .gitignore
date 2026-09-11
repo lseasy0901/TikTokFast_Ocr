@@ -18,6 +18,8 @@ license_server/.env
 
 # Signing key material - never commit private keys
 license_server/*.pem
+# Client-side verification public key (provisioned per deployment, Phase 7.2-6.5)
+license_public_key.pem
 
 # Local databases
 *.db
