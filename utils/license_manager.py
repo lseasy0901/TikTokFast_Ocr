@@ -32,13 +32,13 @@ from enum import Enum
 from typing import FrozenSet, Optional
 
 from utils.license_client import (
-    DEFAULT_SERVER_URL,
     REASON_ALREADY_REDEEMED,
     REASON_INVALID_KEY,
     REASON_REVOKED,
     REASON_SERVER_ERROR,
     REASON_TEXT,
     REASON_UNREACHABLE,
+    resolve_server_url,
     LicenseServerClient,
     LicenseServerError,
 )
@@ -124,7 +124,10 @@ class LicenseManager:
         verifier: Optional[SusiVerifier] = None,
         client: Optional[LicenseServerClient] = None,
     ):
-        self.server_url = server_url or DEFAULT_SERVER_URL
+        # 走统一的解析入口，使 DLV_LICENSE_SERVER_URL 对真实客户端路径生效。
+        # 直接用 DEFAULT_SERVER_URL 会把这里固定成 localhost，并把非空值传给
+        # LicenseServerClient，从而绕过它内部的环境变量覆盖。
+        self.server_url = resolve_server_url(server_url)
         self.store = store or LicenseStore()
 
         if verifier is None:

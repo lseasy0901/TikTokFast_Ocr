@@ -27,14 +27,17 @@ async def lifespan(app: FastAPI):
     print("License Server shutting down...")
 
 
-# Create FastAPI app
+# Create FastAPI app.
+# Swagger UI and ReDoc are a development aid: in production they hand out a
+# complete map of the activation API to anyone who asks. They are therefore
+# mounted only when DEBUG is on. No route or business behavior depends on this.
 app = FastAPI(
     title="License Server API",
     description="API for managing and validating license keys",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc"
+    docs_url="/docs" if config.settings.DEBUG else None,
+    redoc_url="/redoc" if config.settings.DEBUG else None
 )
 
 # Security
@@ -123,10 +126,16 @@ setup_admin(app)
 
 
 if __name__ == "__main__":
+    # 便捷启动入口。固定绑定回环地址，且**永不**自动开启 reload：
+    # 自动 reload 只适合开发，生产环境会让进程被监视器反复重启。
+    #
+    # 生产请用 CLI 形式（本项目的模块布局是「app/ 在 sys.path 上，模块名 main」，
+    # 因此需要 --app-dir；写成 app.main:app 会因 app/ 不在 sys.path 而导入失败）：
+    #     python -m uvicorn main:app --app-dir app --host 127.0.0.1 --port 8000
+    #
+    # 这里传 app 对象而不是导入字符串：`python main.py` 时本文件已经以 __main__
+    # 执行过一次，若再让 uvicorn 以字符串导入，模块会被执行第二遍（再建一个
+    # engine、再跑一次 create_all）。传对象则只有一个实例。
     import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=config.settings.DEBUG
-    )
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)

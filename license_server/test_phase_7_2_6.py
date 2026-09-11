@@ -49,7 +49,6 @@ def test_business_redemption_succeeds():
         redemption_service = RedemptionService(
             db,
             SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': '-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApniRTJwG5l5fBX0LqvGwYGqLmq4TwGm+FwBBV8dvr+DcKyPIuksfbTyYoznMKcc7EUtCvuiiaBvi/X5Ef2fisZi2ENBN2TLDJhthuwZ7K4xrVoJ2U3IscaySz1C2I1iYY/cx+d+uAAAR2wG65+TbFdlJS5ny7njiL91ZAkXHx4VpL4qnq5ctMFG6lv5dBgg4xu53LtEDFClBs/iubJpaP/rcnSgfvhopudluKt9TmPpndWHYW7PCVfrurOYmNUBnaokRcfGRrFiAn+lxx/kJSkfZzm9p0Rhmzr4nAQRSVl+EkA4i9X04BV7QGwWprl6wmafpA9NLd+/pPXDYnOab3QIDAQAB\n-----END PUBLIC KEY-----'
             })
@@ -90,7 +89,6 @@ def test_susi_signed_license_creation():
     try:
         license_service = LicenseService(db)
         susi_security = SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': public_key_pem
             })
@@ -141,7 +139,6 @@ def test_valid_client_verification():
     try:
         license_service = LicenseService(db)
         susi_security = SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': public_key_pem
             })
@@ -184,7 +181,6 @@ def test_tampered_signature_rejection():
     try:
         license_service = LicenseService(db)
         susi_security = SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': public_key_pem
             })
@@ -243,7 +239,6 @@ def test_wrong_machine_rejection():
     try:
         license_service = LicenseService(db)
         susi_security = SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': public_key_pem
             })
@@ -299,7 +294,6 @@ def test_expired_license_rejection():
     try:
         license_service = LicenseService(db)
         susi_security = SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': public_key_pem
             })
@@ -354,7 +348,6 @@ def test_feature_propagation():
     try:
         license_service = LicenseService(db)
         susi_security = SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': public_key_pem
             })
@@ -405,7 +398,6 @@ def test_repeated_redemption_rejection():
     try:
         license_service = LicenseService(db)
         susi_security = SusiSecurityService({
-                'SUSI_HELPER_PATH': 'susi_helper.exe',
                 'SUSI_DEVELOPMENT_PRIVATE_KEY': private_key_pem,
                 'SUSI_DEVELOPMENT_PUBLIC_KEY': public_key_pem
             })

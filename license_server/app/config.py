@@ -7,6 +7,13 @@ import os
 from typing import Optional
 from pydantic_settings import BaseSettings
 
+#: <repo>/license_server -- the directory that holds .env. Derived from this
+#: file's location instead of the process working directory.
+_LICENSE_SERVER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: Absolute path to the .env file.
+_ENV_FILE = os.path.join(_LICENSE_SERVER_DIR, ".env")
+
 
 class Settings(BaseSettings):
     """Application settings"""
@@ -29,10 +36,12 @@ class Settings(BaseSettings):
     DEFAULT_MAX_DEVICES: int = 1
 
     # Susi security settings - Phase 7.2-6
-    SUSI_HELPER_PATH: str = os.getenv(
-        "SUSI_HELPER_PATH",
-        r"D:\TIikTok_Ocr\DouyinLowLatencyViewer\susi_helper\target\release\susi_helper.exe"
-    )
+    # Path to the susi_helper executable. Empty means "not configured": the service
+    # then falls back to the project-root default with an OS-aware filename
+    # (susi_helper.exe on Windows, susi_helper elsewhere). An absolute path baked in
+    # here would silently pin the server to one developer machine and make the
+    # fallback unreachable.
+    SUSI_HELPER_PATH: str = os.getenv("SUSI_HELPER_PATH", "")
     # Signing key material is supplied via environment / .env only.
     # No private or public key is embedded in source.
     #
@@ -53,7 +62,13 @@ class Settings(BaseSettings):
     SUSI_DEVELOPMENT_PUBLIC_KEY: str = os.getenv("SUSI_DEVELOPMENT_PUBLIC_KEY", "")
 
     class Config:
-        env_file = ".env"
+        # Absolute path. A bare ".env" is resolved against the process working
+        # directory, so every setting below would be silently skipped whenever the
+        # server is started with a CWD other than license_server/ (a process
+        # manager, a service unit, or uvicorn --app-dir from elsewhere) -- and the
+        # fallbacks below would quietly take over. Precedence is unchanged:
+        # environment variable > .env > the defaults declared here.
+        env_file = _ENV_FILE
 
 
 settings = Settings()

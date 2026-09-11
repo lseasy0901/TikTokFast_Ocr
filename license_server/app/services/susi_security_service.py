@@ -81,15 +81,51 @@ def _looks_like_private_key_pem(value: Optional[str]) -> bool:
     return "PRIVATE KEY" in label
 
 
+def _helper_basename(platform_name: Optional[str] = None) -> str:
+    """susi_helper 的文件名按平台约定。
+
+    Windows 上是 ``susi_helper.exe``；其余平台没有扩展名。与客户端
+    ``utils/susi_verifier.default_helper_path()`` 使用同一约定。
+
+    ``platform_name`` 仅用于测试：默认取 ``os.name``。
+    """
+    name = os.name if platform_name is None else platform_name
+    return "susi_helper.exe" if name == "nt" else "susi_helper"
+
+
+def _default_helper_path() -> str:
+    """项目根下的 susi_helper 默认位置（不含任何配置覆盖）。"""
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+    return os.path.join(
+        project_root, "susi_helper", "target", "release", _helper_basename()
+    )
+
+
+def _resolve_helper_path(configured: Optional[str] = None) -> str:
+    """解析 susi_helper 可执行文件路径。
+
+    顺序：
+        1. ``SUSI_HELPER_PATH``（环境变量或 .env）
+        2. 项目根下的默认位置，文件名按 :func:`_helper_basename` 的 OS 约定
+
+    空值或纯空白按「未设置」处理。刻意不做「配置了但文件不存在就回退」——
+    那会把拼写错误伪装成默认行为。文件是否存在由调用方检查并报错。
+    """
+    if configured and str(configured).strip():
+        return str(configured).strip()
+    return _default_helper_path()
+
+
 class SusiSecurityService:
     """Service for Susi security operations using susi_helper subprocess"""
 
     def __init__(self, config):
         self.config = config
-        # Use hardcoded path to avoid path resolution issues
-        # Resolve SUSI_HELPER_PATH deterministically from project root
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        self.susi_helper_path = os.path.join(project_root, 'susi_helper', 'target', 'release', 'susi_helper.exe')
+        self.susi_helper_path = _resolve_helper_path(
+            self._get_setting('SUSI_HELPER_PATH')
+        )
 
         # Check if helper exists
         if not os.path.exists(self.susi_helper_path):

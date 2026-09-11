@@ -10,6 +10,75 @@ import sys
 # Get the absolute path of the project directory
 PROJECT_ROOT = os.path.abspath(".")
 
+# ---------------------------------------------------------------------------
+# Required build inputs (Phase 7.2-8G)
+#
+# Two of the bundled artifacts are deliberately NOT in Git -- both are gitignored
+# and provisioned per deployment or built locally:
+#
+#   license_public_key.pem                        (.gitignore:22)
+#   susi_helper/target/release/susi_helper.exe    (Rust target tree, gitignored)
+#
+# PyInstaller only *warns* when a `datas` source is missing and then produces an
+# EXE anyway. That EXE cannot compute a machine code or verify a SignedLicense,
+# so the failure surfaces as "activation does not work" on a customer's machine
+# instead of as a build error here. Verify both up front and stop the build.
+#
+# config.yaml is intentionally not in this list: it is tracked in Git, so it
+# cannot go missing from a clone.
+# ---------------------------------------------------------------------------
+_PUBLIC_KEY_SRC = os.path.join(PROJECT_ROOT, "license_public_key.pem")
+_SUSI_HELPER_SRC = os.path.join(
+    PROJECT_ROOT, "susi_helper", "target", "release", "susi_helper.exe"
+)
+_SUSI_HELPER_DEST = os.path.join("susi_helper", "target", "release")
+
+
+def require_build_inputs(required):
+    """Abort the build when a required bundled artifact is absent.
+
+    `required` is a sequence of (label, path) pairs. Raises FileNotFoundError
+    naming every missing path exactly, so the fix is unambiguous.
+    """
+    missing = [(label, path) for label, path in required if not os.path.isfile(path)]
+    if not missing:
+        return
+
+    report = [
+        "",
+        "=" * 72,
+        "BUILD ABORTED: required file(s) are missing.",
+        "",
+        "PyInstaller would otherwise emit an EXE that cannot activate a license.",
+        "",
+    ]
+    for label, path in missing:
+        report += ["  missing %s" % label, "    %s" % path, ""]
+
+    report += [
+        "Looked under: %s" % PROJECT_ROOT,
+        '(this spec uses os.path.abspath("."), so run the build from the',
+        " repository root)",
+        "",
+        "How to provision:",
+        "  license_public_key.pem",
+        "      copy the deployment's public key to %s" % _PUBLIC_KEY_SRC,
+        "  susi_helper",
+        "      run `cargo build --release` in susi_helper/, or copy the pinned",
+        "      prebuilt binary to %s" % _SUSI_HELPER_SRC,
+        "=" * 72,
+        "",
+    ]
+    raise FileNotFoundError("\n".join(report))
+
+
+require_build_inputs(
+    (
+        ("license_public_key.pem", _PUBLIC_KEY_SRC),
+        ("susi_helper executable", _SUSI_HELPER_SRC),
+    )
+)
+
 # Data files to include
 datas = [
     # Config file
@@ -18,15 +87,12 @@ datas = [
     # offline, and utils.susi_verifier.resolve_public_key() looks for it next to the
     # package root -- which inside a frozen bundle is sys._MEIPASS. The key is public
     # by design; the private key never leaves the license server.
-    (os.path.join(PROJECT_ROOT, "license_public_key.pem"), "."),
+    (_PUBLIC_KEY_SRC, "."),
     # susi_helper is a separate executable (Rust), not an importable module, so it is
     # shipped as data. The destination directory matters: it must match where
     # utils.susi_verifier.default_helper_path() looks, otherwise the packaged app
     # cannot compute a machine code and activation fails before any HTTP call.
-    (
-        os.path.join(PROJECT_ROOT, "susi_helper", "target", "release", "susi_helper.exe"),
-        os.path.join("susi_helper", "target", "release"),
-    ),
+    (_SUSI_HELPER_SRC, _SUSI_HELPER_DEST),
 ]
 
 # Binaries to include (will be added to runtime directory)

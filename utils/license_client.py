@@ -21,6 +21,7 @@
 """
 
 import logging
+import os
 from typing import Optional
 
 import requests
@@ -32,7 +33,32 @@ _KEY_MIN_LENGTH = 16
 _KEY_MAX_LENGTH = 64
 _DEVICE_MAX_LENGTH = 64
 
+#: 环境变量覆盖：让同一份构建用于不同部署而无需改代码。
+#: 与验签公钥的 SUSI_PUBLIC_KEY 是同一个模式（utils/susi_verifier.py）。
+#: 刻意不提供 GUI 输入框：地址属于部署配置，不是终端用户设置。
+_ENV_SERVER_URL = "DLV_LICENSE_SERVER_URL"
+
+#: 开发默认值：本机许可证服务器。生产部署必须用上面的环境变量覆盖。
 DEFAULT_SERVER_URL = "http://127.0.0.1:8000/api/v1"
+
+
+def resolve_server_url(override: Optional[str] = None) -> str:
+    """解析激活端点的 base_url。
+
+    顺序：
+        1. 显式传入的 override（``LicenseServerClient`` 构造函数参数）
+        2. 环境变量 ``DLV_LICENSE_SERVER_URL``
+        3. :data:`DEFAULT_SERVER_URL`（本机开发默认）
+
+    空值或纯空白按「未设置」处理，避免一个空的环境变量把地址变成空串
+    而让激活静默失败。返回值不带尾随斜杠。
+    """
+    if override and override.strip():
+        return override.strip().rstrip("/")
+    env_value = os.environ.get(_ENV_SERVER_URL)
+    if env_value and env_value.strip():
+        return env_value.strip().rstrip("/")
+    return DEFAULT_SERVER_URL
 
 #: 可预期的失败原因（其余一律归类为 server_error）
 REASON_INVALID_KEY = "invalid_key"
@@ -55,7 +81,7 @@ class LicenseServerClient:
     """许可证服务器激活端点客户端。"""
 
     def __init__(self, base_url: Optional[str] = None, timeout: int = 15):
-        self.base_url = (base_url or DEFAULT_SERVER_URL).rstrip("/")
+        self.base_url = resolve_server_url(base_url)
         self.timeout = timeout
 
     def activate(self, license_key: str, device_id: str) -> dict:

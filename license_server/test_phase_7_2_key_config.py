@@ -33,7 +33,7 @@ APP_DIR = os.path.join(HERE, "app")
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from test_key_loader import load_test_rsa_key  # noqa: E402
+from test_key_loader import load_test_rsa_key, load_test_rsa_public_key  # noqa: E402
 
 from services import susi_security_service  # noqa: E402
 from services.susi_security_service import (  # noqa: E402
@@ -292,27 +292,37 @@ def test_real_sign_and_verify():
     if not signed_license:
         return
 
-    # Verify with the client-side public key, exactly as the desktop app would.
-    if not os.path.exists(PUBLIC_KEY_FILE):
-        check("real signing: verifies with client public key (SKIPPED: no pubkey)", True)
-        return
+    # A round trip must use ONE keypair. This test signs with test_rsa_key.pem,
+    # so it has to verify with that key's own public half -- license_public_key.pem
+    # is the *production* key and correctly rejects a test-key signature.
+    def verify_with(public_key_pem):
+        import json
+        cmd = {
+            "command": "Verify",
+            "signed_license": signed_license,
+            "public_key_pem": public_key_pem,
+        }
+        proc = subprocess.run(
+            [HELPER], input=json.dumps(cmd), capture_output=True, text=True, timeout=15
+        )
+        return json.loads(proc.stdout)
 
-    with open(PUBLIC_KEY_FILE, "r", encoding="utf-8") as f:
-        public_key_pem = f.read().replace("\r\n", "\n").strip()
-
-    cmd = {
-        "command": "Verify",
-        "signed_license": signed_license,
-        "public_key_pem": public_key_pem,
-    }
-    import json
-    proc = subprocess.run(
-        [HELPER], input=json.dumps(cmd), capture_output=True, text=True, timeout=15
-    )
-    response = json.loads(proc.stdout)
-    check("real signing: verifies with the client public key",
+    response = verify_with(load_test_rsa_public_key())
+    check("real signing: verifies with the matching test public key",
           "Success" in response,
           str(response.get("Error", {}).get("message", ""))[:120])
+
+    # The production key must still refuse a signature it did not make: this is
+    # what proves the fixture change did not weaken production verification.
+    if os.path.exists(PUBLIC_KEY_FILE):
+        with open(PUBLIC_KEY_FILE, "r", encoding="utf-8") as f:
+            production_public_key = f.read().replace("\r\n", "\n").strip()
+        rejected = verify_with(production_public_key)
+        check("real signing: production public key REJECTS a test-key signature",
+              "Success" not in rejected,
+              "production key accepted a foreign signature")
+    else:
+        check("real signing: production key rejection (SKIPPED: no pubkey)", True)
 
 
 def main():
