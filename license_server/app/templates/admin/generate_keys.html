@@ -1,0 +1,126 @@
+{# Phase 7.2-7 — License Key 生成页（本项目自有模板，不修改 SQLAdmin 快照） #}
+{# 沿用 SQLAdmin 的 layout，一次性明文由 layout 内的 secret_modal 弹窗渲染。 #}
+{% extends "sqladmin/layout.html" %}
+
+{% block content %}
+<div class="col-12">
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">生成新的 License Key</h3>
+    </div>
+    <div class="card-body">
+
+      <div class="alert alert-info" role="alert">
+        <div class="d-flex">
+          <div>
+            <h4 class="alert-title">明文 Key 只会显示一次</h4>
+            <div class="text-muted">
+              服务器<strong>只保存该 Key 的 SHA-256 指纹</strong>，不保存明文。
+              生成后请立即复制；此后无法在后台再次查看，也无法通过检索找回。
+              若丢失，请吊销该 Key 并重新生成。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {% if error %}
+      <div class="alert alert-danger" role="alert">
+        <div class="text-muted">{{ error }}</div>
+      </div>
+      {% endif %}
+
+      {% if generated_keys %}
+      <div class="alert alert-success" role="alert">
+        <h4 class="alert-title">已生成 {{ generated_keys|length }} 个 License Key</h4>
+        <div class="text-muted">
+          服务端本次收到的 <code>quantity</code> =
+          <code>{{ received_quantity_raw if received_quantity_raw is not none else '（未提供）' }}</code>，
+          实际写入 <strong>{{ generated_keys|length }}</strong> 条记录。
+        </div>
+        <div class="text-muted mt-2">
+          明文<strong>只在本次显示这一次</strong>。服务器对每个 Key 只保存 SHA-256 指纹，
+          不保存明文；关闭或刷新本页后将无法再次查看，也无法在后台检索。
+          请立即复制并分发。若丢失，请吊销对应 Key 并重新生成。
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label" for="generated-keys">本次生成的明文 License Key（每行一个）</label>
+        {# 纯展示：刻意不给 name，避免任何形式的重新提交把明文 Key 回传给服务器。 #}
+        <textarea class="form-control" id="generated-keys"
+                  rows="{{ result_rows }}" readonly spellcheck="false"
+                  style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre;">{{ generated_keys|join('\n') }}</textarea>
+        <div class="mt-2">
+          <button type="button" class="btn btn-primary" id="copy-all-keys">复制全部</button>
+          <span class="text-muted ms-2" id="copy-all-status"></span>
+        </div>
+      </div>
+
+      <script>
+        document.addEventListener('DOMContentLoaded', function () {
+          var btn = document.getElementById('copy-all-keys');
+          if (!btn) { return; }
+          btn.addEventListener('click', function () {
+            var area = document.getElementById('generated-keys');
+            var status = document.getElementById('copy-all-status');
+            var done = function () { status.textContent = '已复制到剪贴板'; };
+            var fallback = function () {
+              area.select();
+              area.setSelectionRange(0, area.value.length);
+              document.execCommand('copy');
+              done();
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(area.value).then(done, fallback);
+            } else {
+              fallback();
+            }
+          });
+        });
+      </script>
+      {% endif %}
+
+      <form method="POST" action="{{ request.url.path }}" autocomplete="off">
+        <div class="mb-3">
+          <label class="form-label required" for="duration_days">有效期（天）</label>
+          <select class="form-select" id="duration_days" name="duration_days" required>
+            {% for days in duration_presets %}
+            <option value="{{ days }}" {% if days == selected_days %}selected{% endif %}>
+              {{ days }} 天
+            </option>
+            {% endfor %}
+          </select>
+          <small class="form-hint">
+            V1 提供固定的有效期预设：1 / 30 / 180 / 365 天。
+            该时长会在兑换时由服务器按既有规则累加到设备授权上。
+          </small>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label required" for="quantity">数量</label>
+          <input type="number" class="form-control" id="quantity" name="quantity"
+                 min="1" max="{{ max_quantity }}" step="1" required value="{{ selected_quantity }}">
+          <small class="form-hint">
+            单次可生成 1–{{ max_quantity }} 个 License Key。整批在同一个数据库事务内写入，
+            要么全部成功，要么一个都不写入。数量填 1 即为原有的单个生成。
+          </small>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label" for="features">功能标签（可选）</label>
+          <input type="text" class="form-control" id="features" name="features"
+                 placeholder="例如：ocr">
+          <small class="form-hint">
+            用英文逗号分隔，可留空。功能标签会随 License 一起保存，并在兑换时并入设备授权。
+          </small>
+        </div>
+
+        <div class="form-footer">
+          <button type="submit" class="btn btn-primary">生成 License Key</button>
+        </div>
+      </form>
+
+    </div>
+  </div>
+</div>
+{% endblock %}

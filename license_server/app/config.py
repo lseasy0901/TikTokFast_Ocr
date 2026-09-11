@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     )
     # Signing key material is supplied via environment / .env only.
     # No private or public key is embedded in source.
+    #
+    # The private key is a multi-line PEM, which does not survive a bare .env /
+    # environment round trip on Windows: unquoted it is silently truncated to the
+    # "-----BEGIN ..." marker, and a UTF-16 paste yields NUL bytes. So the preferred
+    # representation is a path to a PEM file -- SUSI_DEVELOPMENT_PRIVATE_KEY_FILE.
+    # The inline variable is kept as a fallback and may use escaped \n.
+    #
+    # Precedence (implemented in SusiSecurityService):
+    #   1. SUSI_DEVELOPMENT_PRIVATE_KEY_FILE, when set
+    #   2. SUSI_DEVELOPMENT_PRIVATE_KEY, when set
+    #   3. license_server/test_rsa_key.pem, when it exists (developer default)
+    SUSI_DEVELOPMENT_PRIVATE_KEY_FILE: str = os.getenv(
+        "SUSI_DEVELOPMENT_PRIVATE_KEY_FILE", ""
+    )
     SUSI_DEVELOPMENT_PRIVATE_KEY: str = os.getenv("SUSI_DEVELOPMENT_PRIVATE_KEY", "")
     SUSI_DEVELOPMENT_PUBLIC_KEY: str = os.getenv("SUSI_DEVELOPMENT_PUBLIC_KEY", "")
 

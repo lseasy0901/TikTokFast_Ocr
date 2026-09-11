@@ -2327,7 +2327,7 @@
 
 # 
 
-# Phase 7.2-5 completed.
+# Phase 7.2-7 completed (Admin Web / SQLAdmin).
 
 # 
 
@@ -2337,7 +2337,7 @@
 
 # Phase 7.3 — License Security
 
-# Status: 7.2-5 COMPLETED
+# Status: 7.2-7 COMPLETED
 
 # Architecture:
 #
@@ -2820,6 +2820,214 @@
 #
 # NEXT: Phase 7.2-7
 
+# 7.2-7: ADMIN WEB (SQLAdmin)
+# Status: COMPLETED
+#
+# Goal: a local-only administration UI over the existing Business Licensing layer -
+# generate keys, list/detail keys, view redemption history, revoke, and inspect
+# authorizations - without changing the license schema, the business rules, or the
+# desktop client.
+#
+# Agreed V1 scope (authoritative for this phase):
+# - NO Product table and NO Product management. The product is already carried as the
+#   product string in the Susi payload; models.License and the existing services stay
+#   authoritative.
+# - Revoke is allowed ONLY for UNUSED keys. No Authorization revocation, and no attempt
+#   to invalidate an already-redeemed device entitlement. UI wording is explicit:
+#   UNUSED -> can revoke; REDEEMED -> cannot revoke (revoking does NOT withdraw the
+#   existing entitlement); REVOKED -> already revoked.
+# - SQLAdmin is local-only administration. It is NOT a customer-facing surface and NOT
+#   a licensing backend.
+# - Duration presets: 1 / 30 / 180 / 365 days, enforced by a server-side whitelist (not
+#   merely by the form widget).
+#
+# Integration approach:
+# - admin_web/sqladmin is the UNMODIFIED upstream SQLAdmin 0.31.1 snapshot (BSD-3-Clause),
+#   gitignored (.gitignore:47). No file in the snapshot was edited; every source file still
+#   carries its original download mtime. Bytecode caches created by importing it were
+#   removed so the tree is pristine.
+# - app/admin/__init__.py prepends the snapshot to sys.path, then self-checks that
+#   sqladmin.__file__ resolves inside it AND that the version is exactly 0.31.1, aborting
+#   otherwise - so a stray PyPI sqladmin can never be mixed in silently.
+# - Only SQLAdmin's public extension surface is used: Admin / ModelView / BaseView /
+#   @action / @expose / AuthenticationBackend / Secret / Flash / StaticValuesFilter.
+# - Every licensing mutation goes through the existing Business Layer
+#   (services.license_service.LicenseService); schemas.LicenseCreate still supplies bounds.
+#
+# Files Created:
+# - license_server/app/admin/__init__.py   snapshot registration + version self-check + setup_admin()
+# - license_server/app/admin/auth.py       AdminAuth(AuthenticationBackend)
+# - license_server/app/admin/views.py      LicenseAdmin / AuthorizationAdmin /
+#                                          GenerateKeysView / RedeemedHistoryView
+# - license_server/app/templates/admin/generate_keys.html
+#
+# Files Modified (additive only):
+# - license_server/app/main.py        mounts the admin at /admin; no existing route touched
+# - license_server/requirements.txt   SQLAdmin runtime deps only (wtforms, jinja2,
+#                                     itsdangerous). SQLAdmin itself is NOT installed from
+#                                     PyPI - it is loaded from the snapshot.
+#
+# Files NOT modified (verified by an empty `git diff --stat`):
+# - app/models.py, app/schemas.py, app/services/*, the desktop client, susi_source,
+#   susi_helper. No Product table was added.
+#
+# Authentication:
+# - Single operator identity "admin"; the password is the existing config ADMIN_API_KEY,
+#   compared with secrets.compare_digest. Login fails closed if ADMIN_API_KEY is empty.
+# - is_accessible() is enforced on the built-in list/detail routes and on @action/@expose,
+#   so all three entry paths share one control.
+#
+# Design decisions forced by the framework:
+# - ModelViewMeta sets `identity` unconditionally from the model name
+#   (sqladmin/models.py:111), so a second ModelView on License collides on both the route
+#   path and the admin:list endpoint name. "Redeemed history" is therefore a BaseView that
+#   redirects to /admin/license/list?state=REDEEMED, and the Authorization detail page
+#   exposes the `licenses` relationship as per-device history.
+# - Plaintext keys are never persisted (models.License stores only key_hash), so SQLAdmin's
+#   built-in create form cannot work and LicenseAdmin.can_create is False. Generation goes
+#   through GenerateKeysView and the plaintext is shown exactly once via Secret.reveal_once
+#   (stashed on request.state; never in the session, never logged, no-store on the response).
+#
+# Defect found during verification (upstream; worked around, NOT patched):
+# - SQLAdmin 0.31.1's flash() appends IN PLACE to request.session["_messages"], but
+#   Starlette 1.6.0's Session only marks `modified` in __setitem__/__delitem__/pop/clear/
+#   update/setdefault, and SessionMiddleware emits Set-Cookie only when session.modified.
+#   So when a message was already pending at the start of a request, the newly queued
+#   message was silently dropped - including the "已兑换，未吊销，不会收回既有授权" warning.
+#   Proven empirically (the response carried no Set-Cookie; the decoded session cookie held
+#   only the stale message). Worked around in views._persist_flashes() by re-assigning the
+#   list to trip __setitem__. The snapshot is NOT patched.
+# - views._back() returns 303 (See Other) instead of Starlette's default 307, so the browser
+#   re-issues GET for the result page rather than replaying the action URL.
+#
+# Validation (actually executed):
+# - Admin smoke suite (uvicorn on 127.0.0.1, throwaway SQLite DB, driven over HTTP):
+#   39/39 checks PASSED. Covers: unauthenticated redirects on every entry point; login
+#   accept/reject for both bad username and bad password; page loads; key generation through
+#   the real LicenseService with key_hash == sha256(plaintext) and the plaintext absent from
+#   every column; no-store on the one-time secret response; the 1/30/180/365 whitelist
+#   rejecting 0 / 400 / abc / empty / 45 with no rows written; UNUSED -> REVOKED; re-revoke
+#   as a no-op; the revoked key then failing real redemption with 400 {"detail":"revoked"};
+#   REDEEMED left unchanged with the non-withdrawal wording rendered; StaticValuesFilter over
+#   all three states; Authorization detail rendering related licenses; traceback-free log.
+# - git diff --check : no whitespace errors
+#
+# Out of scope (deliberately NOT implemented):
+# - Product management, Authorization revocation, a redemption/validation event log,
+#   per-operator accounts and roles, CSRF hardening, and any customer-facing exposure.
+#
+# Phase 7.2-7 Complete: an operator can generate, list, inspect and revoke License Keys and
+# inspect device authorizations through a local admin UI, with every mutation performed by the
+# existing Business Layer, without adding a Product table or changing any existing business rule.
+#
+# 7.2-7a: BATCH LICENSE KEY GENERATION (ADDENDUM TO 7.2-7)
+# Status: COMPLETED
+#
+# Goal: let the administrator generate N License Keys in one operation, while keeping
+# single-key generation on the SAME code path.
+#
+# Exact quantity limit: 1..1000 per submission (MAX_BATCH_QUANTITY = 1000, defined in
+# app/admin/views.py). Enforced server-side - the form's max attribute is a convenience,
+# not the control.
+#
+# Files Modified:
+# - license_server/app/admin/views.py              MAX_BATCH_QUANTITY, _parse_int,
+#                                                  _create_license_batch; GenerateKeysView
+#                                                  now accepts a `quantity` field
+# - license_server/app/services/license_service.py create_license(..., commit=True).
+#                                                  commit=False flushes instead of
+#                                                  committing, so a whole batch is ONE
+#                                                  transaction. The default path is
+#                                                  unchanged from the original behaviour.
+# - license_server/app/templates/admin/generate_keys.html
+#                                                  quantity input + inline one-time result
+#                                                  panel with "复制全部"
+# Files Created:
+# - license_server/test_phase_7_2_7_batch.py       43-check focused suite
+#
+# One generation implementation:
+# quantity=1 runs through the same batch path, so there is no separate single-key branch.
+#
+# Atomicity:
+# The entire batch is written in a single transaction. create_license(commit=False) only
+# flushes; the view commits once after the loop and rolls back on any failure, so a failed
+# batch leaves zero rows behind. Verified by forcing a duplicate key_hash mid-batch
+# (IntegrityError) and asserting the previously flushed rows are also gone.
+#
+# Result presentation change (intentional):
+# The plaintext was previously rendered through SQLAdmin's Secret.reveal_once modal, which
+# carries a single value. A batch needs N values, so the result is now an inline read-only
+# textarea (one key per line) with a "复制全部" button, the generated count, and a
+# "plaintext is shown only now" warning. The no-store headers are unchanged. quantity=1
+# uses this same panel.
+#
+# Unchanged and verified:
+# - generation still calls services.license_service.generate_secure_key /
+#   generate_key_hash - hashing and storage rules untouched
+# - no plaintext column and no plaintext persisted; key_hash stays unique NOT NULL
+# - generation creates NO Authorization (authorization_id remains NULL)
+# - duration whitelist unchanged: 1 / 30 / 180 / 365
+# - existing single-key generation, revoke, and redemption behaviour unchanged
+#
+# Validation (actually executed):
+# - license_server/test_phase_7_2_7_batch.py : 43/43 PASSED (0 failed, 0 skipped)
+# - Phase 7.2-7 admin smoke suite           : 39/39 PASSED
+# - includes: 1000-key batch, all 1000 distinct; none of the 1016 generated plaintext
+#   keys appear in the server log
+#
+# Issue observed while testing (pre-existing, NOT introduced here and NOT fixed here):
+# - With SUSI_DEVELOPMENT_PRIVATE_KEY unset, POST /api/v1/licenses/activate does not fail
+#   fast: the request hung past 90s and the server returned HTTP 500 with no traceback in
+#   the log. With the key supplied the identical call succeeds in ~0.15s. Redemption was
+#   out of scope for this addendum, so it was reported rather than modified.
+#
+# 7.2-7d: ADMIN WEB IS OPTIONAL AT STARTUP
+# Status: COMPLETED
+#
+# Problem: app/main.py calls setup_admin(app) at import time, and app/admin/__init__.py raised
+# when the vendored snapshot directory was missing. Because admin_web/ is gitignored
+# (.gitignore:47) and deployed out-of-band, a fresh clone did not merely lose /admin -- the
+# entire License Server failed to start, API routes included.
+#
+# Fix: setup_admin() now checks vendored_sqladmin_available() first and returns None with a
+# WARNING when the snapshot is absent. The License Server starts normally; /admin is simply
+# unavailable in that environment. This is the ONLY tolerated skip: if the snapshot IS present
+# but the self-check fails (wrong copy loaded, version mismatch) _import_sqladmin() still
+# raises, so a broken install cannot masquerade as a missing admin.
+#
+# Files Modified:
+# - license_server/app/admin/__init__.py   logger, vendored_sqladmin_available(),
+#                                          early return in setup_admin()
+# Files Created:
+# - license_server/test_phase_7_2_7d_admin_optional_startup.py
+#
+# Unchanged: admin_web/ itself (still gitignored, still unmodified), app/main.py, models,
+# schemas, services, business rules, Susi logic.
+#
+# Validation (actually executed):
+# - license_server/test_phase_7_2_7d_admin_optional_startup.py : 23/23 PASSED (0 skipped)
+#   covers: skip returns None and the warning names the missing path; no /admin route mounted;
+#   route count unchanged; real uvicorn main:app boots with the snapshot absent; GET / 200;
+#   /openapi.json 200 with both API routes registered; GET /admin 404; no traceback.
+#   Normal-path guard: /admin mounts, /admin/login 200, unauthenticated /admin 307.
+#   Part 3 SKIPS (not fails) when admin_web/ is absent, so the file also runs on a fresh clone.
+#
+# DEFERRED TO PHASE 7.2-8 (productionization) - reproducible release build:
+# douyin_viewer.spec bundles two artifacts that are NOT in Git:
+#   - license_public_key.pem                     (.gitignore:22, provisioned per deployment)
+#   - susi_helper/target/release/susi_helper.exe (Rust target tree, gitignored)
+# The current release EXE was already verified WITH these references, so they are kept as-is;
+# solving the packaging pipeline is 7.2-8 work, not this checkpoint's.
+# To resolve in 7.2-8:
+#   - the release build is not reproducible from a clone alone: it needs a published public
+#     key and a Rust build (or a pinned prebuilt helper) plus a documented provisioning step
+#   - the build should fail loudly and early when either artifact is missing, instead of
+#     producing an EXE that cannot activate anyone
+#   - same class as the admin_web/ snapshot: out-of-band components must be documented as
+#     deployment prerequisites
+#
+# NEXT: Phase 7.3 (License Security)
+
 # Do NOT return to:
 
 # 
@@ -3284,9 +3492,9 @@
 
 # Status: 7.2-6.5 COMPLETED (real client license activation working end to end)
 
-# Phase 7.2-7 — NEXT PHASE
+# Phase 7.2-7 — Admin Web (SQLAdmin)
 
-# Status: NOT STARTED
+# Status: COMPLETED
 
 # 
 

@@ -111,6 +111,17 @@ async def validate_license(
     return service.validate_license(validation_data)
 
 
+# ----------------------------------------------------------------------
+# Phase 7.2-7: Admin Web (SQLAdmin) — mounted at /admin
+#
+# 纯增量：不改动上面任何既有路由。管理后台使用内置的 SQLAdmin 0.31.1 快照
+# (admin_web/sqladmin)，并通过既有 Business Layer 完成所有许可证变更。
+# ----------------------------------------------------------------------
+from admin import setup_admin  # noqa: E402
+
+setup_admin(app)
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

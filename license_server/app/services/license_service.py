@@ -31,7 +31,12 @@ class LicenseService:
     def __init__(self, db: Session):
         self.db = db
 
-    def create_license(self, license_data: LicenseCreate, features: Optional[List[str]] = None) -> License:
+    def create_license(
+        self,
+        license_data: LicenseCreate,
+        features: Optional[List[str]] = None,
+        commit: bool = True,
+    ) -> License:
         """Create a new license key (UNUSED state)
 
         Rules:
@@ -39,6 +44,10 @@ class LicenseService:
         - Hash for database storage
         - Store plaintext key only in memory
         - Initial state: UNUSED
+
+        `commit=False` flushes instead of committing, so a caller can write a
+        whole batch inside ONE transaction and commit or roll it back as a unit.
+        The default (`commit=True`) is the original behaviour, unchanged.
         """
         license_key = generate_secure_key()
         key_hash = generate_key_hash(license_key)
@@ -54,8 +63,13 @@ class LicenseService:
         )
 
         self.db.add(license)
-        self.db.commit()
-        self.db.refresh(license)
+        if commit:
+            self.db.commit()
+            self.db.refresh(license)
+        else:
+            # Flush so the row is written inside the caller's transaction and
+            # the object picks up its primary key, without ending that transaction.
+            self.db.flush()
 
         # Store plaintext key in memory only
         license.license_key = license_key

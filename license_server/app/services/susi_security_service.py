@@ -15,6 +15,71 @@ import os
 
 logger = logging.getLogger(__name__)
 
+#: <repo>/license_server -- used to locate the developer default signing key
+#: without depending on the process working directory.
+_LICENSE_SERVER_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+#: Developer default, gitignored, never shipped. Used only when neither
+#: SUSI_DEVELOPMENT_PRIVATE_KEY_FILE nor SUSI_DEVELOPMENT_PRIVATE_KEY is set.
+_DEV_SIGNING_KEY_PATH = os.path.join(_LICENSE_SERVER_DIR, "test_rsa_key.pem")
+
+
+def _normalize_pem_text(value: Optional[str]) -> str:
+    """Normalize a PEM carried through .env / an environment variable.
+
+    ``python-dotenv`` only preserves a multi-line value when it is quoted, so the
+    common .env representation escapes the line breaks as literal ``\\n``. Windows
+    values may instead carry real CRLF. Handle both, then trim.
+
+    Never logs or returns anything derived from the key beyond the normalized PEM.
+    """
+    if not value:
+        return ""
+    text = (
+        value.replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+    return text.strip()
+
+
+def _read_pem_file(path: str) -> str:
+    """Read a PEM file as text, independent of the platform's locale encoding.
+
+    Reads bytes and decodes explicitly as UTF-8. A UTF-16 file (the usual result of
+    writing a key from PowerShell redirection) would otherwise yield interleaved NUL
+    bytes, which the Rust PEM parser reports as
+    "PEM preamble contains invalid data (NUL byte)" -- a message that points at the
+    key material instead of at the file encoding. Reject that case explicitly.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    if b"\x00" in raw:
+        raise RuntimeError(
+            f"signing key file contains NUL bytes (is it UTF-16 encoded? "
+            f"re-save it as UTF-8): {path}"
+        )
+
+    return _normalize_pem_text(raw.decode("utf-8-sig"))
+
+
+def _looks_like_private_key_pem(value: Optional[str]) -> bool:
+    """Cheap structural check: does this look like a private-key PEM at all?
+
+    Deliberately not a cryptographic validation -- susi_helper remains the sole
+    authority on whether the key is well-formed and usable. This only catches the
+    "nothing was configured / the value was truncated" case, which the helper
+    otherwise reports with a misleading encoding error.
+    """
+    if not value or "-----BEGIN" not in value or "-----END" not in value:
+        return False
+    label = value.split("-----BEGIN", 1)[1].split("-----", 1)[0]
+    return "PRIVATE KEY" in label
+
 
 class SusiSecurityService:
     """Service for Susi security operations using susi_helper subprocess"""
@@ -29,8 +94,88 @@ class SusiSecurityService:
         # Check if helper exists
         if not os.path.exists(self.susi_helper_path):
             raise RuntimeError(f"susi_helper not found at: {self.susi_helper_path}")
-        self.development_private_key = self._get_setting('SUSI_DEVELOPMENT_PRIVATE_KEY')
+        self.development_private_key, self._private_key_source = (
+            self._resolve_private_key()
+        )
         self.development_public_key = self._get_setting('SUSI_DEVELOPMENT_PUBLIC_KEY')
+
+        # Surface a misconfiguration at startup. The signing key is not needed to
+        # boot (the server also serves validation/admin routes), so this warns
+        # rather than raises; create_signed_license() is where it becomes fatal.
+        # Only the *source* is ever logged -- never key material.
+        if not _looks_like_private_key_pem(self.development_private_key):
+            logger.warning(
+                "No usable Susi signing key configured (source: %s). "
+                "License activation will fail until SUSI_DEVELOPMENT_PRIVATE_KEY_FILE "
+                "or SUSI_DEVELOPMENT_PRIVATE_KEY is set.",
+                self._private_key_source,
+            )
+
+    def _resolve_private_key(self) -> Tuple[str, str]:
+        """Resolve the development signing key PEM.
+
+        Returns ``(pem, source)`` where ``source`` describes *where* the value came
+        from (a path or a variable name) so failures can be diagnosed without ever
+        logging key material. ``pem`` is "" when nothing usable was configured.
+
+        Precedence:
+            1. SUSI_DEVELOPMENT_PRIVATE_KEY_FILE -- an explicit file path
+            2. SUSI_DEVELOPMENT_PRIVATE_KEY      -- an explicit inline PEM
+            3. <license_server>/test_rsa_key.pem -- developer default, when present
+
+        An explicitly configured source is never silently skipped: if it is set but
+        unusable, that is reported rather than falling through to the next option,
+        so a typo cannot be masked by a leftover default key.
+        """
+        file_setting = self._get_setting('SUSI_DEVELOPMENT_PRIVATE_KEY_FILE')
+        if file_setting and str(file_setting).strip():
+            # Relative paths resolve against <repo>/license_server rather than the
+            # process working directory, which is not fixed (uvicorn vs run_server.py).
+            path = str(file_setting).strip()
+            if not os.path.isabs(path):
+                path = os.path.join(_LICENSE_SERVER_DIR, path)
+            if not os.path.isfile(path):
+                return "", f"SUSI_DEVELOPMENT_PRIVATE_KEY_FILE={path} (file not found)"
+            try:
+                return _read_pem_file(path), f"file {path}"
+            except (OSError, UnicodeDecodeError, RuntimeError) as e:
+                return "", f"file {path} ({e})"
+
+        inline = self._get_setting('SUSI_DEVELOPMENT_PRIVATE_KEY')
+        if inline and str(inline).strip():
+            pem = _normalize_pem_text(str(inline))
+            if _looks_like_private_key_pem(pem):
+                return pem, "SUSI_DEVELOPMENT_PRIVATE_KEY"
+            # Reports the shape of the failure, never the value.
+            return "", (
+                "SUSI_DEVELOPMENT_PRIVATE_KEY (set, but not a private-key PEM -- "
+                "an unquoted multi-line value in .env is truncated; "
+                "use SUSI_DEVELOPMENT_PRIVATE_KEY_FILE instead)"
+            )
+
+        if os.path.isfile(_DEV_SIGNING_KEY_PATH):
+            try:
+                return _read_pem_file(_DEV_SIGNING_KEY_PATH), f"file {_DEV_SIGNING_KEY_PATH}"
+            except (OSError, UnicodeDecodeError, RuntimeError) as e:
+                return "", f"file {_DEV_SIGNING_KEY_PATH} ({e})"
+
+        return "", "not configured"
+
+    def _require_private_key(self) -> str:
+        """Return the signing key PEM or raise a clear, key-free error.
+
+        Without this the empty string reaches susi_helper, which reports
+        "PEM preamble contains invalid data (NUL byte)" -- an encoding-shaped message
+        for what is really an unconfigured key.
+        """
+        if not _looks_like_private_key_pem(self.development_private_key):
+            raise RuntimeError(
+                "Susi signing key is not configured: no usable private key PEM. "
+                f"Source: {self._private_key_source}. Set "
+                "SUSI_DEVELOPMENT_PRIVATE_KEY_FILE to a PEM file path (preferred), "
+                "or SUSI_DEVELOPMENT_PRIVATE_KEY to a private-key PEM."
+            )
+        return self.development_private_key
 
     def _get_setting(self, key: str):
         """Read a setting from either a plain dict (tests) or Settings (the app).
@@ -133,6 +278,11 @@ class SusiSecurityService:
         """
         logger.debug("Creating signed license for device %s", device_id)
 
+        # Resolve the signing key before the try block so a configuration error
+        # surfaces with its own message rather than being rewrapped by the generic
+        # handler below as an "unexpected error".
+        private_key_pem = self._require_private_key()
+
         try:
             # Generate machine code for this device
             machine_code = self.get_machine_code()
@@ -157,7 +307,7 @@ class SusiSecurityService:
             # Prepare sign command with private key and payload
             sign_command = {
                 "command": "SignLicense",
-                "private_key_pem": self.development_private_key,
+                "private_key_pem": private_key_pem,
                 "payload": payload
             }
             sign_command_json = json.dumps(sign_command)

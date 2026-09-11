@@ -14,6 +14,19 @@ PROJECT_ROOT = os.path.abspath(".")
 datas = [
     # Config file
     (os.path.join(PROJECT_ROOT, "config.yaml"), "."),
+    # License verification public key. The client needs it to verify SignedLicenses
+    # offline, and utils.susi_verifier.resolve_public_key() looks for it next to the
+    # package root -- which inside a frozen bundle is sys._MEIPASS. The key is public
+    # by design; the private key never leaves the license server.
+    (os.path.join(PROJECT_ROOT, "license_public_key.pem"), "."),
+    # susi_helper is a separate executable (Rust), not an importable module, so it is
+    # shipped as data. The destination directory matters: it must match where
+    # utils.susi_verifier.default_helper_path() looks, otherwise the packaged app
+    # cannot compute a machine code and activation fails before any HTTP call.
+    (
+        os.path.join(PROJECT_ROOT, "susi_helper", "target", "release", "susi_helper.exe"),
+        os.path.join("susi_helper", "target", "release"),
+    ),
 ]
 
 # Binaries to include (will be added to runtime directory)
