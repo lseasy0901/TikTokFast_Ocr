@@ -16,6 +16,9 @@ env/
 *.env
 license_server/.env
 
+# Signing key material - never commit private keys
+license_server/*.pem
+
 # Local databases
 *.db
 *.sqlite
@@ -37,3 +40,6 @@ Thumbs.db
 
 # Rust
 target/
+
+# Vendored third-party admin UI (upstream sqladmin snapshot, not project source)
+admin_web/

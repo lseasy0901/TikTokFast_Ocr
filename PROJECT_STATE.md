@@ -2327,7 +2327,7 @@
 
 # 
 
-# Phase 7.1 completed.
+# Phase 7.2-5 completed.
 
 # 
 
@@ -2335,20 +2335,23 @@
 
 # 
 
-# Phase 7.2 — Susi Compatibility Spike
+# Phase 7.3 — License Security
 
-# Status: 7.2-3 COMPLETED
+# Status: 7.2-5 COMPLETED
 
 # Architecture:
 #
-# Python Application → susi_helper.exe → susi_core → Susi crypto primitives
+# Business Layer (SQLAlchemy) → Susi Security Layer (susi_core) → Client (susi_helper.exe)
 #
 # The susi_helper binary:
 # - Rust binary that wraps susi_core library
 # - Implements JSON stdin/stdout protocol for subprocess integration
-# - Exposes get_machine_code(), sign_license(), verify_license() functions
+# - Exposes get_machine_code() function
 # - Built against REAL local Susi source (path dependency)
 # - 852.5 KB release binary compiled successfully
+#
+# Critical Finding: Susi's License model is the DESTINATION of redemption (signed artifact),
+# NOT the source. We use Susi for security/cryptography only, NOT for redemption logic.
 
 # Completed work:
 #
@@ -2423,6 +2426,315 @@
 # ✅ Tamper detection works (signature integrity checks present)
 # ✅ Python → susi_helper.exe → Susi subprocess integration verified
 # ✅ No fake Susi APIs or replacement crypto used
+
+# 7.2-4: INTEGRATION BOUNDARY DESIGN
+# Status: COMPLETED
+#
+# Critical Finding: Susi's License model is the DESTINATION of redemption (signed artifact),
+# NOT the source. We use Susi for security/cryptography only, NOT for redemption logic.
+#
+# Architecture Boundary:
+#
+# Business Layer (SQLAlchemy) ← our redemption logic
+#         ↓ (atomic transaction)
+# Susi Security Layer (susi_core) ← RSA-SHA256 signing, verification, fingerprints
+#         ↓
+# Client (susi_helper.exe) ← machine code, verify signed license
+#
+# Data Boundary:
+#
+# Business Database:
+# - licenses (key_hash, state, duration_days, authorization_id)
+# - authorizations (device_id, expires_at, state)
+# - NO license_key persisted (plaintext only in memory)
+# - NO max_devices (violates business model)
+# - NO Susi lease model
+# - NO Susi machine binding model
+#
+# Susi Security Layer:
+# - LicensePayload (subset for signing)
+# - get_machine_code() - returns SHA256 fingerprint
+# - sign_license() - signs with RSA private key
+# - verify_license() - verifies with RSA public key
+# - SignedLicense - output artifact
+#
+# NOT used by us:
+# - susi_core::License struct (full record)
+# - susi_core::activate() (Susi's activation model)
+# - susi_core::MachineActivation (Susi's machine model)
+# - susi_core::machines[] (we use device_id)
+# - susi_core::lease_duration_hours (not our business model)
+#
+# Responsibility Matrix:
+#
+# Server (Business Layer):
+# - Generate license keys (secrets.token_urlsafe)
+# - Hash license keys (SHA256)
+# - Validate one-time redemption (UNUSED → REDEEMED)
+# - Reject repeats (already_redeemed error)
+# - Manage authorization lifecycle (ACTIVE → EXPIRED → REVOKED)
+# - No max_devices constraint
+# - Feature union semantics
+# - Atomic transaction: check + mutation + redemption
+# - Admin operations
+# - Business API endpoints
+#
+# Server (Susi Layer):
+# - Generate RSA keypairs (server-side only)
+# - Sign LicensePayload
+# - Generate machine fingerprints
+# - Produce SignedLicense artifacts
+#
+# Client (susi_helper.exe):
+# - get_machine_code() - query
+# - verify_license() - verify
+# - NO business logic
+# - NO database access
+# - NO redemption rules
+#
+# Redemption Transaction Flow:
+# 1. Admin creates license (UNUSED)
+# 2. Client calls /licenses/activate with license_key + device_id
+# 3. Server validates (not REDEEMED/REVOKED)
+# 4. Server finds/creates authorization
+# 5. Server updates authorization expiry based on state
+# 6. Server marks license as REDEEMED (atomic commit)
+# 7. Server generates Susi LicensePayload (contains license_key)
+# 8. Server signs payload (RSA private key)
+# 9. Server returns SignedLicense (optional download)
+# 10. Client verifies with public key (optional)
+#
+# Security Boundaries:
+# - License key: Plaintext in memory only, never persisted
+# - Private key: Server filesystem only, never in client code
+# - Database: Hashed keys, device IDs, expiration times
+# - Signed license: Immutable artifact, contains license_key
+#
+# Implementation Files:
+# - NEW: license_server/app/services/redemption_service.py
+# - MODIFY: license_server/app/services/license_service.py (remove max_devices)
+# - MODIFY: license_server/app/models.py (remove max_devices field)
+# - NEW: license_server/app/api/redemption.py
+# - NEW: susi_helper/extend_commands.py
+#
+# Mismatches (Acceptable - Design Decisions):
+# - License key generation: Random (us) vs Sequential (Susi)
+# - Device ID: SHA256 (us) vs MachineActivation (Susi)
+# - Lease model: None (us) vs Lease duration (Susi)
+# - Machine binding: device_id (us) vs machines[] (Susi)
+# - Activation model: Admin creates → Client redeems (us) vs Susi activation (Susi)
+#
+# Critical Design Principles:
+# 1. License Key = Our Responsibility (generate, validate, hash, not persisted)
+# 2. Authorization = Our Responsibility (device_id, no lease, no max_devices)
+# 3. Susi = Security Foundation Only (signing, verification, fingerprints)
+# 4. Signed License = Output Artifact (after redemption, immutable)
+# 5. Business Rules = Our Domain (one-time redemption, feature union)
+#
+# All verification requirements met:
+# ✅ No fake Susi APIs
+# ✅ No replacement crypto
+# ✅ No changes to locked business model
+# ✅ No global max_devices=1
+# ✅ No Susi activation == redemption assumption
+# ✅ No production private key in client code
+# ✅ No upstream Susi modifications
+# ✅ Atomic transaction (check + mutation + redemption in ONE DB transaction)
+#
+# Phase 7.2-4 Complete: Architecture boundary established, separation of concerns defined.
+
+# 7.2-5: BUSINESS LICENSING IMPLEMENTATION
+# Status: COMPLETED
+#
+# Goal: Turn the approved 7.2-4 architecture into real executable business-layer code.
+# Implementation separated LicenseService (admin) from RedemptionService (redemption).
+#
+# Files Created:
+# - license_server/app/services/license_service.py (77 lines)
+#   * LicenseService for admin operations
+#   * create_license() - Generates UNUSED licenses with features
+#   * get_license_by_key() - Admin lookup
+#   * revoke_license() - Admin revoke
+#   * get_all_licenses() - Admin listing
+#
+# - license_server/app/services/redemption_service.py (339 lines)
+#   * RedemptionService for redemption operations
+#   * redeem_license() - Atomic transaction: check state + mutate auth + mark REDEEMED
+#   * validate_license() - Read-only validation
+#   * aggregate_features() - Union features across licenses
+#   * find_or_create_authorization() - Authorization lifecycle management
+#
+# Files Modified:
+# - license_server/app/models.py
+#   * Removed max_devices column from Authorization (violates business model)
+#   * Added features: Text column to License (JSON-serialized feature list)
+#   * Fixed calculate_expires_at() method in Authorization
+#
+# - license_server/app/schemas.py
+#   * Removed max_devices from LicenseCreate schema
+#
+# - license_server/app/main.py
+#   * Updated imports to include redemption_service
+#   * Changed create_license endpoint to use LicenseService
+#   * Changed activate_license endpoint to use RedemptionService
+#
+# - license_server/add_features_column.py (28 lines)
+#   * Migration script to add features column without dropping tables
+#
+# All Locked Business Rules Preserved:
+# 1. LicenseKey is globally one-time: UNUSED → REDEEMED → REVOKED
+# 2. Repeated redemption returns 'already_redeemed' and does NOT mutate Authorization
+# 3. Authorization states:
+#    - No Authorization: expires_at = server_time + duration
+#    - ACTIVE: expiry += duration (accumulation)
+#    - EXPIRED: expires_at = server_time + duration (restart)
+#    - REVOKED: Cannot activate
+# 4. Atomic transaction: Check state + mutate auth + mark REDEEMED in ONE DB transaction
+# 5. Features are unioned across all authorized licenses
+# 6. No global max_devices=1 constraint
+# 7. Different keys may redeem to different devices
+#
+# Feature Union Semantics:
+# - Features stored as JSON in License model
+# - Unioned across all licenses for a device
+# - Each license has its own features set
+# - aggregate_features() returns set union of all features
+#
+# Service Separation:
+# - LicenseService: Admin operations (create, get, revoke, list)
+# - RedemptionService: Business redemption operations (redeem, validate, aggregate features)
+# - Susi integration: Not yet implemented in code, but architecture ready
+#
+# Test Results (10 tests):
+# - Test 1: First redemption of UNUSED key - PASSED
+# - Test 2: Same key + same device => already_redeemed - PASSED
+# - Test 3: Same key + different device => already_redeemed - PASSED
+# - Test 4: Different key extends active authorization - PASSED
+# - Test 5: Expired authorization restart - PASSED (after bug fix)
+# - Test 6: Revoked key rejection - PASSED
+# - Test 7: Feature union - PASSED
+# - Test 8: Different keys on different devices - PASSED
+# - Test 9: Repeated redemption does not mutate - PASSED
+# - Test 10: Transaction atomicity - PASSED
+#
+# Bugs Fixed:
+# - calculate_expires_at() calculation bug in expired authorization restart
+#   * Changed from: authorization.calculate_expires_at(server_time)
+#   * Changed to: server_time + timedelta(days=license.duration_days)
+# - AuthorizationState.EXPIRED reference error (was missing in import)
+#
+# Verification:
+# - 10/10 tests passing
+# - Atomic transactions verified
+# - Feature union semantics verified
+# - No max_devices constraint enforced
+# - One-time redemption enforced
+# - Service separation maintained
+# - Architecture matches Phase 7.2-4 design
+#
+# Phase 7.2-5 Complete: Business licensing system implemented with atomic transactions,
+# feature union, and proper separation of concerns.
+
+# 7.2-6: SUSI BUSINESS INTEGRATION
+# Status: COMPLETED
+#
+# Goal: Connect the Phase 7.2-5 business licensing layer to the REAL local Susi
+# source through the existing susi_helper.exe subprocess interface, without
+# adopting Susi's native License -> Machine model.
+#
+# Integration model (unchanged from the 7.2-4 boundary):
+# Business Layer (SQLAlchemy) -> Susi Security Layer (susi_core) -> Client (susi_helper.exe)
+# Susi supplies cryptography only: signing, verification, fingerprints.
+# Redemption, entitlement accumulation and feature union remain ours.
+#
+# Files Created:
+# - license_server/app/services/susi_security_service.py
+#   * get_machine_code()      -> susi_helper GetMachineCode
+#   * create_signed_license() -> susi_helper SignLicense
+#   * verify_license()        -> susi_helper Verify
+#   * No business logic; pure security operations
+# - license_server/test_validate_route.py
+#   * Smoke test for POST /licenses/validate (regression guard for Defect 3 below)
+#
+# Files Modified:
+# - susi_helper/src/main.rs
+#   * Command::Verify now declares and uses the public_key_pem supplied by the caller
+#   * Removed the hardcoded "PUBLIC_KEY_HERE" placeholder
+#   * Removed DEBUG output that dumped full stdin contents (including the private key)
+# - license_server/app/config.py
+#   * Removed embedded (invalid) private/public key PEM defaults
+#   * SUSI_DEVELOPMENT_PRIVATE_KEY / _PUBLIC_KEY now come from env / .env only
+# - license_server/app/services/susi_security_service.py
+#   * Added _to_rfc3339() - naive DB datetimes -> RFC3339 with explicit UTC offset
+#   * Added _get_setting() - supports both dict (tests) and Settings (app)
+#   * DEBUG prints replaced with logging; no key material or full stdin is logged
+# - license_server/app/main.py
+#   * /licenses/validate repointed to RedemptionService (see Defect 3)
+#
+# Defects Found And Fixed During Acceptance:
+#
+# 1. SignLicense rejected by serde_json: "premature end of input" (line 0, column 0)
+#    - The stdin byte count matched the Python string length exactly (2205 == 2205)
+#      and the payload parsed fine in Python, so this was NOT truncation, NOT a
+#      stdin delivery fault and NOT an encoding fault.
+#    - LicensePayload.created/expires are chrono::DateTime<Utc>; chrono's RFC3339
+#      parser requires a timezone offset.
+#    - SQLAlchemy DateTime columns (declared without timezone=True) return NAIVE
+#      datetimes, so .isoformat() emitted "2026-09-11T12:02:34" with no offset.
+#    - chrono then fails with ParseErrorKind::TooShort, whose Display string is
+#      literally "premature end of input"; raised via D::Error::custom it reports
+#      position 0:0, which is why the line/column looked like a JSON syntax error.
+#    - Fixed by serializing through _to_rfc3339().
+#
+# 2. Verify could never succeed
+#    - SusiSecurityService sent public_key_pem, but Command::Verify declared only
+#      signed_license; serde ignores unknown fields by default, so the key was
+#      silently discarded with no error.
+#    - main.rs then verified against the literal "PUBLIC_KEY_HERE".
+#    - Fixed by declaring public_key_pem on the variant and using it.
+#
+# 3. /licenses/validate raised AttributeError (found by the new route smoke test)
+#    - The 7.2-5 refactor removed LicenseService.validate_license, but main.py still
+#      called it.
+#    - Fixed by repointing the route to RedemptionService.validate_license.
+#
+# 4. app/main.py could not be imported at all (found by the new route smoke test)
+#    - main.py passes config.settings (a pydantic Settings object) to
+#      SusiSecurityService, which called .get() - a dict API.
+#    - AttributeError: 'Settings' object has no attribute 'get'
+#    - The 7.2-6 acceptance suite missed this because it constructs the service with
+#      a plain dict, so the production app was never exercised.
+#    - Fixed by adding _get_setting(), which supports both dict and Settings.
+#
+# Business Rules Preserved:
+# - One-time redemption (UNUSED -> REDEEMED -> REVOKED) is still enforced by the
+#   Business Layer (RedemptionService), NOT by Susi.
+# - No Susi lease model: lease_expires and lease_grace_period are always null in the
+#   signed LicensePayload. (susi_core's own License.lease_duration_hours defaults to
+#   72, but that struct is never constructed by this integration.)
+# - No Susi machine-binding model; the machine code is carried in machine_codes[].
+# - Features are unioned by the Business Layer and embedded into the signed payload.
+#
+# Security Constraints Respected:
+# - No fake Susi APIs; the real local susi_core is used via susi_helper.exe.
+# - test_rsa_key.pem is NOT embedded in source and is gitignored (license_server/*.pem).
+# - No production private key exists in source.
+# - No placeholder public key remains.
+# - Temporary diagnostic scripts and DEBUG output exposing stdin/private-key
+#   contents were removed.
+#
+# Validation (actually executed):
+# - license_server/test_phase_7_2_6.py    : 8/8 PASSED (exit 0)
+# - license_server/test_validate_route.py : 2/2 PASSED (exit 0)
+# - cargo build --release                 : SUCCESS (0 errors)
+# - git diff --check                      : no whitespace errors
+#
+# Phase 7.2-6 Complete: Business licensing is integrated with the real Susi security
+# layer end to end - SignLicense works, Verify works, client verification works and
+# tampered signatures are rejected, while redemption semantics stay owned by the
+# Business Layer.
+#
+# NEXT: Phase 7.2-6.5
 
 # Do NOT return to:
 
@@ -2886,7 +3198,11 @@
 
 # Phase 7.2 — Susi Compatibility Spike
 
-# Status: 7.2-3 COMPLETED (susi_helper built and verified)
+# Status: 7.2-6 COMPLETED (business licensing fully integrated with real Susi)
+
+# Phase 7.2-6.5 — NEXT PHASE
+
+# Status: NOT STARTED
 
 # 
 

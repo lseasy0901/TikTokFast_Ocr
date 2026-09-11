@@ -4,7 +4,7 @@ SQLAlchemy database models
 """
 
 from datetime import datetime, timedelta
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import hashlib
@@ -33,14 +33,15 @@ class Authorization(Base):
     # Timestamps
     created_at = Column(DateTime, default=func.now(), nullable=False)
     activated_at = Column(DateTime, nullable=True)
-    max_devices = Column(Integer, default=1, nullable=False)
 
     # Reverse relationship
     licenses = relationship("License", back_populates="authorization")
 
     def calculate_expires_at(self, server_time: datetime) -> datetime:
         """Calculate expiration time based on duration"""
-        return server_time + timedelta(days=self.expires_at.timestamp() - server_time.timestamp() if isinstance(self.expires_at, (datetime, )) else 0)
+        # Calculate the difference in days between expires_at and server_time
+        days = (self.expires_at.timestamp() - server_time.timestamp()) / (24 * 3600) if isinstance(self.expires_at, datetime) else 0
+        return server_time + timedelta(days=days)
 
 
 class LicenseState(str, enum.Enum):
@@ -59,6 +60,9 @@ class License(Base):
     key_hash = Column(String(64), unique=True, index=True, nullable=False)
     duration_days = Column(Integer, nullable=False)
     state = Column(Enum(LicenseState), default=LicenseState.UNUSED, nullable=False)
+
+    # Features - stored as JSON string, unioned across all authorizations for a device
+    features = Column(Text, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, default=func.now(), nullable=False)

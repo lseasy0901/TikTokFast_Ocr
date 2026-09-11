@@ -11,7 +11,8 @@ import config
 import database
 import models
 import schemas
-from services import license_service
+from services import license_service, redemption_service
+from services.susi_security_service import SusiSecurityService
 
 # Create database tables
 database.Base.metadata.create_all(bind=database.engine)
@@ -38,6 +39,9 @@ app = FastAPI(
 
 # Security
 api_key_header = APIKeyHeader(name="X-API-Key")
+
+# Create SusiSecurityService for Phase 7.2-6 integration
+susi_security_service = SusiSecurityService(config.settings)
 
 
 def verify_admin_api_key(api_key: str = Security(api_key_header)):
@@ -81,10 +85,10 @@ async def activate_license(
     activation_data: schemas.LicenseActivate,
     db=Depends(database.get_db)
 ):
-    """Activate a license key"""
-    service = license_service.LicenseService(db)
+    """Activate/redeem a license key and return SignedLicense"""
+    service = redemption_service.RedemptionService(db, susi_security_service)
     try:
-        license, response = service.activate_license(activation_data)
+        license, response = service.redeem_license(activation_data)
         return response
     except ValueError as e:
         raise HTTPException(
@@ -103,7 +107,7 @@ async def validate_license(
     db=Depends(database.get_db)
 ):
     """Validate a license key"""
-    service = license_service.LicenseService(db)
+    service = redemption_service.RedemptionService(db, susi_security_service)
     return service.validate_license(validation_data)
 
 

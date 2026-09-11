@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 class LicenseCreate(BaseModel):
     """Schema for creating a new license"""
     duration_days: int = Field(..., gt=0, le=365)
-    max_devices: int = Field(1, gt=0, le=10)
 
 
 class LicenseResponse(BaseModel):

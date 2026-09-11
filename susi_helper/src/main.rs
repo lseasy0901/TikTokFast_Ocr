@@ -1,5 +1,5 @@
 use susi_core::{
-    crypto::{self, sign_license, verify_license, public_key_from_pem},
+    crypto::{self, sign_license, verify_license, public_key_from_pem, private_key_from_pem},
     fingerprint,
     license::{LicensePayload, SignedLicense},
 };
@@ -9,7 +9,8 @@ use std::io::{self, Read};
 #[serde(tag = "command")]
 enum Command {
     GetMachineCode,
-    Verify { signed_license: String },
+    Verify { signed_license: String, public_key_pem: String },
+    SignLicense { private_key_pem: String, payload: LicensePayload },
     #[serde(skip)]
     Unknown,
 }
@@ -23,7 +24,6 @@ enum Response<T> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdin = io::stdin();
-    let stdout = io::stdout();
 
     // Read JSON from stdin
     let mut input = String::new();
@@ -40,13 +40,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => Response::Error { message: format!("Failed to get machine code: {}", e) },
             }
         }
-        Command::Verify { signed_license } => {
+        Command::SignLicense { private_key_pem, payload } => {
+            match sign_license_from_pem(&payload, &private_key_pem) {
+                Ok(signed_license) => Response::Success { data: signed_license },
+                Err(e) => Response::Error { message: format!("Signing failed: {}", e) },
+            }
+        }
+        Command::Verify { signed_license, public_key_pem } => {
             let signed: SignedLicense = serde_json::from_str(&signed_license)
                 .map_err(|e| format!("Invalid SignedLicense format: {}", e))?;
 
-            // In a real implementation, we'd need the public key
-            // For this POC, we'll just demonstrate the structure
-            match verify_license_from_pem(&signed, "PUBLIC_KEY_HERE") {
+            match verify_license_from_pem(&signed, &public_key_pem) {
                 Ok(payload) => Response::Success { data: format!("Valid license: {}", payload.license_key) },
                 Err(e) => Response::Error { message: format!("Verification failed: {}", e) },
             }
@@ -67,6 +71,16 @@ fn verify_license_from_pem(signed: &SignedLicense, pem: &str) -> Result<LicenseP
 
     verify_license(&public_key, signed)
         .map_err(|e| format!("License verification error: {}", e))
+}
+
+fn sign_license_from_pem(payload: &LicensePayload, pem: &str) -> Result<String, String> {
+    let private_key = private_key_from_pem(pem)
+        .map_err(|e| format!("Invalid private key PEM: {}", e))?;
+
+    let signed = sign_license(&private_key, payload)
+        .map_err(|e| format!("Signing error: {}", e))?;
+
+    Ok(serde_json::to_string(&signed).unwrap())
 }
 
 #[cfg(test)]

@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     # License settings
     DEFAULT_MAX_DEVICES: int = 1
 
+    # Susi security settings - Phase 7.2-6
+    SUSI_HELPER_PATH: str = os.getenv(
+        "SUSI_HELPER_PATH",
+        r"D:\TIikTok_Ocr\DouyinLowLatencyViewer\susi_helper\target\release\susi_helper.exe"
+    )
+    # Signing key material is supplied via environment / .env only.
+    # No private or public key is embedded in source.
+    SUSI_DEVELOPMENT_PRIVATE_KEY: str = os.getenv("SUSI_DEVELOPMENT_PRIVATE_KEY", "")
+    SUSI_DEVELOPMENT_PUBLIC_KEY: str = os.getenv("SUSI_DEVELOPMENT_PUBLIC_KEY", "")
+
     class Config:
         env_file = ".env"
 
