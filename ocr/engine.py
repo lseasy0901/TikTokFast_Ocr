@@ -6,9 +6,13 @@ OCR 引擎模块 (Phase 2.2 Step 1)
 
 支持：
 - 英文 + 数字识别
-- PSM 7 (单行) 优先，PSM 6 (多行) 回退
+- 多 PSM 模式（默认 6 统一文本块 / 7 单行 / 11 稀疏文本，按顺序尝试）
 - 字符白名单限制
 - 灵活的配置选项
+
+读法入口有两个：
+- recognize()：返回第一个非空的 PSM 读法（原行为）
+- iter_readings()：按 PSM 顺序逐个产出读法，供上层做多读法仲裁
 """
 
 import cv2
@@ -164,6 +168,9 @@ class TesseractLocator:
         """
         获取Tesseract版本
 
+        诊断用途：该方法会真实启动一次 `tesseract --version` 子进程，
+        因此不得放在 GUI 线程或 OCREngine 的构造路径上调用。
+
         参数：
             tesseract_path: tesseract.exe的路径
 
@@ -238,9 +245,11 @@ class OCREngine:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
             logger.info("[TESSERACT] executable=%s", tesseract_path)
 
-            # 获取版本信息
-            version = TesseractLocator.get_tesseract_version(tesseract_path)
-            logger.info("[TESSERACT] version=%s", version)
+            # 注意：刻意不做 `tesseract --version` 探测。
+            # 它会真实启动一次子进程，打包环境下首次启动要冷加载上百 MB 的 DLL
+            # （还可能被杀软扫描），在交互路径上是不可接受的阻塞。
+            # 版本信息仅为诊断用途，需要时用 TesseractLocator.get_tesseract_version()
+            # 单独、显式地获取，不放在 OCREngine 的构造路径上。
 
             # 查找 tessdata 路径
             tessdata_path = TesseractLocator.find_tessdata(tesseract_path)
@@ -285,12 +294,73 @@ class OCREngine:
 
         return " ".join(config_parts)
 
+    def _run_psm(self, image: np.ndarray, psm: int) -> str:
+        """按单个 PSM 跑一次 Tesseract，返回去掉首尾空白的文本（可能是空串）。"""
+        config = self._build_config(psm)
+
+        # 执行 OCR
+        text = pytesseract.image_to_string(
+            image,
+            lang=self.language,
+            config=config
+        )
+
+        # 清理结果
+        return text.strip()
+
+    def iter_readings(self,
+                      image: np.ndarray,
+                      preprocess: bool = True):
+        """
+        逐个产出每个 PSM 的非空读法：(psm, 文本)。
+
+        与 recognize() 的区别：
+            recognize() 遇到第一个非空结果就返回，调用方只能看到一个读法。
+            当排在前面的 PSM 读错、后面的 PSM 读对时（实测同一张卡片
+            PSM 6 读 'Gom180'、PSM 11 读 'GGM180'），错误读法就成了唯一真相。
+            多读法仲裁必须能看到后续读法，因此需要这个入口。
+
+        做成生成器是为了让调用方【按需】取读法：
+        某次 OCR 调用约 200ms，只在前面的读法可疑时才值得跑后面的 PSM。
+
+        参数：
+            image: 输入图像 (BGR 格式的 numpy.ndarray)
+            preprocess: 与 recognize() 一致，保留该参数；实现同样不做预处理
+
+        产出：
+            (psm, 文本)，按 self.psm_modes 的顺序，只产出非空结果
+
+        异常：
+            OCREngineError: 图像为空；或所有 PSM 都失败（与 recognize() 一致）
+        """
+        if image is None or image.size == 0:
+            raise OCREngineError("输入图像为空")
+
+        produced = 0
+        last_error = None
+        for psm in self.psm_modes:
+            try:
+                text = self._run_psm(image, psm)
+            except Exception as e:
+                last_error = e
+                logger.debug("PSM=%d 识别失败: %s", psm, str(e))
+                continue
+            if text:
+                logger.debug("OCR 读法 (PSM=%d): '%s'", psm, text)
+                produced += 1
+                yield (psm, text)
+
+        if not produced and last_error is not None:
+            raise OCREngineError(f"所有 PSM 模式识别失败: {last_error}")
+
     def recognize(self,
                   image: np.ndarray,
                   preprocess: bool = True,
                   return_details: bool = False) -> str | dict:
         """
-        识别图像中的文本
+        识别图像中的文本（返回【第一个非空的 PSM 读法】）
+
+        需要看到后续读法时用 iter_readings()。
 
         参数：
             image: 输入图像 (BGR 格式的 numpy.ndarray)
@@ -321,27 +391,17 @@ class OCREngine:
             last_error = None
             for psm in self.psm_modes:
                 try:
-                    config = self._build_config(psm)
-
-                    # 执行 OCR
-                    text = pytesseract.image_to_string(
-                        image,
-                        lang=self.language,
-                        config=config
-                    )
-
-                    # 清理结果
-                    text = text.strip()
+                    text = self._run_psm(image, psm)
 
                     if text:  # 成功识别到文本
                         logger.debug("OCR 成功 (PSM=%d): '%s'", psm, text)
 
                         if return_details:
-                            # 获取详细结果
+                            # 获取详细结果（诊断路径，用同一个 PSM 的配置）
                             details = pytesseract.image_to_data(
                                 image,
                                 lang=self.language,
-                                config=config,
+                                config=self._build_config(psm),
                                 output_type=pytesseract.Output.DICT
                             )
 

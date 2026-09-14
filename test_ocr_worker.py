@@ -29,6 +29,7 @@ if app is None:
 
 from ocr.worker import OCRWorker
 from ocr.engine import OCREngine
+from ocr.profiles import DELTA_FORCE
 from ocr.roi_manager import ROIManager, ROI
 from ocr.clipboard import ClipboardManager
 
@@ -55,7 +56,8 @@ class TestOCRWorker(TestCase):
             frame_buffer_getter=lambda: self.frame_buffer,
             roi_manager=self.roi_manager,
             engine=self.engine,
-            interval_ms=100
+            interval_ms=100,
+            profile=DELTA_FORCE.profile_id,
         )
 
         # 记录信号

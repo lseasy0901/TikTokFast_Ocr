@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from gui.theme import Metrics, Palette
 from utils.license_manager import (
     STATUS_TEXT,
     LicenseManager,
@@ -101,16 +102,19 @@ class ActivationDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
 
+        # 内联样式只保留「这个对话框独有的排版」，颜色全部取自主题调色板，
+        # 避免这里和 QSS 各写一套十六进制以后互相漂移。
         title = QLabel("激活许可证")
         title.setStyleSheet(
-            "QLabel { font-size: 16px; font-weight: 600; color: #e2e8f0; background: none; }"
+            f"QLabel {{ font-size: 15px; font-weight: 600;"
+            f" color: {Palette.TEXT}; background: none; }}"
         )
         layout.addWidget(title)
 
         hint = QLabel("请输入许可证密钥，激活后凭据将保存在本机。")
         hint.setWordWrap(True)
         hint.setStyleSheet(
-            "QLabel { font-size: 12px; color: #a0aec0; background: none; }"
+            f"QLabel {{ font-size: 12px; color: {Palette.TEXT_DIM}; background: none; }}"
         )
         layout.addWidget(hint)
 
@@ -118,17 +122,20 @@ class ActivationDialog(QDialog):
         self._key_input.setPlaceholderText("许可证密钥")
         self._key_input.setFixedHeight(36)
         self._key_input.setStyleSheet(
-            """
-            QLineEdit {
+            f"""
+            QLineEdit {{
                 padding: 6px 10px;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                background-color: #1a202c;
-                color: #e2e8f0;
+                border: 1px solid {Palette.BORDER};
+                border-radius: {Metrics.RADIUS}px;
+                background-color: {Palette.INPUT_BG};
+                color: {Palette.TEXT};
                 font-size: 13px;
-            }
-            QLineEdit:focus { border-color: #4a90e2; }
-            QLineEdit:disabled { color: #718096; }
+            }}
+            QLineEdit:focus {{ border-color: {Palette.ACCENT}; }}
+            QLineEdit:disabled {{
+                background-color: {Palette.DISABLED_BG};
+                color: {Palette.TEXT_DISABLED};
+            }}
             """
         )
         self._key_input.returnPressed.connect(self._on_activate_clicked)
@@ -137,7 +144,7 @@ class ActivationDialog(QDialog):
         self._status_label = QLabel()
         self._status_label.setWordWrap(True)
         self._status_label.setStyleSheet(
-            "QLabel { font-size: 12px; color: #a0aec0; background: none; }"
+            f"QLabel {{ font-size: 12px; color: {Palette.TEXT_DIM}; background: none; }}"
         )
         layout.addWidget(self._status_label)
 
@@ -146,35 +153,16 @@ class ActivationDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.setSpacing(12)
 
+        # 主 / 次按钮直接复用主题里的按钮样式（variant=primary 即强调色）
         self._activate_btn = QPushButton("激活")
         self._activate_btn.setFixedHeight(36)
-        self._activate_btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 8px 24px; border: 1px solid #4a90e2; border-radius: 6px;
-                background-color: #4a90e2; color: white;
-                font-size: 13px; font-weight: 500; min-height: 36px;
-            }
-            QPushButton:hover { background-color: #357abd; }
-            QPushButton:pressed { background-color: #2968a3; }
-            QPushButton:disabled { background-color: #2c5282; color: #a0aec0; border-color: #4a5568; }
-            """
-        )
+        self._activate_btn.setProperty("variant", "primary")
+        self._activate_btn.setMinimumWidth(96)
         self._activate_btn.clicked.connect(self._on_activate_clicked)
 
         self._close_btn = QPushButton("关闭")
         self._close_btn.setFixedHeight(36)
-        self._close_btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 8px 24px; border: 1px solid #4a5568; border-radius: 6px;
-                background-color: #2d3748; color: #e2e8f0;
-                font-size: 13px; font-weight: 500; min-height: 36px;
-            }
-            QPushButton:hover { background-color: #4a5568; }
-            QPushButton:pressed { background-color: #1a202c; }
-            """
-        )
+        self._close_btn.setMinimumWidth(96)
         self._close_btn.clicked.connect(self.reject)
 
         button_layout.addStretch()
@@ -191,11 +179,11 @@ class ActivationDialog(QDialog):
             self._set_status("当前状态：未激活")
 
     def _set_status(self, text: str, ok: bool | None = None):
-        color = "#a0aec0"
+        color = Palette.TEXT_DIM
         if ok is True:
-            color = "#48bb78"
+            color = Palette.OK_TEXT
         elif ok is False:
-            color = "#e53e3e"
+            color = Palette.DANGER_TEXT
         self._status_label.setStyleSheet(
             f"QLabel {{ font-size: 12px; color: {color}; background: none; }}"
         )

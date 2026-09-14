@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from gui.theme import Palette
+
 
 class ExpiredDialog(QDialog):
     """许可证过期对话框"""
@@ -38,26 +40,26 @@ class ExpiredDialog(QDialog):
 
         # 标题
         title_label = QLabel("使用期限已到期")
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 16px;
+        title_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: 15px;
                 font-weight: 600;
-                color: #e53e3e;
+                color: {Palette.DANGER_TEXT};
                 background: none;
-            }
+            }}
         """)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         message_layout.addWidget(title_label)
 
         # 详细消息
-        detail_label = QLabel("免费试用已结束，请充值后继续使用")
-        detail_label.setStyleSheet("""
-            QLabel {
+        detail_label = QLabel("许可证已到期，请续费后继续使用")
+        detail_label.setStyleSheet(f"""
+            QLabel {{
                 font-size: 13px;
-                color: #a0aec0;
+                color: {Palette.TEXT_DIM};
                 background: none;
                 line-height: 1.4;
-            }
+            }}
         """)
         detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         message_layout.addWidget(detail_label)
@@ -69,49 +71,17 @@ class ExpiredDialog(QDialog):
         button_layout.setSpacing(12)
 
         # 前往官网充值按钮
+        # 主 / 次按钮直接复用主题里的按钮样式
         recharge_btn = QPushButton("前往官网充值")
         recharge_btn.setFixedHeight(36)
-        recharge_btn.setStyleSheet("""
-            QPushButton {
-                padding: 8px 24px;
-                border: 1px solid #4a90e2;
-                border-radius: 6px;
-                background-color: #4a90e2;
-                color: white;
-                font-size: 13px;
-                font-weight: 500;
-                min-height: 36px;
-            }
-            QPushButton:hover {
-                background-color: #357abd;
-            }
-            QPushButton:pressed {
-                background-color: #2968a3;
-            }
-        """)
+        recharge_btn.setProperty("variant", "primary")
+        recharge_btn.setMinimumWidth(120)
         recharge_btn.clicked.connect(self._on_recharge_clicked)
 
         # 关闭按钮
         close_btn = QPushButton("关闭")
         close_btn.setFixedHeight(36)
-        close_btn.setStyleSheet("""
-            QPushButton {
-                padding: 8px 24px;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                background-color: #2d3748;
-                color: #e2e8f0;
-                font-size: 13px;
-                font-weight: 500;
-                min-height: 36px;
-            }
-            QPushButton:hover {
-                background-color: #4a5568;
-            }
-            QPushButton:pressed {
-                background-color: #1a202c;
-            }
-        """)
+        close_btn.setMinimumWidth(96)
         close_btn.clicked.connect(self.accept)
 
         button_layout.addWidget(recharge_btn)

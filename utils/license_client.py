@@ -38,8 +38,9 @@ _DEVICE_MAX_LENGTH = 64
 #: 刻意不提供 GUI 输入框：地址属于部署配置，不是终端用户设置。
 _ENV_SERVER_URL = "DLV_LICENSE_SERVER_URL"
 
-#: 开发默认值：本机许可证服务器。生产部署必须用上面的环境变量覆盖。
-DEFAULT_SERVER_URL = "http://127.0.0.1:8000/api/v1"
+#: 生产默认值：随包分发的客户端直接指向生产许可证服务器，客户机无需任何配置。
+#: 上面的环境变量仍可覆盖，用于把同一份构建指向其他部署（例如测试环境）。
+DEFAULT_SERVER_URL = "https://livelen.icu/api/v1"
 
 
 def resolve_server_url(override: Optional[str] = None) -> str:
@@ -48,7 +49,7 @@ def resolve_server_url(override: Optional[str] = None) -> str:
     顺序：
         1. 显式传入的 override（``LicenseServerClient`` 构造函数参数）
         2. 环境变量 ``DLV_LICENSE_SERVER_URL``
-        3. :data:`DEFAULT_SERVER_URL`（本机开发默认）
+        3. :data:`DEFAULT_SERVER_URL`（生产默认）
 
     空值或纯空白按「未设置」处理，避免一个空的环境变量把地址变成空串
     而让激活静默失败。返回值不带尾随斜杠。

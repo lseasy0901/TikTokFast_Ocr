@@ -36,22 +36,39 @@ import logging
 import threading
 import time
 
-from PySide6.QtCore import QTimer, Qt, Signal, QPoint
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QComboBox,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
+from gui import theme
+from gui.theme import Metrics
 from gui.video_widget import VideoWidget
+from gui.widgets import (
+    DockPanel,
+    FramelessController,
+    OverlayHost,
+    TitleBar,
+    WindowButton,
+    chip_html,
+    enable_mouse_tracking,
+    h_line,
+    set_property,
+    set_tone,
+)
 from gui.expired_dialog import ExpiredDialog
 from gui.activation_dialog import ActivationDialog, LicenseWorker
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
@@ -64,6 +81,7 @@ from ocr.roi_manager import ROI, ROIManager
 from ocr.roi_selector import ROISelector
 from ocr.worker import OCRWorker
 from ocr.clipboard import ClipboardManager
+from ocr.profiles import DELTA_FORCE, VALORANT, get_profile
 from utils.stream_history import StreamHistory
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.main_window")
@@ -184,6 +202,26 @@ class _FrameBridge:
 # ======================================================================
 # 主窗口
 # ======================================================================
+#: 游戏选择器里的可选项：(profile_id, 界面短名)。
+#: 只暴露具体游戏——"auto" 仅作为内部默认档保留，不出现在 UI 上，
+#: 因为用户显式选择某一款游戏才能消除 6 位/7 位的长度歧义。
+OCR_GAME_CHOICES = (
+    (DELTA_FORCE.profile_id, "三角洲行动"),
+    (VALORANT.profile_id, "无畏契约"),
+)
+
+#: profile_id → 界面短名（左栏场景列表与右栏下拉框共用同一份文案）
+GAME_LABELS = dict(OCR_GAME_CHOICES)
+
+#: 默认游戏档（与 OCR_GAME_CHOICES[0] 一致）
+DEFAULT_OCR_GAME_PROFILE_ID = DELTA_FORCE.profile_id
+
+#: OCR 检测到「游戏选错了」时给用户看的固定文案。
+#: 只说明需要重新选择，不含任何技术细节（不出现位数、格式名、档位名，
+#: 不暗示程序认为应该是哪款游戏），也不附加任何操作入口。
+OCR_GAME_MISMATCH_MESSAGE = "检测到选择错误，请重新选择游戏类型后再进行识别。"
+
+
 class MainWindow(QMainWindow):
     """Douyin Low Latency Stream Viewer 主窗口"""
 
@@ -195,8 +233,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("抖音低延迟播放器")
-        self.resize(1280, 800)
+        # 无边框 + 自定义标题栏（视觉与交互对齐专业工具；边角缩放由
+        # FramelessController 在 _init_ui 里补上）
+        self.setWindowTitle("LiveLens · 抖音低延迟播放器")
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self.setMinimumSize(Metrics.WINDOW_MIN_WIDTH, Metrics.WINDOW_MIN_HEIGHT)
+        self.resize(1400, 860)
 
         # 内部状态
         self._reader: FFmpegReader | None = None
@@ -209,6 +251,8 @@ class MainWindow(QMainWindow):
         self._roi_selector: ROISelector | None = None
         self._ocr_worker: OCRWorker | None = None
         self._ocr_running: bool = False
+        # 当前选择的游戏档（OCRWorker 构造/切换时使用）
+        self._ocr_profile_id: str = DEFAULT_OCR_GAME_PROFILE_ID
         self._clipboard_manager: ClipboardManager = ClipboardManager()
         self._stream_history: StreamHistory = StreamHistory()
 
@@ -278,503 +322,437 @@ class MainWindow(QMainWindow):
     # UI 构建
     # ------------------------------------------------------------------
     def _init_ui(self):
-        # ---- Compact control panel ----
-        control_panel = QWidget()
-        control_panel.setObjectName("control_panel")
-        control_panel.setStyleSheet("""
-            QWidget#control_panel {
-                background-color: rgba(45, 55, 72, 0.9);
-                border-radius: 6px;
-                border: 1px solid rgba(74, 85, 104, 0.5);
-                margin-bottom: 0;
-            }
-        """)
+        """构建主界面（OBS 式三栏 Dock 布局）。
 
-        control_layout = QVBoxLayout(control_panel)
-        control_layout.setContentsMargins(10, 8, 10, 8)
-        control_layout.setSpacing(4)
+        排版意图：
 
-        # Section 1: Recent Streams
-        recent_layout = QHBoxLayout()
-        recent_layout.setSpacing(6)
+            ┌────────────────────────────────────────────────┐
+            │ LiveLens                           —  □  ×     │  标题栏
+            ├────────────┬──────────────────────┬────────────┤
+            │ 配置 / 场景 │                      │  OCR 控制  │
+            │ 直播源      │      直播预览         │            │
+            ├────────────┴──────────────────────┴────────────┤
+            │ 状态栏：● LIVE  延迟  FPS  OCR  剪贴板         │
+            └────────────────────────────────────────────────┘
 
-        recent_label = QLabel("最近连接:")
-        recent_label.setStyleSheet("font-size: 11px; color: #a0aec0;")
+        中央预览吃掉全部剩余空间（stretch=1），两侧 Dock 宽度可拖动。
+        所有面板都只是既有控件的重新归位，不引入新的产品功能。
+        """
+        # 主题装在 QApplication 上：QDialog / QMessageBox 是独立顶层窗口，
+        # 只有应用级样式表才覆盖得到。
+        theme.apply_theme()
+
+        self._syncing_games = True  # 构建期间不响应列表/下拉框联动
+
+        root = QFrame()
+        root.setObjectName("windowRoot")
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # ---- 自定义标题栏（无边框窗口）----
+        self._title_bar = TitleBar("LiveLens", "抖音低延迟播放器")
+        root_layout.addWidget(self._title_bar)
+
+        # ---- 三栏主体 ----
+        self._splitter = QSplitter(Qt.Horizontal)
+        self._splitter.setObjectName("mainSplitter")
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(Metrics.SPLITTER_HANDLE)
+
+        left_dock = self._build_config_dock()
+        preview = self._build_preview_panel()
+        right_dock = self._build_ocr_dock()
+
+        for panel in (left_dock, preview, right_dock):
+            self._splitter.addWidget(panel)
+
+        left_dock.setMinimumWidth(Metrics.DOCK_MIN_WIDTH)
+        left_dock.setMaximumWidth(Metrics.DOCK_MAX_WIDTH)
+        right_dock.setMinimumWidth(Metrics.DOCK_MIN_WIDTH)
+        right_dock.setMaximumWidth(Metrics.DOCK_MAX_WIDTH)
+        preview.setMinimumWidth(420)
+
+        # 只有中央预览随窗口拉伸，两侧 Dock 保持固定宽度
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setStretchFactor(2, 0)
+        self._splitter.setSizes(
+            [Metrics.DOCK_WIDTH_LEFT, 900, Metrics.DOCK_WIDTH_RIGHT]
+        )
+
+        root_layout.addWidget(self._splitter, 1)
+        self.setCentralWidget(root)
+
+        # ---- 底部状态栏 ----
+        self._build_status_bar()
+
+        # ---- 无边框窗口：拖动 + 边角缩放 ----
+        self._frameless = FramelessController(self)
+        enable_mouse_tracking(root)
+
+        self._title_bar.min_button.clicked.connect(self.showMinimized)
+        self._title_bar.max_button.clicked.connect(self._toggle_maximized)
+        self._title_bar.close_button.clicked.connect(self.close)
+
+        # 场景列表与下拉框对齐到同一个当前档
+        self._syncing_games = False
+        self._sync_game_views(self._ocr_profile_id)
+
+        self.statusBar().showMessage("就绪")
+
+    # ------------------------------------------------------------------
+    # 左侧 Dock：配置 / 场景 + 直播源
+    # ------------------------------------------------------------------
+    def _build_config_dock(self) -> QWidget:
+        """左栏 = OBS 的「场景 + 来源」：游戏配置在上，直播源在下。"""
+        column = QWidget()
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Metrics.SPLITTER_HANDLE)
+
+        layout.addWidget(self._build_scene_panel())
+        layout.addWidget(self._build_source_panel(), 1)
+        return column
+
+    def _build_scene_panel(self) -> DockPanel:
+        """配置 / 场景：两个游戏档的可选列表（与右侧下拉框同一选择）。"""
+        panel = DockPanel("配置 / 场景")
+        body = panel.body
+
+        marker = QLabel()
+        marker.setObjectName("captionLabel")
+        marker.setTextFormat(Qt.RichText)
+        marker.setText(
+            '<span style="color:%s;">●</span>&nbsp;当前配置' % theme.tone_color("ok")
+        )
+        body.addWidget(marker)
+
+        self._game_list = QListWidget()
+        self._game_list.setObjectName("sceneList")
+        self._game_list.setFrameShape(QFrame.NoFrame)
+        self._game_list.setSelectionMode(QListWidget.SingleSelection)
+        self._game_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._game_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._game_list.setFocusPolicy(Qt.NoFocus)
+        for profile_id, label in OCR_GAME_CHOICES:
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, profile_id)
+            self._game_list.addItem(item)
+        self._game_list.setFixedHeight(len(OCR_GAME_CHOICES) * 32 + 6)
+        self._game_list.currentItemChanged.connect(self._on_game_list_changed)
+        body.addWidget(self._game_list)
+
+        body.addStretch(1)
+        return panel
+
+    def _build_source_panel(self) -> DockPanel:
+        """直播源：最近连接 + 备注 + 地址输入 + 连接/断开。"""
+        panel = DockPanel("直播源")
+        body = panel.body
+
+        body.addWidget(self._section_label("最近连接"))
 
         self._recent_combo = QComboBox()
-        self._recent_combo.setFixedHeight(24)
-        self._recent_combo.setMaxVisibleItems(5)
+        self._recent_combo.setMaxVisibleItems(8)
+        self._recent_combo.setMinimumWidth(120)
         self._recent_combo.currentTextChanged.connect(self._on_recent_selected)
-        self._recent_combo.setMinimumWidth(180)
+        body.addWidget(self._recent_combo)
 
-        # Group buttons with dropdown
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(8)
+        note_row = QHBoxLayout()
+        note_row.setSpacing(6)
 
         self._edit_note_btn = QPushButton("备注")
-        self._edit_note_btn.setFixedHeight(24)
-        self._edit_note_btn.setFixedWidth(75)
-        self._edit_note_btn.setFont(QFont("Arial", 11))
-        self._edit_note_btn.clicked.connect(self._on_edit_note_clicked)
         self._edit_note_btn.setEnabled(False)
+        self._edit_note_btn.setToolTip("为选中的历史记录添加备注")
+        self._edit_note_btn.clicked.connect(self._on_edit_note_clicked)
 
         self._clear_recent_btn = QPushButton("清除")
-        self._clear_recent_btn.setFixedHeight(24)
-        self._clear_recent_btn.setFixedWidth(75)
-        self._clear_recent_btn.setFont(QFont("Arial", 11))
+        self._clear_recent_btn.setToolTip("清除全部最近连接")
         self._clear_recent_btn.clicked.connect(self._on_clear_recent_clicked)
 
-        button_layout.setSpacing(8)
+        note_row.addWidget(self._edit_note_btn, 1)
+        note_row.addWidget(self._clear_recent_btn, 1)
+        body.addLayout(note_row)
 
-        button_layout.addWidget(self._edit_note_btn)
-        button_layout.addWidget(self._clear_recent_btn)
-
-        recent_layout.addWidget(recent_label)
-        recent_layout.addWidget(self._recent_combo, stretch=1)
-        recent_layout.addLayout(button_layout)
-        control_layout.addLayout(recent_layout)
-
-        # Section 2: URL Input & Connect
-        input_layout = QHBoxLayout()
-        input_layout.setSpacing(8)
+        body.addWidget(h_line())
+        body.addWidget(self._section_label("直播间地址"))
 
         self._url_input = QLineEdit()
-        self._url_input.setPlaceholderText("输入抖音直播间URL")
-        self._url_input.setFixedHeight(24)
-        self._url_input.setFont(QFont("Arial", 11))
+        self._url_input.setPlaceholderText("输入抖音直播间 URL")
         self._url_input.returnPressed.connect(self._on_connect_clicked)
+        body.addWidget(self._url_input)
 
         self._connect_btn = QPushButton("连接")
-        self._connect_btn.setFixedHeight(24)
-        self._connect_btn.setFixedWidth(65)
-        self._connect_btn.setFont(QFont("Arial", 11))
+        set_property(self._connect_btn, "variant", "primary")
+        self._connect_btn.setToolTip("解析直播间地址并开始拉流")
         self._connect_btn.clicked.connect(self._on_connect_clicked)
+        body.addWidget(self._connect_btn)
 
-        self._roi_btn = QPushButton("选择识别区域")
-        self._roi_btn.setFixedHeight(24)
-        self._roi_btn.setFixedWidth(105)
-        self._roi_btn.setFont(QFont("Arial", 11))
-        self._roi_btn.setEnabled(False)
-        self._roi_btn.clicked.connect(self._on_roi_select_clicked)
+        body.addStretch(1)
+        return panel
 
-        self._ocr_btn = QPushButton("开始OCR")
-        self._ocr_btn.setFixedHeight(24)
-        self._ocr_btn.setFixedWidth(75)
-        self._ocr_btn.setFont(QFont("Arial", 11))
-        self._ocr_btn.setEnabled(False)
-        self._ocr_btn.clicked.connect(self._on_ocr_clicked)
+    # ------------------------------------------------------------------
+    # 中央：直播预览（视觉中心）
+    # ------------------------------------------------------------------
+    def _build_preview_panel(self) -> DockPanel:
+        panel = DockPanel("直播预览")
+        panel.set_body_margins(0, 0, 0, 0)
+        panel.set_body_spacing(0)
 
-        input_layout.addWidget(self._url_input, stretch=1)
-        input_layout.addWidget(self._connect_btn)
-        input_layout.addWidget(self._roi_btn)
-        input_layout.addWidget(self._ocr_btn)
-        control_layout.addLayout(input_layout)
+        self._lbl_resolution = self._make_chip()
+        self._lbl_resolution.setText("分辨率 --")
+        panel.add_header_widget(self._lbl_resolution)
 
-        # ---- 中部：视频显示区域 ----
+        self._video_container = OverlayHost()
+        self._video_container.setObjectName("previewFrame")
+        self._video_container.setAttribute(Qt.WA_StyledBackground, True)
+        video_layout = QVBoxLayout(self._video_container)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(0)
+
         self._video_widget = VideoWidget()
+        video_layout.addWidget(self._video_widget, 1)
 
-        # ---- OCR 复制成功反馈标签（浮动显示）----
+        # 空状态提示：真正的浮层，不参与布局
+        self._connection_status_label = QLabel("尚未连接直播")
+        self._connection_status_label.setObjectName("previewOverlay")
+        self._connection_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._video_container.add_overlay(self._connection_status_label)
+        self._connection_status_label.show()
+
+        # OCR 复制成功浮层（尺寸自适应，位置在 _show_copy_feedback 里算）
         self._copy_feedback_label = QLabel("✓ 已复制")
-        self._copy_feedback_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(72, 187, 120, 0.9);
-                color: white;
-                padding: 10px 20px;
-                border-radius: 8px;
-                font-weight: 600;
-                font-size: 14px;
-                border: none;
-                font-family: 'Segoe UI', sans-serif;
-            }
-        """)
-        self._copy_feedback_label.setParent(self._video_widget)
+        self._copy_feedback_label.setObjectName("copyToast")
+        self._copy_feedback_label.setParent(self._video_container)
+        self._copy_feedback_label.adjustSize()
         self._copy_feedback_label.hide()
         self._copy_feedback_timer = QTimer(self)
         self._copy_feedback_timer.setSingleShot(True)
         self._copy_feedback_timer.timeout.connect(self._hide_copy_feedback)
 
-        # ---- 底部：性能信息面板 ----
-        perf_layout = QHBoxLayout()
-        perf_layout.setContentsMargins(4, 2, 4, 2)
+        panel.body.addWidget(self._video_container, 1)
+        return panel
 
-        self._lbl_fps = QLabel("FPS: --")
-        self._lbl_latency = QLabel("Latency: -- ms")
-        self._lbl_resolution = QLabel("Resolution: --")
-        self._lbl_status = QLabel("Status: 就绪")
-        self._lbl_roi = QLabel("区域: 未选择")
-        self._lbl_ocr = QLabel("OCR: 未运行")
-        self._lbl_ocr_text = QLabel("识别: --")
+    # ------------------------------------------------------------------
+    # 右侧 Dock：OCR 控制
+    # ------------------------------------------------------------------
+    def _build_ocr_dock(self) -> DockPanel:
+        panel = DockPanel("OCR 控制")
+        body = panel.body
 
-        # 等宽字体，对齐更整齐
-        mono_font = self._lbl_fps.font()
-        mono_font.setFamily("Consolas")
-        for lbl in (self._lbl_fps, self._lbl_latency, self._lbl_resolution, self._lbl_status, self._lbl_roi, self._lbl_ocr, self._lbl_ocr_text):
-            lbl.setFont(mono_font)
+        # ---- 游戏 ----
+        body.addWidget(self._section_label("游戏"))
+        self._ocr_game_combo = QComboBox()
+        for profile_id, label in OCR_GAME_CHOICES:
+            self._ocr_game_combo.addItem(label, profile_id)
+        self._ocr_game_combo.setCurrentIndex(
+            self._ocr_game_combo.findData(self._ocr_profile_id)
+        )
+        self._ocr_game_combo.setToolTip("决定房间号按哪款游戏的格式识别")
+        self._ocr_game_combo.currentIndexChanged.connect(self._on_ocr_game_changed)
+        body.addWidget(self._ocr_game_combo)
 
-        perf_layout.addWidget(self._lbl_fps)
-        perf_layout.addWidget(self._lbl_latency)
-        perf_layout.addWidget(self._lbl_resolution)
-        perf_layout.addWidget(self._lbl_roi)
-        perf_layout.addWidget(self._lbl_ocr)
-        perf_layout.addWidget(self._lbl_ocr_text)
-        perf_layout.addStretch()  # 状态标签靠右
-        perf_layout.addWidget(self._lbl_status)
+        body.addWidget(h_line())
 
-        # ---- Video Section (prominent, expands to fill space) ----
-        video_container = QWidget()
-        video_container.setObjectName("video_container")
-        video_container.setStyleSheet("""
-            QWidget#video_container {
-                background-color: rgba(26, 32, 44, 0.6);
-                border-radius: 6px;
-                border: 1px solid rgba(74, 85, 104, 0.3);
-                min-height: 0;
-            }
-        """)
+        # ---- OCR 区域 ----
+        body.addWidget(self._section_label("OCR 区域"))
+        self._lbl_roi = QLabel("未选择")
+        self._lbl_roi.setObjectName("valueLabel")
+        self._lbl_roi.setWordWrap(True)
+        body.addWidget(self._lbl_roi)
 
-        video_layout = QVBoxLayout(video_container)
-        video_layout.setContentsMargins(0, 0, 0, 0)
-        video_layout.setSpacing(0)
+        self._roi_btn = QPushButton("选择识别区域")
+        self._roi_btn.setEnabled(False)
+        self._roi_btn.setToolTip("在直播画面上框选房间号所在区域")
+        self._roi_btn.clicked.connect(self._on_roi_select_clicked)
+        body.addWidget(self._roi_btn)
 
-        # Video widget takes all space
-        video_layout.addWidget(self._video_widget, 1)
+        body.addWidget(h_line())
 
-        # Connection status overlay (true overlay, not in layout)
-        self._connection_status_label = QLabel("尚未连接直播")
-        self._connection_status_label.setStyleSheet("""
-            QLabel {
-                color: rgba(255, 255, 255, 0.3);
-                font-size: 16px;
-                font-weight: 300;
-                background: none;
-                padding: 20px;
-            }
-        """)
-        self._connection_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._connection_status_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # ---- OCR 识别 ----
+        body.addWidget(self._section_label("OCR 识别"))
 
-        # Set parent to video container and position overlay
-        self._connection_status_label.setParent(video_container)
-        self._connection_status_label.setGeometry(0, 0, video_container.width(), video_container.height())
+        self._ocr_state_chip = self._make_chip()
+        state_row = QHBoxLayout()
+        state_row.setSpacing(6)
+        state_row.addWidget(self._ocr_state_chip)
+        state_row.addStretch(1)
+        body.addLayout(state_row)
 
-        # Initially show the message
-        self._connection_status_label.raise_()  # Bring to front
-        self._connection_status_label.show()
+        self._ocr_btn = QPushButton("开始OCR")
+        self._ocr_btn.setEnabled(False)
+        set_property(self._ocr_btn, "variant", "primary")
+        self._ocr_btn.setToolTip("开始 / 停止识别所选区域")
+        self._ocr_btn.clicked.connect(self._on_ocr_clicked)
+        body.addWidget(self._ocr_btn)
 
-        # ---- 底部：性能信息面板 ----
-        perf_layout = QHBoxLayout()
-        perf_layout.setContentsMargins(8, 4, 8, 8)
+        result_caption = QLabel("识别结果")
+        result_caption.setObjectName("fieldLabel")
+        body.addWidget(result_caption)
 
-        # 创建分组框架
-        perf_group = QWidget()
-        perf_group.setObjectName("perf_group")
-        perf_group.setStyleSheet("""
-            QWidget#perf_group {
-                background-color: rgba(240, 240, 240, 180);
-                border-radius: 6px;
-                border: 1px solid rgba(200, 200, 200, 150);
-            }
-        """)
+        self._lbl_ocr_text = QLabel("--")
+        self._lbl_ocr_text.setObjectName("resultBox")
+        self._lbl_ocr_text.setProperty("filled", "false")
+        self._lbl_ocr_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_ocr_text.setMinimumHeight(44)
+        self._lbl_ocr_text.setWordWrap(True)
+        body.addWidget(self._lbl_ocr_text)
 
-        perf_inner_layout = QHBoxLayout(perf_group)
-        perf_inner_layout.setContentsMargins(12, 8, 12, 8)
-        perf_inner_layout.setSpacing(16)
+        body.addStretch(1)
+        # OCR 初始状态由 _reset_perf_ui() 统一设置：那时状态栏芯片也已存在，
+        # 右栏指示与状态栏芯片能一次性对齐。
+        return panel
 
-        self._lbl_fps = QLabel("FPS: --")
-        self._lbl_latency = QLabel("Latency: -- ms")
-        self._lbl_resolution = QLabel("Resolution: --")
-        self._lbl_roi = QLabel("区域: 未选择")
-        self._lbl_ocr = QLabel("OCR: 未运行")
-        self._lbl_ocr_text = QLabel("识别: --")
+    # ------------------------------------------------------------------
+    # 底部状态栏
+    # ------------------------------------------------------------------
+    def _build_status_bar(self) -> None:
+        """状态栏：左侧留给瞬时消息，右侧是一排只读状态芯片。
 
-        # 等宽字体，对齐更整齐
-        mono_font = self._lbl_fps.font()
-        mono_font.setFamily("Consolas")
-        mono_font.setPointSize(10)
-        mono_font.setWeight(QFont.Weight.Medium)  # Use enum value instead of int
+        芯片走 ``addPermanentWidget`` —— ``showMessage`` 显示临时消息时
+        Qt 会隐藏普通 widget，状态读数不应该跟着闪。
+        """
+        bar = self.statusBar()
+        bar.setSizeGripEnabled(False)
 
-        # Configure all performance labels
-        for lbl in (self._lbl_fps, self._lbl_latency, self._lbl_resolution, self._lbl_roi, self._lbl_ocr, self._lbl_ocr_text, self._lbl_status):
-            lbl.setFont(mono_font)
-            lbl.setStyleSheet("color: #63b3ed;")  # Light blue for performance metrics
+        self._lbl_status = self._make_chip()
+        self._lbl_latency = self._make_chip()
+        self._lbl_fps = self._make_chip()
+        self._lbl_ocr = self._make_chip()
+        self._lbl_clipboard = self._make_chip()
 
-        # OCR text label more compact
-        self._lbl_ocr_text.setStyleSheet("color: #48bb78;")  # Green for OCR text
+        for chip in (
+            self._lbl_status,
+            self._lbl_latency,
+            self._lbl_fps,
+            self._lbl_ocr,
+            self._lbl_clipboard,
+        ):
+            bar.addPermanentWidget(chip)
 
-        perf_inner_layout.addWidget(self._lbl_fps)
-        perf_inner_layout.addWidget(self._lbl_latency)
-        perf_inner_layout.addWidget(self._lbl_resolution)
-        perf_inner_layout.addWidget(self._lbl_roi)
-        perf_inner_layout.addWidget(self._lbl_ocr)
-        perf_inner_layout.addWidget(self._lbl_ocr_text)
-        perf_inner_layout.addStretch()  # 状态标签靠右
-        perf_inner_layout.addWidget(self._lbl_status)
-
-        perf_layout.addWidget(perf_group)
-
-        # ---- 组合布局 ----
-        central = QWidget()
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)  # No spacing for maximum compactness
-
-        # Header section (minimal height)
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(12)
-
-        # App title
-        title_label = QLabel("抖音低延迟播放器")
-        title_label.setStyleSheet("""
-            QLabel {
-                font-size: 14px;
-                font-weight: 600;
-                color: #ffffff;
-                background: none;
-                padding: 6px 0;
-            }
-        """)
-
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
-
-        # Access status label
         self._access_status_label = QLabel()
-        self._access_status_label.setStyleSheet("""
-            QLabel {
-                font-size: 11px;
-                color: #a0aec0;
-                background: none;
-                padding: 4px 0;
-            }
-        """)
+        self._access_status_label.setObjectName("accessLabel")
+        self._access_status_label.setProperty("tone", "neutral")
+        bar.addPermanentWidget(self._access_status_label)
 
-        # License button (prominent)
         self._license_btn = QPushButton("激活许可证")
-        self._license_btn.setFixedHeight(32)
-        self._license_btn.setFixedWidth(120)
+        self._license_btn.setObjectName("statusButton")
+        set_property(self._license_btn, "variant", "primary")
         self._license_btn.setStatusTip("激活许可证")
-        self._license_btn.setStyleSheet("""
-            QPushButton {
-                padding: 6px 16px;
-                border: 1px solid #4a90e2;
-                border-radius: 6px;
-                background-color: #4a90e2;
-                color: white;
-                font-size: 12px;
-                font-weight: 500;
-                min-height: 32px;
-            }
-            QPushButton:hover {
-                background-color: #357abd;
-            }
-            QPushButton:pressed {
-                background-color: #2968a3;
-            }
-            QPushButton:disabled {
-                background-color: #2c5282;
-                color: #a0aec0;
-                border-color: #4a5568;
-            }
-        """)
         self._license_btn.clicked.connect(self._on_license_clicked)
+        bar.addPermanentWidget(self._license_btn)
 
-        header_layout.addWidget(self._access_status_label)
-        header_layout.addWidget(self._license_btn)
-        main_layout.addLayout(header_layout)
+        # 剪贴板芯片的自动回落（复制成功 → 2 秒后恢复待命）
+        self._clipboard_chip_timer = QTimer(self)
+        self._clipboard_chip_timer.setSingleShot(True)
+        self._clipboard_chip_timer.timeout.connect(self._reset_clipboard_chip)
+        self._reset_clipboard_chip()
 
-        # Main content area
-        content_layout = QVBoxLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
+        self._reset_perf_ui()
 
-        # Control panel (minimal margins)
-        content_layout.addWidget(control_panel)
+    # ------------------------------------------------------------------
+    # 小组件构造 / 状态芯片
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("sectionLabel")
+        return label
 
-        # Video section (takes ALL remaining space)
-        content_layout.addWidget(video_container, stretch=1)
+    @staticmethod
+    def _make_chip() -> QLabel:
+        """状态芯片：等宽字体 + 状态语气（QSS 里的 ``[tone=...]``）。"""
+        chip = QLabel()
+        chip.setObjectName("metricChip")
+        chip.setTextFormat(Qt.RichText)
+        chip.setProperty("tone", "neutral")
+        return chip
 
-        # Compact status bar
-        status_bar = QWidget()
-        status_bar.setObjectName("status_bar")
-        status_bar.setStyleSheet("""
-            QWidget#status_bar {
-                background-color: rgba(45, 55, 72, 0.9);
-                border-top: 1px solid rgba(74, 85, 104, 0.5);
-            }
-        """)
+    @staticmethod
+    def _set_chip(chip: QLabel, text: str, tone: str = "neutral", dot: bool = False) -> None:
+        """更新状态芯片：文字 + 语气色（可选前置状态圆点）。"""
+        chip.setText(chip_html(text, tone) if dot else text)
+        set_tone(chip, tone)
 
-        status_layout = QHBoxLayout(status_bar)
-        status_layout.setContentsMargins(8, 4, 8, 4)
-        status_layout.setSpacing(12)
+    def _set_result_text(self, text: str) -> None:
+        """识别结果框：有结果时点亮，空结果保持低调。"""
+        self._lbl_ocr_text.setText(text if text else "--")
+        set_property(self._lbl_ocr_text, "filled", "true" if text else "false")
 
-        # Performance metrics
-        status_layout.addWidget(self._lbl_fps)
-        status_layout.addWidget(self._lbl_latency)
-        status_layout.addWidget(self._lbl_resolution)
-        status_layout.addWidget(self._lbl_roi)
-        status_layout.addWidget(self._lbl_ocr)
-        status_layout.addWidget(self._lbl_ocr_text)
-        status_layout.addStretch()
-        status_layout.addWidget(self._lbl_status)
+    def _set_ocr_state(self, running: bool, error: bool = False) -> None:
+        """OCR 状态是同一份状态的两处显示：右栏指示 + 状态栏芯片。"""
+        if error:
+            self._set_chip(self._ocr_state_chip, "异常", "error", dot=True)
+            self._set_chip(self._lbl_ocr, "OCR 异常", "error", dot=True)
+        elif running:
+            self._set_chip(self._ocr_state_chip, "运行中", "ok", dot=True)
+            self._set_chip(self._lbl_ocr, "OCR 运行中", "ok", dot=True)
+        else:
+            self._set_chip(self._ocr_state_chip, "未运行")
+            self._set_chip(self._lbl_ocr, "OCR 未运行")
 
-        content_layout.addWidget(status_bar)
-        main_layout.addLayout(content_layout)
+    def _reset_clipboard_chip(self) -> None:
+        self._set_chip(self._lbl_clipboard, "剪贴板 —")
 
-        self.setCentralWidget(central)
+    # ------------------------------------------------------------------
+    # 游戏选择：列表与下拉框是同一个设置的两个视图
+    # ------------------------------------------------------------------
+    def _game_row_for(self, profile_id: str) -> int:
+        for row in range(self._game_list.count()):
+            if self._game_list.item(row).data(Qt.UserRole) == profile_id:
+                return row
+        return 0
 
-        # 应用样式 - Dark Navy/Blue Theme (Compact)
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #1a202c;
-                color: #e2e8f0;
-            }
+    def _sync_game_views(self, profile_id: str) -> None:
+        """把「配置 / 场景」列表与 OCR 下拉框对齐到同一个档。
 
-            /* Input Fields */
-            QLineEdit {
-                padding: 6px 12px;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                background-color: #2d3748;
-                color: #e2e8f0;
-                font-size: 12px;
-                selection-background-color: #4a90e2;
-            }
+        只同步显示，不触发任何业务回调（业务链路仍由 _on_ocr_game_changed 独占）。
+        """
+        was_syncing = self._syncing_games
+        self._syncing_games = True
+        try:
+            for row in range(self._game_list.count()):
+                item = self._game_list.item(row)
+                active = item.data(Qt.UserRole) == profile_id
+                label = GAME_LABELS.get(item.data(Qt.UserRole), item.text().strip())
+                item.setText(("● " if active else "   ") + label)
+            self._game_list.setCurrentRow(self._game_row_for(profile_id))
+            index = self._ocr_game_combo.findData(profile_id)
+            if index >= 0 and index != self._ocr_game_combo.currentIndex():
+                self._ocr_game_combo.setCurrentIndex(index)
+        finally:
+            self._syncing_games = was_syncing
 
-            QLineEdit:focus {
-                border: 1px solid #4a90e2;
-                background-color: #374151;
-                outline: none;
-            }
+    def _on_game_list_changed(self, current, previous=None):  # noqa: N802
+        """左栏场景列表选择 → 复用下拉框那条业务链路。"""
+        if self._syncing_games or current is None:
+            return
+        profile_id = current.data(Qt.UserRole)
+        index = self._ocr_game_combo.findData(profile_id)
+        if index >= 0 and index != self._ocr_game_combo.currentIndex():
+            # 改下拉框会触发 _on_ocr_game_changed，由它完成同步与提示
+            self._ocr_game_combo.setCurrentIndex(index)
+        else:
+            self._sync_game_views(profile_id)
 
-            /* Buttons */
-            QPushButton {
-                padding: 4px 12px;
-                border: 1px solid #4a90e2;
-                border-radius: 6px;
-                background-color: #4a90e2;
-                color: white;
-                font-size: 12px;
-                font-weight: 500;
-                min-height: 28px;
-            }
+    # ------------------------------------------------------------------
+    # 无边框窗口
+    # ------------------------------------------------------------------
+    def _toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
 
-            QPushButton:hover {
-                background-color: #357abd;
-                border-color: #357abd;
-            }
-
-            QPushButton:pressed {
-                background-color: #2968a3;
-                border-color: #2968a3;
-            }
-
-            QPushButton:disabled {
-                background-color: #2c5282;
-                color: #a0aec0;
-                border-color: #4a5568;
-            }
-
-            /* Combo Box */
-            QComboBox {
-                padding: 6px 10px;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                background-color: #2d3748;
-                color: #e2e8f0;
-                font-size: 12px;
-                min-height: 28px;
-            }
-
-            QComboBox::drop-down {
-                border: none;
-                padding-right: 6px;
-            }
-
-            QComboBox::down-arrow {
-                image: none;
-                border: none;
-                width: 0;
-                height: 0;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 4px solid #a0aec0;
-            }
-
-            QComboBox QAbstractItemView {
-                background-color: #2d3748;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-                selection-background-color: #4a90e2;
-                selection-color: white;
-            }
-
-            QComboBox QAbstractItemView::item {
-                padding: 6px 10px;
-            }
-
-            /* Labels */
-            QLabel {
-                font-size: 13px;
-                color: #e2e8f0;
-            }
-
-            /* Status Bar */
-            QStatusBar {
-                background-color: #2d3748;
-                color: #e2e8f0;
-                border-top: 1px solid #4a5568;
-            }
-
-            QStatusBar::item {
-                border: none;
-            }
-
-            /* Menu Bar */
-            QMenuBar {
-                background-color: #2d3748;
-                color: #e2e8f0;
-                border-bottom: 1px solid #4a5568;
-            }
-
-            QMenuBar::item {
-                background: transparent;
-                padding: 6px 12px;
-                border-radius: 4px;
-            }
-
-            QMenuBar::item:selected {
-                background-color: #4a90e2;
-            }
-
-            QMenu {
-                background-color: #2d3748;
-                color: #e2e8f0;
-                border: 1px solid #4a5568;
-                border-radius: 6px;
-            }
-
-            QMenu::item {
-                padding: 8px 20px;
-            }
-
-            QMenu::item:selected {
-                background-color: #4a90e2;
-            }
-
-            /* Dialog */
-            QDialog {
-                background-color: #2d3748;
-                color: #e2e8f0;
-            }
-
-            QDialog QLabel {
-                color: #e2e8f0;
-            }
-        """)
-
-        # ---- 状态栏 ----
-        self.statusBar().showMessage("就绪")
+    def changeEvent(self, event):  # noqa: N802
+        """跟随窗口状态切换标题栏按钮字形（最大化 / 还原）。"""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            kind = (
+                WindowButton.RESTORE if self.isMaximized() else WindowButton.MAX
+            )
+            self._title_bar.max_button.set_kind(kind)
 
     # ------------------------------------------------------------------
     # 最近连接的流管理
@@ -1014,6 +992,8 @@ class MainWindow(QMainWindow):
         self._last_displayed_frame_id = 0
         self._connect_btn.setEnabled(True)
         self._connect_btn.setText("断开")
+        # 连接后主按钮语义从「执行」变为「中断」，用危险色把这一点说清楚
+        set_property(self._connect_btn, "variant", "danger")
         self._url_input.setEnabled(False)
         # 连接后启用 ROI 选择（访问被拒绝时保持禁用）
         self._roi_btn.setEnabled(not self._access_status.is_expired())
@@ -1022,8 +1002,8 @@ class MainWindow(QMainWindow):
         self._connection_status_label.hide()
 
         # 更新性能面板
-        self._lbl_resolution.setText(f"Resolution: {self._reader.width}x{self._reader.height}")
-        self._lbl_status.setText("Status: 连接中")
+        self._set_chip(self._lbl_resolution, f"{self._reader.width} × {self._reader.height}")
+        self._set_chip(self._lbl_status, "连接中", "warn", dot=True)
 
         # 更新 OCR 按钮状态
         self._update_ocr_button_state()
@@ -1103,6 +1083,7 @@ class MainWindow(QMainWindow):
         """重置连接按钮和输入框为初始状态"""
         self._connect_btn.setEnabled(True)
         self._connect_btn.setText("连接")
+        set_property(self._connect_btn, "variant", "primary")
         self._url_input.setEnabled(True)
         self._connected = False
         self._selected_url_for_note = None
@@ -1110,13 +1091,13 @@ class MainWindow(QMainWindow):
 
     def _reset_perf_ui(self):
         """重置性能面板为初始状态"""
-        self._lbl_fps.setText("FPS: --")
-        self._lbl_latency.setText("Latency: -- ms")
-        self._lbl_resolution.setText("Resolution: --")
-        self._lbl_status.setText("Status: 就绪")
-        self._lbl_roi.setText("区域: 未选择")
-        self._lbl_ocr.setText("OCR: 未运行")
-        self._lbl_ocr_text.setText("识别: --")
+        self._set_chip(self._lbl_fps, "FPS --")
+        self._set_chip(self._lbl_latency, "延迟 --")
+        self._set_chip(self._lbl_resolution, "分辨率 --")
+        self._set_chip(self._lbl_status, "就绪", dot=True)
+        self._lbl_roi.setText("未选择")
+        self._set_ocr_state(False)
+        self._set_result_text("")
 
     # ------------------------------------------------------------------
     # ROI 区域选择
@@ -1152,8 +1133,10 @@ class MainWindow(QMainWindow):
         """ROI 选择确认回调"""
         self._roi_manager.set_roi(roi)
         self._lbl_roi.setText(
-            f"区域: {roi.width}x{roi.height} ({roi.x},{roi.y})"
+            f"{roi.width} × {roi.height} @ ({roi.x}, {roi.y})"
         )
+        # 已有区域之后，这个按钮的语义是「重新框选」
+        self._roi_btn.setText("重新框选")
         self.statusBar().showMessage(
             f"OCR 区域已选择: x={roi.x} y={roi.y} w={roi.width} h={roi.height}"
         )
@@ -1182,6 +1165,29 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # OCR 识别控制
     # ------------------------------------------------------------------
+    def _on_ocr_game_changed(self, index: int):
+        """游戏档切换：只改变后续 OCR 使用的房间号格式。
+
+        刻意不重启 OCR 线程、不重启视频流：识别器换档是纯 CPU 的
+        规则替换（引擎已存在，不加载 Tesseract），因此不会卡住 GUI。
+        """
+        profile_id = self._ocr_game_combo.itemData(index)
+        if not profile_id:
+            return
+
+        self._ocr_profile_id = profile_id
+        logger.info("[OCR] 游戏档切换: %s", profile_id)
+
+        if self._ocr_worker is not None:
+            self._ocr_worker.set_profile(profile_id)
+
+        # 左栏场景列表跟随同一选择（只同步显示）
+        self._sync_game_views(profile_id)
+
+        self.statusBar().showMessage(
+            f"OCR 识别游戏: {self._ocr_game_combo.currentText()}"
+        )
+
     def _on_ocr_clicked(self):
         """OCR 按钮点击事件"""
         if self._ocr_running:
@@ -1205,16 +1211,18 @@ class MainWindow(QMainWindow):
 
         logger.info("[OCR] Starting OCR recognition")
 
-        # 创建 OCR 工作线程
+        # 创建 OCR 工作线程（带上当前选择的游戏档）
         self._ocr_worker = OCRWorker(
             frame_buffer_getter=lambda: self._frame_buffer,
             roi_manager=self._roi_manager,
-            interval_ms=300
+            interval_ms=300,
+            profile=self._ocr_profile_id,
         )
 
         # 连接信号
         self._ocr_worker.text_updated.connect(self._on_ocr_text_updated)
         self._ocr_worker.copy_requested.connect(self._on_copy_requested)
+        self._ocr_worker.game_mismatch.connect(self._on_ocr_game_mismatch)
         self._ocr_worker.error_occurred.connect(self._on_ocr_error)
         self._ocr_worker.started.connect(self._on_ocr_started)
         self._ocr_worker.finished.connect(self._on_ocr_finished)
@@ -1231,27 +1239,29 @@ class MainWindow(QMainWindow):
 
         self._ocr_running = False
         self._ocr_btn.setText("开始OCR")
-        self._lbl_ocr.setText("OCR: 未运行")
+        self._set_ocr_state(False)
+        self._sync_ocr_button_variant()
         self.statusBar().showMessage("OCR 识别已停止")
 
     def _on_ocr_started(self):
         """OCR 线程启动回调"""
         self._ocr_running = True
         self._ocr_btn.setText("识别中")
-        self._lbl_ocr.setText("OCR: 运行中")
+        self._set_ocr_state(True)
+        self._sync_ocr_button_variant()
         self.statusBar().showMessage("OCR 识别已启动")
 
     def _on_ocr_finished(self):
         """OCR 线程结束回调"""
         self._ocr_running = False
         self._ocr_btn.setText("开始OCR")
-        self._lbl_ocr.setText("OCR: 已停止")
+        self._set_ocr_state(False)
+        self._sync_ocr_button_variant()
 
     def _on_ocr_text_updated(self, text: str):
         """OCR 文本更新回调"""
         # 更新识别结果显示
-        display_text = text if text else "(空)"
-        self._lbl_ocr_text.setText(f"识别: {display_text}")
+        self._set_result_text(text)
 
         # 记录日志
         if text:
@@ -1265,7 +1275,19 @@ class MainWindow(QMainWindow):
         """OCR 错误回调"""
         logger.error("[OCR] 错误: %s", error_msg)
         self.statusBar().showMessage(f"OCR 错误: {error_msg}")
-        self._lbl_ocr.setText("OCR: 错误")
+        self._set_ocr_state(self._ocr_running, error=True)
+
+    def _on_ocr_game_mismatch(self):
+        """OCR 认为当前选择的游戏与画面内容明显冲突。
+
+        只提醒用户重新选择：
+            - 不修改 _ocr_profile_id、不调用 set_profile（绝不替用户选择）
+            - 不重启 OCR、不换档、不给「一键切换」入口
+        用户关闭提示后自行在游戏选择器里重新选择，下一轮 OCR 按新档执行。
+        """
+        logger.warning("[OCR] 游戏选择冲突，提示用户重新选择")
+        self.statusBar().showMessage(OCR_GAME_MISMATCH_MESSAGE)
+        QMessageBox.warning(self, "提示", OCR_GAME_MISMATCH_MESSAGE)
 
     def _on_copy_requested(self, text: str):
         """OCR 请求复制到剪切板（在GUI线程中执行）"""
@@ -1278,8 +1300,13 @@ class MainWindow(QMainWindow):
             logger.info("[CLIPBOARD] copy success")
             # 显示复制成功反馈
             self._show_copy_feedback(text)
+            # 状态栏芯片同步点亮，2 秒后自动回落到待命
+            self._set_chip(self._lbl_clipboard, "剪贴板 ✓", "ok", dot=True)
+            self._clipboard_chip_timer.start(2000)
         else:
             logger.error("[CLIPBOARD] copy failed reason: %s", self._clipboard_manager.last_error or "unknown")
+            self._set_chip(self._lbl_clipboard, "剪贴板 ✕", "error", dot=True)
+            self._clipboard_chip_timer.start(2000)
             self.statusBar().showMessage(f"复制失败: {self._clipboard_manager.last_error or '未知错误'}")
 
     def _show_copy_feedback(self, text: str):
@@ -1288,17 +1315,17 @@ class MainWindow(QMainWindow):
         display_text = f"✓ 已复制 {text}"
         self._copy_feedback_label.setText(display_text)
 
-        # 计算显示位置（视频区域右下角附近）
-        video_widget = self._video_widget
-        label_width = self._copy_feedback_label.sizeHint().width()
-        label_height = self._copy_feedback_label.sizeHint().height()
+        # 定位到预览区右下角，稍微偏上；坐标以浮层的宿主容器为准，
+        # 并夹回容器内，避免窗口刚显示、布局还没落定时飘到界面外。
+        label = self._copy_feedback_label
+        label.adjustSize()
+        container = self._video_container
+        x = max(0, container.width() - label.width() - 20)
+        y = max(0, container.height() - label.height() - 20)
 
-        # 定位到视频区域右下角，稍微偏上
-        x = video_widget.width() - label_width - 20
-        y = video_widget.height() - label_height - 20
-
-        self._copy_feedback_label.move(x, y)
-        self._copy_feedback_label.show()
+        label.move(x, y)
+        label.show()
+        label.raise_()
 
         # 500ms 后隐藏
         self._copy_feedback_timer.start(500)
@@ -1326,6 +1353,17 @@ class MainWindow(QMainWindow):
             self._ocr_btn.setText("识别中")
         else:
             self._ocr_btn.setText("开始OCR")
+
+        self._sync_ocr_button_variant()
+
+    def _sync_ocr_button_variant(self) -> None:
+        """运行中用「停止」配色，空闲时用主操作配色。
+
+        只动样式不动文案：按钮文案由 _update_ocr_button_state 独占，
+        外部（含测试）会直接断言它的取值。
+        """
+        running = self._ocr_running and self._ocr_btn.isEnabled()
+        set_property(self._ocr_btn, "variant", "danger" if running else "primary")
 
     # ------------------------------------------------------------------
     # 帧轮询（QTimer 驱动，从 LatestFrameBuffer 取帧，不阻塞 GUI）
@@ -1383,29 +1421,36 @@ class MainWindow(QMainWindow):
 
         # FPS
         fps = snap["fps"]
-        self._lbl_fps.setText(f"FPS: {fps:.1f}" if fps > 0 else "FPS: --")
+        self._set_chip(self._lbl_fps, f"FPS {fps:.0f}" if fps > 0 else "FPS --")
 
         # Latency（当前延迟 / 平均延迟）
         cur_lat = snap["current_latency_ms"]
         avg_lat = snap["avg_latency_ms"]
         if cur_lat > 0:
-            self._lbl_latency.setText(f"Latency: {cur_lat:.1f}/{avg_lat:.1f} ms")
+            # 低延迟是本产品的核心指标：超过 100ms 变黄、超过 300ms 变红，
+            # 让「延迟是否正常」一眼可辨，而不是靠用户读数字。
+            if cur_lat <= 100:
+                tone = "ok"
+            elif cur_lat <= 300:
+                tone = "warn"
+            else:
+                tone = "error"
+            self._set_chip(self._lbl_latency, f"延迟 {cur_lat / 1000:.2f}s", tone)
         else:
-            self._lbl_latency.setText("Latency: -- ms")
+            self._set_chip(self._lbl_latency, "延迟 --")
 
         # Resolution
         if self._reader.connected:
             w, h = self._reader.width, self._reader.height
-            self._lbl_resolution.setText(f"Resolution: {w}x{h}")
+            self._set_chip(self._lbl_resolution, f"{w} × {h}")
 
         # Status
         if self._reader.connected:
-            status_text = "Playing"
+            self._set_chip(self._lbl_status, "直播中", "ok", dot=True)
         elif self._reader.is_running:
-            status_text = "连接中"
+            self._set_chip(self._lbl_status, "连接中", "warn", dot=True)
         else:
-            status_text = "Stopped"
-        self._lbl_status.setText(f"Status: {status_text}")
+            self._set_chip(self._lbl_status, "已停止", "error", dot=True)
 
         # 状态栏（详细 + 延迟诊断）
         if self._reader.connected:
@@ -1470,6 +1515,16 @@ class MainWindow(QMainWindow):
 
         denied = self._access_status.is_expired()
 
+        # 访问状态是「能不能用」的总开关，语气必须比普通读数更醒目：
+        # 已到期用危险色，临近到期用警告色，正常则保持低调。
+        if denied:
+            tone = "error"
+        elif "即将到期" in status_text:
+            tone = "warn"
+        else:
+            tone = "ok"
+        set_tone(self._access_status_label, tone)
+
         # 激活入口始终可用：任何状态下都应允许用户激活许可证
         self._license_btn.setEnabled(True)
 
@@ -1526,7 +1581,7 @@ class MainWindow(QMainWindow):
     def _apply_license_result(self, result: LicenseResult):
         """把许可证结果映射到顶部状态显示。"""
         if result.status is LicenseStatus.NOT_ACTIVATED:
-            # 本地没有许可证：保持原有的试用期显示
+            # 本地没有许可证：未激活即拒绝使用（免费试用已移除）
             self._access_status.clear_license_state()
         elif result.status is LicenseStatus.ACTIVATED:
             # 有效期直接来自服务器签名的凭据，客户端不做时长计算

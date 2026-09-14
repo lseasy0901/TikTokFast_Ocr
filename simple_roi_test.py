@@ -13,6 +13,7 @@ from unittest.mock import Mock
 project_root = os.path.dirname(os.path.abspath('.'))
 sys.path.insert(0, project_root)
 
+from ocr.profiles import DELTA_FORCE
 from ocr.roi_manager import ROI, ROIManager
 from gui.video_widget import VideoWidget
 
@@ -126,7 +127,8 @@ def test_roi_ocr_integration():
     ocr_worker = OCRWorker(
         frame_buffer_getter=frame_buffer_getter,
         roi_manager=roi_manager,
-        interval_ms=100
+        interval_ms=100,
+        profile=DELTA_FORCE.profile_id,
     )
 
     # Test ROI cropping

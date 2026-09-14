@@ -24,6 +24,7 @@ project_root = os.path.dirname(os.path.abspath('.'))
 sys.path.insert(0, project_root)
 
 from gui.main_window import MainWindow
+from ocr.profiles import DELTA_FORCE
 from ocr.roi_manager import ROI, ROIManager
 from ocr.roi_selector import ROISelector
 from gui.video_widget import VideoWidget
@@ -172,7 +173,8 @@ class TestROIVerification:
         ocr_worker = OCRWorker(
             frame_buffer_getter=frame_buffer_getter,
             roi_manager=roi_manager,
-            interval_ms=100  # Fast for testing
+            interval_ms=100,  # Fast for testing
+            profile=DELTA_FORCE.profile_id,
         )
 
         # Mock text update

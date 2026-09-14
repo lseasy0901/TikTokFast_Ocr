@@ -13,12 +13,6 @@ import sys
 # 将项目根目录加入 sys.path，保证以任意方式启动均可正确导入包
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# [DEBUG-STEP7] 临时：将 ffmpeg 加入 PATH
-_FFMPEG_DIR = r"C:\Program Files (x86)\ACLOS\Cross\recorder-release"
-if os.path.isdir(_FFMPEG_DIR):
-    os.environ["PATH"] = _FFMPEG_DIR + os.pathsep + os.environ.get("PATH", "")
-    print(f"[DEBUG] ffmpeg PATH added: {_FFMPEG_DIR}")
-
 
 def main() -> int:
     # 配置日志（DEBUG 级别，便于排查 GUI 黑屏）
@@ -37,7 +31,11 @@ def main() -> int:
         print("错误：未安装 PySide6，请执行 pip install PySide6")
         return 1
 
+    from gui import theme
     from gui.main_window import MainWindow
+
+    # 高 DPI 舍入策略必须在 QApplication 构造之前设置
+    theme.configure_high_dpi()
 
     # 创建应用（QApplication 需要 argv 列表）
     app = QApplication(sys.argv)

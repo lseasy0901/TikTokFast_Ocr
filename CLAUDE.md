@@ -10,9 +10,11 @@ Before modifying code:
 
 ## Current Phase
 
-Phase 7.1 is COMPLETED. Phase 7.2 (Susi Compatibility Spike) has NOT started.
+Phase 8 (OCR v2 / GUI redesign) is COMPLETED and self-verified.
 
-Do not implement Phase 7.2 unless explicitly requested.
+The next phase is release packaging (PyInstaller build, then installer).
+
+Do not start a new feature phase unless explicitly requested.
 
 ## Architecture Rules
 
@@ -38,11 +40,33 @@ OCR must never block or slow the video pipeline.
 
 OCR operates on the selected ROI from the raw frame.
 
-Current OCR behavior:
-- English letters and digits only
-- no punctuation
+Current OCR behavior (OCR v2, Phase 8):
+- the user must select the game explicitly; OCRWorker rejects None/auto
+  (`_require_explicit_game`). `auto` survives only as an internal fallback and
+  is never a legitimate user path.
+- room codes are validated per position against a code format: every position is
+  a CharClass, LETTER (A-Z) or DIGIT (0-9) only. No punctuation, no other
+  characters. The per-position character class is the single source of truth
+  shared by strict validation, candidate extraction and per-position correction.
+- per-position character correction IS allowed, and is deliberately
+  conservative: the mapping table is finite and explicit
+  (ocr/correction.py), anything not listed is judged uncorrectable, the number
+  of corrected positions is capped (MAX_CORRECTIONS), and correction is never
+  global -- a global O->0 / I->1 would corrupt valid codes such as VALORANT's
+  "IOI123". Prefer no result over a possibly wrong room code.
+- a frame yields either a strictly-validated room code or None. Text that failed
+  validation is never returned to callers.
+- temporal consistency: the same code must appear min_agreement times (default 2)
+  within the observation window (default 3) before it is emitted, so the first
+  result lands after ~2 intervals (~600ms at the 300ms interval). On ambiguity
+  the resolver prefers no result over guessing.
+- when one frame has several OCR readings (one per PSM mode), they are arbitrated
+  among already-validated candidates only: fewest corrections first, then
+  fewest case folds. Arbitration never turns a valid code into an invalid one.
+- when a reading clearly indicates the wrong game is selected, the frame returns
+  None and the evidence is surfaced via last_conflict. The layer only reports;
+  it never switches the game automatically.
 - no spaces/newlines in final copied text
-- no character guessing/replacement heuristics
 - blank/unrecognized results must not overwrite clipboard
 - OCR interval is currently 300ms
 - user-controlled start/stop via the existing OCR button
@@ -64,7 +88,10 @@ ROI selection:
 
 ## UI Rules
 
-The UI is currently frozen as a productized dark navy/blue video-first interface.
+Phase 8's UI redesign is COMPLETE and frozen as the productized dark,
+video-first interface. All colours live in gui/theme.py's `Palette` class and the
+QSS consumes them as `{TOKEN}` placeholders; shared chrome lives in
+gui/widgets.py.
 
 Do not invent:
 - chat
@@ -101,19 +128,18 @@ Phase 7.1's self-built license server is a reference implementation, not the fin
 
 ## Susi Rules
 
-Susi is only a future compatibility candidate.
-
-Phase 7.2 is:
-
-Susi Compatibility Spike
-
-Susi has NOT been integrated yet.
+Susi IS integrated at the machine-code and signature-verification layer, and
+only there:
+- utils/susi_verifier.py asks susi_helper.exe for the machine code and verifies a
+  SignedLicense with the PUBLIC key. susi_helper is a Rust binary shipped as data
+  by the spec, not an importable module.
+- the client never holds a private key; the private key stays on the license server.
+- license_server/app/services/susi_security_service.py covers the server side.
 
 Susi must NOT automatically replace the project's entitlement model.
 
-Do NOT integrate Susi during this documentation checkpoint.
-
-The goal of Phase 7.2 is to determine whether Susi can support the required entitlement model with minimal adaptation.
+The self-built License Key -> device Authorization model under "Licensing
+Business Rules" below remains authoritative and is not delegated to Susi.
 
 ## Git Workflow
 

@@ -30,6 +30,8 @@ import time
 
 import numpy as np
 
+from utils.runtime_paths import resolve_ffmpeg_path
+
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.ffmpeg_reader")
 
 __all__ = ["FFmpegReader"]
@@ -426,7 +428,7 @@ class FFmpegReader:
 
     def _build_ffmpeg_cmd(self):
         """构造 FFmpeg 极低延迟参数（CUDA 按需追加）"""
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning"]
+        cmd = [resolve_ffmpeg_path(), "-hide_banner", "-loglevel", "warning"]
 
         # ---- 输入侧：极致低延迟参数 ----
         cmd += ["-fflags", "nobuffer+flush_packets"]  # 关闭输入缓冲 + 立即刷出包

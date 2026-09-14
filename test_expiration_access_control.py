@@ -20,9 +20,9 @@ Phase 7.2-6.6: 过期访问控制回归测试
     因此既不会读取也不会改写用户真实的 license.json。
     连接用的 _stream_history 也被替换为桩，避免写 stream_history.json。
 
-明确不改变的部分：
-    本测试同时断言 NOT_ACTIVATED / 试用期语义未被重新设计 ——
-    AccessStatus 的状态机保持原样，只是其 EXPIRED 结论现在有了约束力。
+策略变更（本次修订）：
+    7 天免费试用已移除 —— 本测试第 [9] 节断言「未激活 = 拒绝」，
+    取代原先「NOT_ACTIVATED 仍按试用期放行」的断言。
 """
 
 import os
@@ -105,13 +105,16 @@ class _StubROISelector:
 class _StubOCRWorker:
     instances = []
 
-    def __init__(self, frame_buffer_getter=None, roi_manager=None, interval_ms=300):
+    def __init__(self, frame_buffer_getter=None, roi_manager=None, interval_ms=300,
+                 profile=None, scale=1.0, recognizer=None):
         self.interval_ms = interval_ms
+        self.profile = profile
         self.started_flag = False
         self.stopped = False
         self.text_updated = _Sig()
         self.copy_requested = _Sig()
         self.error_occurred = _Sig()
+        self.game_mismatch = _Sig()   # Phase 8.6：选错游戏提醒（无参数）
         self.started = _Sig()
         self.finished = _Sig()
         _StubOCRWorker.instances.append(self)
@@ -121,6 +124,9 @@ class _StubOCRWorker:
 
     def stop_recognition(self):
         self.stopped = True
+
+    def set_profile(self, profile):
+        self.profile = profile
 
 
 class _StubExpiredDialog:
@@ -475,38 +481,50 @@ def test_dedicated_timer():
 
 
 # ======================================================================
-# 5. NOT_ACTIVATED / 试用语义：明确且未被重新设计
+# 5. NOT_ACTIVATED：无有效授权即拒绝（7 天免费试用已移除）
 # ======================================================================
-def test_not_activated_trial_semantics_unchanged():
-    section("[9] NOT_ACTIVATED / trial semantics are explicit and unchanged")
+def test_not_activated_is_blocked():
+    section("[9] NOT_ACTIVATED: no valid license → blocked (free trial removed)")
     window = build_window()
     window._apply_license_result(
         LicenseResult(LicenseStatus.NOT_ACTIVATED, "尚未激活许可证")
     )
 
-    check(window._access_status.is_expired() is False,
-          "NOT_ACTIVATED is not treated as expired")
-    check("免费试用" in window._access_status.get_status_text(),
-          "NOT_ACTIVATED still falls back to the unchanged trial display")
+    check(window._access_status.is_expired() is True,
+          "NOT_ACTIVATED is treated as expired / blocked")
+    check("未激活" in window._access_status.get_status_text(),
+          "NOT_ACTIVATED shows the not-activated status text")
+    check(window._connect_btn.isEnabled() is False,
+          "NOT_ACTIVATED: connect button visibly disabled")
+    check(window._url_input.isEnabled() is False,
+          "NOT_ACTIVATED: URL input visibly disabled")
 
     reset_recorders()
     window._url_input.setText("https://live.douyin.com/123456")
     window._on_connect_clicked()
-    check(len(_StubConnectWorker.instances) == 1,
-          "NOT_ACTIVATED: connect still allowed under the trial (behavior preserved)")
+    check(len(_StubConnectWorker.instances) == 0,
+          "NOT_ACTIVATED: connect blocked (no worker constructed)")
+    check("无法连接直播流" in window.statusBar().currentMessage(),
+          "NOT_ACTIVATED: denial reason shown in status bar")
 
-    section("[9b] trial state machine unchanged; only its EXPIRED verdict now binds")
+    section("[9b] fresh install (nothing ever activated) is blocked too")
     window2 = build_window()
-    window2._access_status._expiry_time = datetime.now() - timedelta(seconds=1)
-
-    check(window2._access_status.get_state().value == "expired",
-          "pre-existing trial logic still reports 'expired' when lapsed")
     check(window2._access_status.is_expired() is True,
-          "the same centralized predicate honors that trial verdict")
+          "startup with no stored license → blocked")
+    check(window2._connect_btn.isEnabled() is False,
+          "startup with no stored license: connect button disabled")
+
+    reset_recorders()
+    window2._on_roi_select_clicked()
+    check(len(_StubROISelector.instances) == 0,
+          "startup with no stored license: ROI selection blocked")
+    window2._start_ocr()
+    check(len(_StubOCRWorker.instances) == 0,
+          "startup with no stored license: OCR blocked")
 
     window2._on_access_timer_timeout()
-    check(window2._connect_btn.isEnabled() is False,
-          "lapsed trial now blocks connect via the shared predicate")
+    check(window2._access_status.is_expired() is True,
+          "periodic refresh keeps the unlicensed verdict")
 
 
 # ======================================================================
@@ -530,7 +548,7 @@ def main() -> int:
     test_expired_does_not_disconnect()
     test_mid_session_expiry_detected()
     test_dedicated_timer()
-    test_not_activated_trial_semantics_unchanged()
+    test_not_activated_is_blocked()
 
     print("\n" + "=" * 70, flush=True)
     total = _PASSED + _FAILED

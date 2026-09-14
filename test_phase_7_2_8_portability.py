@@ -12,7 +12,7 @@ B. Server -- SUSI_HELPER_PATH was declared but never read, while the helper path
    not start on a non-Windows host.
 
 Covers:
-  client : env override, localhost fallback, explicit-argument precedence,
+  client : env override, production default, explicit-argument precedence,
            empty/whitespace env treated as unset, trailing-slash normalization,
            and the real GUI construction path (LicenseManager)
   server : SUSI_HELPER_PATH override wins, empty falls back to the default,
@@ -88,14 +88,14 @@ def client_tests():
         resolve_server_url,
     )
 
-    check(DEFAULT_SERVER_URL == "http://127.0.0.1:8000/api/v1",
-          "the localhost default is preserved verbatim")
+    check(DEFAULT_SERVER_URL == "https://livelen.icu/api/v1",
+          "the default is the production server, not localhost")
 
     with env_var(ENV_VAR, None):
         check(resolve_server_url() == DEFAULT_SERVER_URL,
-              "unset env -> localhost default")
+              "unset env -> production default")
         check(LicenseServerClient().base_url == DEFAULT_SERVER_URL,
-              "unset env -> client.base_url is the localhost default")
+              "unset env -> client.base_url is the production default")
 
     with env_var(ENV_VAR, "https://lic.example.com/api/v1"):
         check(resolve_server_url() == "https://lic.example.com/api/v1",

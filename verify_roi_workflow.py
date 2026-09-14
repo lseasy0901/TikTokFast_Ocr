@@ -69,6 +69,7 @@ def verify_roi_workflow():
 
     # Test 3: ROI cropping for OCR
     print("\n--- Test 3: ROI Cropping for OCR ---")
+    from ocr.profiles import DELTA_FORCE
     from ocr.worker import OCRWorker
     from stream.frame_buffer import LatestFrameBuffer
 
@@ -84,7 +85,8 @@ def verify_roi_workflow():
     def buffer_getter():
         return buffer
 
-    worker = OCRWorker(buffer_getter, ROIManager())
+    worker = OCRWorker(buffer_getter, ROIManager(),
+                       profile=DELTA_FORCE.profile_id)
     worker._roi_manager.set_roi(roi)
 
     # Test cropping

@@ -25,14 +25,52 @@ license_public_key.pem
 *.db
 *.sqlite
 *.sqlite3
+# SQLite WAL sidecar files. The `-shm` / `-wal` suffix means the `*.db` rule
+# above does not match them, so they would otherwise be committed alongside a
+# locally-run license server.
+*.db-shm
+*.db-wal
+
+# FFmpeg companion DLL set - provisioned per machine, not versioned.
+# runtime/ffmpeg/ffmpeg.exe is the ACLOS recorder's build, not a stock FFmpeg. It
+# hard-imports libpag.dll, o264rtenc.dll, libEGL/libGLESv2 and the MSVC runtime,
+# so it cannot start without them (STATUS_DLL_NOT_FOUND). Previously it only ran
+# because C:\Program Files (x86)\ACLOS\Cross\recorder-release was on PATH.
+# ffmpeg.exe stays tracked; the DLLs do not.
+runtime/ffmpeg/*.dll
+
+# Tesseract companion DLL set - provisioned per machine, not versioned.
+# runtime/tesseract/tesseract.exe is a stock UB-Mannheim build that needs ~26
+# sibling DLLs (libtesseract-5.dll and friends) to start at all. Without them it
+# only ran because C:\Program Files\Tesseract-OCR happened to be on PATH.
+# tesseract.exe and tessdata/eng.traineddata stay tracked; the DLLs do not.
+runtime/tesseract/*.dll
 
 # Runtime/generated files
-dist/
-build/
+# Release build directories carry a version suffix (build_v1.0.1/, build_v1.0.2/,
+# dist_v1.0.2/). A bare `dist/` / `build/` rule matches those names only, not the
+# suffixed forms, so ~868 MB of PyInstaller output sat untracked-but-not-ignored
+# and would have been swept in by `git add .`. The glob form subsumes the bare
+# one: `build*/` also matches a plain `build/`.
+build*/
+dist*/
 *.log
 
 # Local stream history
 stream_history.json
+
+# Dev-machine artifacts - never part of a release
+# Screenshots taken while reviewing the UI, and debug captures of OCR output.
+# The patterns stay narrow on purpose (`debug_*.png`, not `debug_*`) so they
+# cannot shadow tracked source files such as debug_ocr.py.
+_ui_review_*.png
+debug_*.png
+# Windows shortcuts embed an absolute path on the machine that created them.
+*.lnk
+# Local ops helper. Opens an SSH tunnel to the production admin host using a
+# real host address and root login, so it stays on the dev machine and out of
+# the repository. It is not part of the app and the spec never collects it.
+LiveLens_Admin.bat
 
 # OS/editor
 Thumbs.db
@@ -44,4 +82,6 @@ Thumbs.db
 target/
 
 # Vendored third-party admin UI (upstream sqladmin snapshot, not project source)
+# Both the extracted tree and its archive form.
 admin_web/
+admin_web.zip

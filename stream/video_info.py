@@ -16,6 +16,8 @@ import logging
 import subprocess
 import time
 
+from utils.runtime_paths import resolve_ffmpeg_path, resolve_ffprobe_path
+
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.video_info")
 
 __all__ = ["get_video_info", "VideoInfo"]
@@ -78,7 +80,7 @@ def get_video_info(stream_url: str, timeout: int = 10) -> VideoInfo:
     try:
         # 构建 ffprobe 命令
         cmd = [
-            "ffprobe",
+            resolve_ffprobe_path(),
             "-hide_banner",
             "-loglevel", "error",  # 只显示错误
             "-show_entries", "stream=width,height,pix_fmt,codec_name,r_frame_rate",
@@ -190,7 +192,7 @@ def detect_resolution_fallback(stream_url: str) -> tuple:
 
     try:
         cmd = [
-            "ffmpeg",
+            resolve_ffmpeg_path(),
             "-hide_banner",
             "-loglevel", "error",
             "-i", stream_url,
