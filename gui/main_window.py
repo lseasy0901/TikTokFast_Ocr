@@ -35,6 +35,7 @@
 import logging
 import threading
 import time
+from datetime import date, datetime, timezone
 
 from PySide6.QtCore import QEvent, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
@@ -71,6 +72,7 @@ from gui.widgets import (
 )
 from gui.expired_dialog import ExpiredDialog
 from gui.activation_dialog import ActivationDialog, LicenseWorker
+from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
 from stream.douyin import DouyinStream, DouyinStreamError
 from stream.ffmpeg_reader import FFmpegReader
@@ -229,6 +231,7 @@ class MainWindow(QMainWindow):
     _connect_success_sig = Signal(dict)
     _connect_error_sig = Signal(str)
     _license_loaded_sig = Signal(object)  # 启动时许可证校验结果
+    _heartbeat_done_sig = Signal(object)  # 心跳上报结果
 
     def __init__(self):
         super().__init__()
@@ -284,6 +287,20 @@ class MainWindow(QMainWindow):
         self._license_load_worker: LicenseWorker | None = None
         self._license_loaded_sig.connect(self._on_license_loaded)
 
+        # 启动心跳（Phase 7.4，DAU 统计）
+        # 与授权状态完全解耦：只上报「本机启动过」，任何失败都静默。
+        # 刻意新建独立定时器，不复用 _access_timer —— 后者承担的是许可证到期
+        # 重评估，语义不同（理由与 :274-276 对 _status_timer 的说明一致）。
+        self._heartbeat_worker: LicenseWorker | None = None
+        self._heartbeat_done_sig.connect(self._on_heartbeat_done)
+        # 调度器是纯本地状态机（不联网、无副作用），构造时建立是安全的；
+        # 真正发起网络请求的是 start_heartbeat()，由应用入口 main.py 调用。
+        self._heartbeat_scheduler = HeartbeatScheduler()
+        self._heartbeat_timer = QTimer(self)
+        # 单次触发：每次到点后重新计算下一个业务日边界，因此不会累积 QTimer 漂移。
+        self._heartbeat_timer.setSingleShot(True)
+        self._heartbeat_timer.timeout.connect(self._on_heartbeat_timer_timeout)
+
         # 上一次显示的 buffer frame_id
         self._last_displayed_frame_id: int = 0
 
@@ -301,6 +318,9 @@ class MainWindow(QMainWindow):
 
         # 启动时恢复已保存的许可证（读盘 + 本地验签在后台线程完成）
         self._start_license_load()
+
+        # 注意：启动心跳刻意不在这里发起，由应用入口 main.py 显式调用
+        # start_heartbeat()。原因见该方法自己的说明。
 
         # 显示连接状态消息
         self._connection_status_label.show()
@@ -1588,6 +1608,107 @@ class MainWindow(QMainWindow):
             self._access_status.set_license_active(result.expires_at)
         else:
             self._access_status.set_license_inactive(result.display_text)
+
+    # ------------------------------------------------------------------
+    # 启动心跳（Phase 7.4，DAU 统计）
+    #
+    # 这是一条纯遥测链路，与授权流程严格隔离：
+    #   - 上报逻辑在 LicenseManager.heartbeat()，它永不抛异常、永不改状态；
+    #   - 调度逻辑在 utils.heartbeat_schedule.HeartbeatScheduler（纯本地计算）；
+    #   - 这里只负责起后台线程与摆弄定时器，绝不调用 _apply_license_result，
+    #     也绝不触碰 AccessStatus。
+    # 因此心跳无论如何失败，都不会影响用户看到的授权状态。
+    #
+    # 节奏：启动立即上报一次；之后对齐**下一个业务日边界**，且每次触发后
+    # 重新计算下一次延时。为什么不是固定周期，见 heartbeat_schedule 模块说明。
+    # ------------------------------------------------------------------
+    def start_heartbeat(self):
+        """开启心跳上报。由应用入口 main.py 调用。
+
+        为什么不在 __init__ 里自动开始：
+            心跳会向许可证服务器发起**真实网络请求**，而「构造一个 MainWindow」
+            在测试里是极常见的动作（多个 GUI 测试直接实例化窗口）。若把它挂在
+            构造流程上，每次跑测试都会向生产服务器发一次心跳，污染真实 DAU。
+            遥测属于「应用启动了」这件事，不属于「窗口对象被构造了」这件事。
+
+        授权流程不受影响：本方法只依赖 LicenseManager.heartbeat()，它永不抛异常、
+        永不改状态；结果槽也只用于推进调度状态。
+
+        重复调用是安全的：上一次上报仍在进行时不会堆叠线程。
+        """
+        self._start_heartbeat()
+
+    def _start_heartbeat(self):
+        """后台上报一次心跳，不阻塞 GUI。"""
+        # 上一次仍在跑就跳过，避免网络慢时堆叠线程
+        if self._heartbeat_worker is not None and self._heartbeat_worker.is_running():
+            return
+        self._heartbeat_worker = LicenseWorker(
+            task=self._license_manager.heartbeat,
+            on_done=self._heartbeat_done_sig.emit,
+            name="license-heartbeat",
+        )
+        self._heartbeat_worker.start()
+
+    def _schedule_next_heartbeat(self):
+        """按调度器算出的延时重新装上定时器。
+
+        每次都现算，而不是沿用固定周期 —— 这是"不累积 QTimer 漂移"的落点。
+        """
+        delay_ms = self._heartbeat_scheduler.next_delay_ms(datetime.now(timezone.utc))
+        if delay_ms is None:
+            # 业务时区不可用：保留启动那一次上报，但不做周期补发。
+            # 刻意不猜一个固定偏移 —— 猜错会把心跳记到服务端的另一天，
+            # 比"不补发"更糟。此处只在启动上报结束时走到一次，不会刷屏。
+            logger.warning("心跳周期调度不可用（业务时区无法解析），已停止补发")
+            return
+        self._heartbeat_timer.start(delay_ms)
+
+    def _on_heartbeat_timer_timeout(self):
+        """定时器到点：业务日若已推进就补报，然后重新对齐下一个边界。
+
+        watchdog 会周期性地把这里叫醒（见 WATCHDOG_MAX_MS），因此有两种情况：
+        当前业务日已上报过 -> 什么都不做，只重新对齐；
+        业务日已推进（含休眠跨天后唤醒）-> 补报这一天。
+        """
+        now = datetime.now(timezone.utc)
+
+        if not self._heartbeat_scheduler.should_report(now):
+            self._schedule_next_heartbeat()
+            return
+
+        if self._heartbeat_worker is not None and self._heartbeat_worker.is_running():
+            # 上一次还没回来：稍后再来，不堆叠线程
+            self._schedule_next_heartbeat()
+            return
+
+        self._start_heartbeat()
+
+    def _on_heartbeat_done(self, credited_day):
+        """心跳结束回调（经 Qt 排队回到 GUI 线程）。
+
+        只做两件事：推进调度状态、重新装定时器。绝不触碰授权状态显示 ——
+        心跳是遥测，失败不该有任何界面反馈。
+
+        ``credited_day`` 是**服务端**返回的 ``active_date``（见
+        LicenseServerClient.heartbeat），即服务端本次实际记账的业务日。
+
+        刻意**不**用"收到响应时的本地日期"来推断已上报的业务日：请求贴着
+        业务日边界发出、响应跨过边界时两端会差一天，那样会把下一天误记为
+        已上报，而服务端只记了前一天 —— 下一天于是永远不会被上报。
+        记账权威在服务端，这里只原样转交。
+
+        类型判断而不是真值判断：LicenseWorker 在任务抛异常时会回调一个
+        LicenseResult 兜底对象，它既不是 None 也不是 date，绝不能被当成
+        "某一天已上报"；非 date 一律视为未上报，保持 watchdog 重试。
+
+        显式排除 ``datetime``：它是 ``date`` 的子类，会通过 isinstance 检查，
+        但一旦混进 ``_reported_day``，"业务日是否已上报"的比较就永远为不等，
+        调度器会退化成每 15 分钟无限重试。只接受纯 date。
+        """
+        if isinstance(credited_day, date) and not isinstance(credited_day, datetime):
+            self._heartbeat_scheduler.mark_reported_day(credited_day)
+        self._schedule_next_heartbeat()
 
     # ------------------------------------------------------------------
     # 窗口事件处理

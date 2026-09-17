@@ -22,6 +22,7 @@
 
 import logging
 import os
+from datetime import date
 from typing import Optional
 
 import requests
@@ -132,6 +133,90 @@ class LicenseServerClient:
 
         logger.warning("许可证服务器返回状态码 %s", response.status_code)
         raise LicenseServerError(REASON_SERVER_ERROR, f"许可证服务器错误（HTTP {response.status_code}）")
+
+    def heartbeat(self, device_id: str, timeout: int = 5) -> Optional[date]:
+        """上报一次启动心跳（Phase 7.4，用于 DAU 统计）。
+
+        与 :meth:`activate` 的关键区别：**本方法永不抛异常**。
+
+        心跳是纯遥测。网络不可达、超时、服务器 4xx/5xx 都必须被静默吞掉，
+        否则会把遥测的失败混进调用方的错误处理，甚至影响授权流程。
+        调用方因此不需要（也不应该）为它写 try —— 结果通过返回值表达。
+
+        Args:
+            device_id: 本机设备标识（激活时使用的同一个机器码）。
+            timeout: 独立于 activate 的短超时。心跳不该长期占用后台线程，
+                因此默认 5s，而不是 activate 的 15s。
+
+        Returns:
+            服务器**本次实际记账的业务日**（响应里的 ``active_date``）；
+            None 表示没有可上报的标识、上报失败，或响应无法解析。
+
+        为什么返回服务端的日期而不是 bool
+        ---------------------------------
+        DAU 的记账权威在服务端 —— ``active_date`` 由服务端用自己的时钟经
+        ``bucket_date()`` 算出。客户端**不得**用"收到响应时的本地日期"推断
+        业务日：请求贴着业务日边界发出、响应跨过边界时两者会差一天，客户端
+        就会把**下一天**误记为"已上报"，那一天永远不会被上报。
+
+        因此成功时一律以服务端返回的 ``active_date`` 为准，客户端只负责原样
+        把它交给调度器。
+
+        返回值只用于让调度器判断"哪一天已经记过账"，
+        绝不能被当作授权判定使用。
+        """
+        device = (device_id or "").strip()
+        if not device or len(device) > _DEVICE_MAX_LENGTH:
+            logger.debug("跳过心跳：设备标识不可用")
+            return None
+
+        url = f"{self.base_url}/licenses/heartbeat"
+        try:
+            response = requests.post(
+                url,
+                json={"device_id": device},
+                timeout=timeout,
+            )
+        except requests.exceptions.RequestException as e:
+            # 只记异常类型，不记录请求体
+            logger.debug("心跳上报失败（已忽略）: %s", type(e).__name__)
+            return None
+
+        if response.status_code != 200:
+            logger.debug("心跳上报被拒绝（已忽略）: HTTP %s", response.status_code)
+            return None
+
+        return self._parse_heartbeat_day(response)
+
+    @staticmethod
+    def _parse_heartbeat_day(response) -> Optional[date]:
+        """从 200 响应里取出服务端记账的业务日；解析不出来返回 None。
+
+        返回 None 会让调度器保持"当天尚未上报"，从而按 watchdog 周期重试。
+        这个方向是安全的：重复上报会被服务端的 ``UNIQUE(device_id,
+        active_date)`` 去重，代价只是多一次请求；反过来凭空相信一个客户端
+        自己推断的日期，则会让某一天永远丢失。
+        """
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.debug("心跳响应不是合法 JSON（已忽略）")
+            return None
+
+        if not isinstance(payload, dict):
+            logger.debug("心跳响应结构非法（已忽略）")
+            return None
+
+        raw = payload.get("active_date")
+        if not isinstance(raw, str) or not raw.strip():
+            logger.debug("心跳响应缺少 active_date（已忽略）")
+            return None
+
+        try:
+            return date.fromisoformat(raw.strip())
+        except ValueError:
+            logger.debug("心跳响应的 active_date 无法解析（已忽略）")
+            return None
 
     # ------------------------------------------------------------------
     # 内部

@@ -45,6 +45,11 @@ def main() -> int:
     window = MainWindow()
     window.show()
 
+    # 启动心跳上报（Phase 7.4，DAU 统计）。
+    # 刻意放在这里而不是 MainWindow.__init__：它会发起真实网络请求，
+    # 而测试里会大量直接构造 MainWindow。详见 MainWindow.start_heartbeat。
+    window.start_heartbeat()
+
     # 进入事件循环
     exit_code = app.exec()
     logger.info("应用退出 (code=%d)", exit_code)

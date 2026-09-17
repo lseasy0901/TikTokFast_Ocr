@@ -27,7 +27,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import FrozenSet, Optional
 
@@ -227,6 +227,50 @@ class LicenseManager:
         }
         status = mapping.get(error.reason, LicenseStatus.ACTIVATION_FAILED)
         return LicenseResult(status, REASON_TEXT.get(error.reason, error.message))
+
+    # ------------------------------------------------------------------
+    # 启动心跳（Phase 7.4，DAU 统计）
+    # ------------------------------------------------------------------
+    def heartbeat(self) -> Optional[date]:
+        """上报一次启动心跳。
+
+        设备标识取自**本地已保存的许可证记录**，不再调用 susi_helper ——
+        激活时写下的 device_id 已经在那里，直接读用是零额外开销。
+        未激活的客户端没有这份记录，也就不会上报；DAU 的口径因此是
+        「已激活设备的启动数」。
+
+        契约（与 _verify_artifact 等业务方法截然不同）：
+            - **永不抛异常** —— 所有失败都在这里终止；
+            - **永不修改任何状态** —— 不碰本地存储，不碰 AccessStatus，
+              返回值也不得被用于任何授权判定。
+
+        Returns:
+            **服务端本次实际记账的业务日**（原样透传响应里的 active_date）；
+            None 表示没有可上报的设备标识（未激活 / 记录缺字段）、上报失败，
+            或响应无法解析。
+
+        业务日**必须**以服务端为准，客户端不得按自己的时钟推断 —— 原因见
+        :meth:`utils.license_client.LicenseServerClient.heartbeat`。
+
+        返回值**只**服务于心跳调度：调度器据此判断"哪一天已经记过账"。
+        授权已过期的设备**仍然会上报**：心跳度量的是「启动过」，
+        不是「授权有效」。
+        """
+        try:
+            record = self.store.load()
+            if not record:
+                return None
+            # license_store.load() 只校验 signed_license，device_id 可能缺失
+            # （旧版本客户端写的文件、被手工编辑过的文件），缺失就静默跳过。
+            device_id = record.get("device_id")
+            if not device_id:
+                logger.debug("本地许可证记录缺少 device_id，跳过心跳")
+                return None
+            return self.client.heartbeat(device_id)
+        except Exception:
+            # 兜底：连读盘失败也不能让心跳冒泡到调用方
+            logger.debug("心跳上报异常（已忽略）", exc_info=True)
+            return None
 
     # ------------------------------------------------------------------
     # 启动恢复
