@@ -78,7 +78,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # Import all models for registration
-from models import Authorization, License
+from models import Authorization, DeviceDailyActive, License  # noqa: F401
 
 
 def get_db():

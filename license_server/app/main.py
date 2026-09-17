@@ -11,7 +11,7 @@ import config
 import database
 import models
 import schemas
-from services import license_service, redemption_service
+from services import heartbeat_service, license_service, redemption_service
 from services.susi_security_service import SusiSecurityService
 
 # Create database tables
@@ -112,6 +112,29 @@ async def validate_license(
     """Validate a license key"""
     service = redemption_service.RedemptionService(db, susi_security_service)
     return service.validate_license(validation_data)
+
+
+@app.post(
+    f"{config.settings.API_PREFIX}/licenses/heartbeat",
+    response_model=schemas.HeartbeatResponse,
+    tags=["License Operations"]
+)
+async def license_heartbeat(
+    heartbeat_data: schemas.LicenseHeartbeat,
+    db=Depends(database.get_db)
+):
+    """Record a client launch for DAU (Phase 7.4).
+
+    Unauthenticated, like /activate and /validate: the device identifier is not a
+    secret, and this endpoint grants nothing. It is idempotent per
+    (device, business day) and deliberately does not check authorization state --
+    an expired device that still starts is still an active device.
+
+    Failing loudly (5xx) when the business time zone is unavailable is intended;
+    see services/heartbeat_service.py. The client ignores every failure.
+    """
+    service = heartbeat_service.HeartbeatService(db)
+    return service.record_heartbeat(heartbeat_data)
 
 
 # ----------------------------------------------------------------------

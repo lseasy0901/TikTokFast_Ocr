@@ -4,7 +4,18 @@ SQLAlchemy database models
 """
 
 from datetime import datetime, timedelta
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, ForeignKey, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import hashlib
@@ -74,3 +85,38 @@ class License(Base):
 
     # Reverse relationship
     authorization = relationship("Authorization", back_populates="licenses")
+
+
+class DeviceDailyActive(Base):
+    """One device's activity on one business-zone calendar day (Phase 7.4).
+
+    This is the DAU fact table. Exactly one row per ``(device_id, active_date)``
+    -- the composite unique constraint is what makes the daily de-duplication
+    happen at write time instead of at query time, so DAU stays a plain
+    ``COUNT(*)`` over a table whose size is (devices x days), not (requests).
+
+    Deliberately not linked to ``Authorization`` by a foreign key: a heartbeat
+    records that the app STARTED, which is independent of whether the device
+    holds a valid authorization. An expired or revoked device still launched,
+    and must still be counted.
+    """
+
+    __tablename__ = "device_daily_active"
+    __table_args__ = (
+        UniqueConstraint("device_id", "active_date", name="uq_device_daily_active"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    #: The client's machine code -- the same identifier the activation flow
+    #: stores on Authorization.device_id, so the two are joinable.
+    device_id = Column(String(64), nullable=False, index=True)
+    #: Business-zone calendar day, derived server-side from the server clock.
+    #: Never supplied by the client -- see services/heartbeat_service.bucket_date.
+    active_date = Column(Date, nullable=False, index=True)
+    #: Timestamps follow the project-wide naive-UTC convention. first_seen_at is
+    #: written once on insert and never updated; last_seen_at is refreshed on
+    #: every subsequent heartbeat for the same day.
+    first_seen_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False)
+    #: How many times the app reported in on this day (startup + periodic pings).
+    launch_count = Column(Integer, nullable=False, default=1)

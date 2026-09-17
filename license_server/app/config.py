@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     # License settings
     DEFAULT_MAX_DEVICES: int = 1
 
+    # Business time zone - the single source of truth for "which calendar day is
+    # it" across the project (Phase 7.4).
+    #
+    # Used by two consumers, deliberately kept as one setting:
+    #   1. DAU bucketing (services/heartbeat_service.bucket_date) -- which day a
+    #      heartbeat belongs to.
+    #   2. Admin datetime display (app/admin/views.py) -- what the operator reads.
+    # If these two ever disagreed, the admin would show activity on a different
+    # day than the one the count was bucketed into.
+    #
+    # Storage and all business calculation stay UTC. Only the calendar-day
+    # boundary and the display layer use this zone.
+    BUSINESS_TZ_NAME: str = "Asia/Shanghai"
+
     # Susi security settings - Phase 7.2-6
     # Path to the susi_helper executable. Empty means "not configured": the service
     # then falls back to the project-root default with an OS-aware filename

@@ -3,7 +3,7 @@
 Pydantic schemas for API validation and response
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,27 @@ class LicenseValidationResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class LicenseHeartbeat(BaseModel):
+    """Schema for a client launch heartbeat (Phase 7.4).
+
+    Carries the device identifier and nothing else. Deliberately no timestamp:
+    the client's clock is not trusted for anything, let alone for deciding which
+    day a device was active on -- the server stamps that itself.
+
+    ``max_length=64`` matches ``Authorization.device_id`` and the existing
+    LicenseActivate/LicenseValidate constraints. Real machine codes from
+    susi_helper are exactly 64 lowercase hex characters; SQLite does not enforce
+    VARCHAR length, so this bound is the only thing keeping the column honest.
+    """
+    device_id: str = Field(..., min_length=1, max_length=64)
+
+
+class HeartbeatResponse(BaseModel):
+    """Schema for a heartbeat response."""
+    ok: bool
+    active_date: date
 
 
 class ErrorResponse(BaseModel):
