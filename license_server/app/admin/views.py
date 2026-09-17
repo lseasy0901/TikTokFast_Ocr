@@ -33,13 +33,15 @@ import logging
 
 from markupsafe import Markup
 from pydantic import ValidationError
+from sqlalchemy import distinct as sa_distinct, func as sa_func
 from sqladmin import BaseView, Flash, ModelView, Secret, action, expose
 from sqladmin.filters import StaticValuesFilter
 from starlette.responses import RedirectResponse
 
+import config
 import database
 from admin.auth import AdminAuth
-from models import Authorization, License, LicenseState
+from models import Authorization, DeviceDailyActive, License, LicenseState
 from schemas import LicenseCreate
 from services.license_service import LicenseService
 
@@ -59,7 +61,7 @@ logger = logging.getLogger(__name__)
 # 后台是给人看的，运维在东八区；直接渲染 naive UTC 会让每个时间都早 8 小时。
 # 因此只在展示层做一次换算，不改动存储值，也不改动任何业务计算。
 # ======================================================================
-DISPLAY_TZ_NAME = "Asia/Shanghai"
+DISPLAY_TZ_NAME = config.settings.BUSINESS_TZ_NAME
 
 try:
     from zoneinfo import ZoneInfo
@@ -655,3 +657,68 @@ class GenerateKeysView(BaseView):
         return response
 
 
+# ======================================================================
+# DAU（只读聚合，Phase 7.4）
+# ======================================================================
+#: 本页展示的最近天数。按日聚合后每天一行，30 天足够看趋势；
+#: 更早的历史随时可用 SQL 直接查 device_daily_active，不在本页提供。
+DAU_PAGE_DAYS = 30
+
+
+class DauView(BaseView):
+    """每日活跃设备数 —— 只读。
+
+    为什么不是 ModelView：``device_daily_active`` 每行是「一台设备的一天」，
+    而 DAU 要的是「一天有多少台设备」—— 这需要 GROUP BY 聚合，而 ModelView
+    只会逐行渲染模型对象，做不到。所以沿用本项目已有的 ``BaseView`` + 自带
+    模板写法（与 ``GenerateKeysView`` 同构）。
+
+    本页没有任何写入口，也没有吊销/删除能力：DAU 是纯统计视图。
+
+    口径：``device_id`` 是设备机器码，因此这里统计的是**活跃设备数**，
+    不是自然人数。同一人多台设备会各计一次。
+    """
+
+    name = "DAU"
+    icon = "fa-solid fa-chart-line"
+    category = "Licensing"
+
+    def is_accessible(self, request) -> bool:
+        return _require_operator(request)
+
+    @expose("/dau")
+    async def dau(self, request):
+        with database.SessionLocal() as db:
+            # 按业务时区日历日聚合。归属已经在写入时定好（见 heartbeat_service），
+            # 这里只是计数，不做任何时区换算。
+            rows = (
+                db.query(
+                    DeviceDailyActive.active_date.label("active_date"),
+                    sa_func.count().label("devices"),
+                    sa_func.sum(DeviceDailyActive.launch_count).label("launches"),
+                )
+                .group_by(DeviceDailyActive.active_date)
+                .order_by(DeviceDailyActive.active_date.desc())
+                .limit(DAU_PAGE_DAYS)
+                .all()
+            )
+
+            # 累计去重设备数：与上面的按日计数不同，这里跨天去重。
+            total_devices = db.query(
+                sa_func.count(sa_distinct(DeviceDailyActive.device_id))
+            ).scalar()
+
+        response = await self.templates.TemplateResponse(
+            request,
+            "dau.html",
+            {
+                "title": "DAU",
+                "subtitle": "每日活跃设备数",
+                "rows": rows,
+                "total_devices": total_devices or 0,
+                "days": DAU_PAGE_DAYS,
+                "tz_name": DISPLAY_TZ_NAME,
+            },
+        )
+        Secret.apply_no_store_headers(response)
+        return response
