@@ -72,7 +72,11 @@ from gui.widgets import (
 )
 from gui.expired_dialog import ExpiredDialog
 from gui.activation_dialog import ActivationDialog, LicenseWorker
+from gui.update_dialog import UpdateDialog
+from gui.onboarding import OnboardingDialog, RoiHelpDialog
+from utils import update_state
 from utils.heartbeat_schedule import HeartbeatScheduler
+from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
 from stream.douyin import DouyinStream, DouyinStreamError
 from stream.ffmpeg_reader import FFmpegReader
@@ -85,6 +89,7 @@ from ocr.worker import OCRWorker
 from ocr.clipboard import ClipboardManager
 from ocr.profiles import DELTA_FORCE, VALORANT, get_profile
 from utils.stream_history import StreamHistory
+from utils.first_run import FirstRunStore
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.main_window")
 
@@ -223,6 +228,12 @@ DEFAULT_OCR_GAME_PROFILE_ID = DELTA_FORCE.profile_id
 #: 不暗示程序认为应该是哪款游戏），也不附加任何操作入口。
 OCR_GAME_MISMATCH_MESSAGE = "检测到选择错误，请重新选择游戏类型后再进行识别。"
 
+#: 启动后多久发起更新检查（Phase 1）。
+#: 刻意不是 0：启动瞬间许可证加载、心跳、首帧解码都在抢资源与带宽，而更新
+#: 检查是三者中唯一「晚几秒毫无损失」的一个。延迟也顺带降低了服务端被所有
+#: 客户端同时打点的并发压力。
+UPDATE_CHECK_DELAY_MS = 5000
+
 
 class MainWindow(QMainWindow):
     """Douyin Low Latency Stream Viewer 主窗口"""
@@ -232,6 +243,7 @@ class MainWindow(QMainWindow):
     _connect_error_sig = Signal(str)
     _license_loaded_sig = Signal(object)  # 启动时许可证校验结果
     _heartbeat_done_sig = Signal(object)  # 心跳上报结果
+    _update_check_done_sig = Signal(object)  # 更新检查结果（Velopack UpdateInfo 或 None）
 
     def __init__(self):
         super().__init__()
@@ -258,6 +270,14 @@ class MainWindow(QMainWindow):
         self._ocr_profile_id: str = DEFAULT_OCR_GAME_PROFILE_ID
         self._clipboard_manager: ClipboardManager = ClipboardManager()
         self._stream_history: StreamHistory = StreamHistory()
+
+        # 首次启动状态。构造只读一个本地文件（容错，失败按默认值处理），
+        # 不联网、不弹窗 —— 真正的弹窗由 main.py 经 maybe_show_first_run_guide()
+        # 触发，理由与 start_heartbeat 相同：测试会直接构造 MainWindow。
+        self._first_run_store: FirstRunStore = FirstRunStore()
+        # 同一时刻最多一个引导向导（嵌套事件循环里可能重入）
+        self._onboarding_dialog: OnboardingDialog | None = None
+        self._roi_help_dialog: RoiHelpDialog | None = None
 
         # 当前选中的URL（用于备注编辑）
         self._selected_url_for_note: str | None = None
@@ -300,6 +320,22 @@ class MainWindow(QMainWindow):
         # 单次触发：每次到点后重新计算下一个业务日边界，因此不会累积 QTimer 漂移。
         self._heartbeat_timer.setSingleShot(True)
         self._heartbeat_timer.timeout.connect(self._on_heartbeat_timer_timeout)
+
+        # 更新检查（Phase 3：Velopack）
+        # 与授权、遥测同样解耦：构造时不联网（UpdateService 惰性构造
+        # UpdateManager），真正的检查由应用入口 main.py 经 start_update_check()
+        # 触发（理由与心跳完全一致 —— 见 start_heartbeat 的说明：测试会大量
+        # 直接构造 MainWindow）。
+        self._update_service = UpdateService()
+        self._update_worker: LicenseWorker | None = None
+        # 对话框与后台下载线程的持有者：下载可以在窗口收起后继续跑完，
+        # 因此不能让它随 exec() 返回被回收。
+        self._update_dialog: UpdateDialog | None = None
+        self._update_check_done_sig.connect(self._on_update_check_done)
+        self._update_timer = QTimer(self)
+        # 单次触发：启动后查一次即可，本次不做周期性复查。
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._on_update_timer_timeout)
 
         # 上一次显示的 buffer frame_id
         self._last_displayed_frame_id: int = 0
@@ -582,11 +618,24 @@ class MainWindow(QMainWindow):
         self._lbl_roi.setWordWrap(True)
         body.addWidget(self._lbl_roi)
 
+        # 框选按钮与「说明」同一行：说明讲的就是这个按钮该怎么用，
+        # 放在它旁边，用户在「框错了」的那一刻一眼就能找到
+        roi_row = QHBoxLayout()
+        roi_row.setSpacing(6)
+
         self._roi_btn = QPushButton("选择识别区域")
         self._roi_btn.setEnabled(False)
         self._roi_btn.setToolTip("在直播画面上框选房间号所在区域")
         self._roi_btn.clicked.connect(self._on_roi_select_clicked)
-        body.addWidget(self._roi_btn)
+        roi_row.addWidget(self._roi_btn, 1)
+
+        self._roi_help_btn = QPushButton("说明")
+        self._roi_help_btn.setObjectName("statusButton")
+        self._roi_help_btn.setToolTip("怎样框选识别区域（含正确 / 错误对比示例）")
+        self._roi_help_btn.clicked.connect(self._on_roi_help_clicked)
+        roi_row.addWidget(self._roi_help_btn)
+
+        body.addLayout(roi_row)
 
         body.addWidget(h_line())
 
@@ -655,6 +704,14 @@ class MainWindow(QMainWindow):
         self._access_status_label.setObjectName("accessLabel")
         self._access_status_label.setProperty("tone", "neutral")
         bar.addPermanentWidget(self._access_status_label)
+
+        # 引导入口。刻意用次要样式（不带 variant="primary"）：状态栏上
+        # 「激活许可证」应当是唯一被强调的按钮。放在它左边，保持许可证在最右。
+        self._help_btn = QPushButton("使用引导")
+        self._help_btn.setObjectName("statusButton")
+        self._help_btn.setStatusTip("查看使用引导，可随时重新打开")
+        self._help_btn.clicked.connect(self._on_help_clicked)
+        bar.addPermanentWidget(self._help_btn)
 
         self._license_btn = QPushButton("激活许可证")
         self._license_btn.setObjectName("statusButton")
@@ -1583,6 +1640,68 @@ class MainWindow(QMainWindow):
         logger.info("启动许可证校验结果: %s", result.status.value)
         self._apply_license_result(result)
 
+    # ------------------------------------------------------------------
+    # 首次启动引导 / 帮助
+    # ------------------------------------------------------------------
+    def maybe_show_first_run_guide(self) -> bool:
+        """首次启动时弹出使用引导；已经关掉过则什么都不做。
+
+        刻意由入口 main.py 调用，而不是挂在 __init__ 里：「构造一个 MainWindow」
+        在测试里很常见，构造期弹模态对话框会让无头测试永久阻塞 ——
+        与 start_heartbeat / start_update_check 同一个理由。
+
+        也刻意【不】经过 _guard_access：全新安装本来就是未激活状态，用授权门槛
+        拦住引导，等于对第一次打开程序的用户隐藏使用说明。真正的受保护动作
+        （连接 / 框选 / 开始识别）仍然照常被拦截，权限语义没有变化。
+
+        :return: True 表示本次确实弹出了向导
+        """
+        if self._onboarding_dialog is not None:
+            return False
+        if not self._first_run_store.should_show_guide():
+            return False
+
+        logger.info("[ONBOARDING] 首次启动：显示使用引导")
+        self._open_onboarding(first_run=True)
+        return True
+
+    def _on_help_clicked(self):
+        """状态栏「使用引导」：随时重新打开引导（回顾模式）。"""
+        if self._onboarding_dialog is not None:
+            return
+        self._open_onboarding(first_run=False)
+
+    def _open_onboarding(self, first_run: bool) -> None:
+        """构造并模态运行向导；关闭后按用户表态落盘 —— 这里是唯一的写盘点。
+
+        结论在 exec() 返回之后再取，而不是接 accepted/rejected 信号：
+        QDialog::done() 先发 finished 再发 accepted/rejected，靠信号回调的先后
+        顺序去读状态，容易读到已经被清掉的引用。
+        """
+        dialog = OnboardingDialog(self, first_run=first_run)
+        # 必须在 exec() 之前赋值，否则重入保护不起作用
+        self._onboarding_dialog = dialog
+        try:
+            dialog.exec()
+            should_mark = dialog.should_mark_seen()
+        finally:
+            self._onboarding_dialog = None
+
+        # 只有首次启动才会写状态：从帮助里重新打开看一眼，不该改掉用户的选择
+        if first_run and should_mark:
+            self._first_run_store.set_should_show_guide(False)
+
+    def _on_roi_help_clicked(self):
+        """「说明」：ROI 框选示意图。不依赖连接状态，随时可看。"""
+        if self._roi_help_dialog is not None:
+            return
+        dialog = RoiHelpDialog(self)
+        self._roi_help_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._roi_help_dialog = None
+
     def _on_license_clicked(self):
         """激活许可证按钮点击事件：打开激活对话框。"""
         dialog = ActivationDialog(self._license_manager, self)
@@ -1709,6 +1828,109 @@ class MainWindow(QMainWindow):
         if isinstance(credited_day, date) and not isinstance(credited_day, datetime):
             self._heartbeat_scheduler.mark_reported_day(credited_day)
         self._schedule_next_heartbeat()
+
+    # ------------------------------------------------------------------
+    # 更新（Phase 3：Velopack）
+    #
+    # 与心跳同构的一条后台链路，且同样与授权严格隔离。但更新本身的实现
+    # **不在这里**：版本比较、清单解析、下载、校验、解压、替换安装目录、
+    # 重启，全部是 Velopack 的职责，经 utils.update_service.UpdateService
+    # 转调。这里只负责：
+    #   - 起后台线程发起检查（Velopack 的 check 是阻塞调用）；
+    #   - 有新版本时弹对话框；
+    #   - 用户确认重启时，先停流收尾，再交给 Velopack。
+    #
+    # 因此「检查更新失败 / 更新源不可用 / 未安装运行」都不会以任何形式影响
+    # 启动、视频、OCR 或授权状态。
+    #
+    # Phase 3.5：旧的自研更新链（utils/update_client + utils/update_download）
+    # 已随 Velopack E2E 跑通后删除。更新只有这一条生产路径。
+    # ------------------------------------------------------------------
+    def current_version(self) -> str:
+        """当前版本号。已安装运行时来自 Velopack 的安装清单（它才知道更新后
+        自己是什么版本），未安装运行（源码 / 便携 ZIP）时回落 utils.version。"""
+        return self._update_service.current_version()
+
+    def start_update_check(self):
+        """安排一次启动后的更新检查。由应用入口 main.py 调用。
+
+        为什么不在 __init__ 里自动开始：
+            与 start_heartbeat 同因 —— 它会向更新源发起**真实网络请求**，而
+            「构造一个 MainWindow」在测试里极常见。若挂在构造流程上，每次跑
+            测试都会打一次真实源。
+
+        重复调用是安全的：只会重置那个单次定时器。
+        """
+        self._update_timer.start(UPDATE_CHECK_DELAY_MS)
+
+    def _on_update_timer_timeout(self):
+        """延时到点：在后台线程发起检查。
+
+        Velopack 的 check_for_updates 是阻塞调用（Rust 侧释放 GIL 但不返回
+        事件循环），放 GUI 线程会冻住界面，因此借用既有的 LicenseWorker
+        线程模式 —— 它只要求「无参任务 + 单参完成回调」，恰好合适。
+        """
+        # 上一次仍在跑就跳过，避免网络慢时堆叠线程
+        if self._update_worker is not None and self._update_worker.is_running():
+            return
+        self._update_worker = LicenseWorker(
+            task=self._update_service.check,
+            on_done=self._update_check_done_sig.emit,
+            name="update-check",
+        )
+        self._update_worker.start()
+
+    def _on_update_check_done(self, info):
+        """检查结束回调（经 Qt 排队回到 GUI 线程）。
+
+        ``info`` 为 None 表示「没有可用的更新」—— 包括已是最新、更新源不可
+        用（正式源尚未部署 / 网络不通）、以及本机不是 Velopack 安装版本
+        （源码启动、旧 ZIP 解压运行）。这些一律静默返回，不提示、不改状态：
+        后台版本检查的失败不该在用户面前产生动静。
+
+        版本比较由 Velopack 自己做（check_for_updates 已经把「有更新」判定
+        完了），我们不再实现第二套比较逻辑。
+
+        结构判断而不是真值判断：LicenseWorker 在任务抛异常时会回调一个
+        LicenseResult 兜底对象，它既不是 None 也没有 TargetFullRelease，
+        绝不能被当成一份有效更新信息去取版本号。
+        """
+        if info is None or not hasattr(info, "TargetFullRelease"):
+            return
+        logger.info(
+            "发现新版本 %s（当前 %s）",
+            info.TargetFullRelease.Version,
+            self._update_service.current_version(),
+        )
+        # 持有引用：下载可以在窗口收起后继续跑完，对话框不能随 exec() 返回被回收
+        self._update_dialog = UpdateDialog(self._update_service, info, self)
+        self._update_dialog.apply_requested.connect(self._on_update_apply_requested)
+        self._update_dialog.exec()
+
+    def _on_update_apply_requested(self, info):
+        """用户确认「立即重启并更新」。
+
+        Velopack 的 apply_updates_and_restart 会启动 Update.exe 等本进程退出、
+        然后**直接结束当前进程**（Rust 侧 exit(0)），Qt 的窗口关闭流程不会再
+        走一遍。因此 ffmpeg / 播放线程必须在这里先显式停掉，否则会留下孤儿
+        进程 —— 这正是先调 _disconnect() 的原因。
+        """
+        logger.info("用户确认应用更新，停止当前会话后交给 Velopack")
+        self._disconnect()
+        # 先落盘「正在换到新版本」再 apply（Phase 4B）。顺序不能反：apply 之后
+        # 本进程会被 Velopack 直接结束，没有机会再写任何东西。这条记录是新版
+        # 启动失败时唯一的线索 —— 下一次启动据此判定要不要回滚。
+        update_state.write_state(
+            update_state.mark_applying(
+                self.current_version(), info.TargetFullRelease.Version
+            )
+        )
+        try:
+            self._update_service.apply_and_restart(info)
+        except UpdateError as e:
+            # 只有「Velopack 没接管、进程还活着」才会走到这里
+            logger.warning("应用更新失败: %s", e)
+            QMessageBox.warning(self, "更新失败", str(e))
 
     # ------------------------------------------------------------------
     # 窗口事件处理

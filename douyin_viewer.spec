@@ -5,11 +5,31 @@ Windows standalone EXE packaging
 """
 
 import glob
+import importlib.util
 import os
 import sys
 
 # Get the absolute path of the project directory
 PROJECT_ROOT = os.path.abspath(".")
+
+# ---------------------------------------------------------------------------
+# Client version (Phase 0)
+#
+# Single source of truth: utils/version.py. It is exec'd rather than imported so
+# that this spec keeps working in a build environment that has no runtime
+# dependencies installed -- the module holds one literal assignment and no
+# imports by design. Never write a version string a second time here: the client
+# reads the same file at runtime, and the update check compares the two.
+# ---------------------------------------------------------------------------
+_APP_VERSION_FILE = os.path.join(PROJECT_ROOT, "utils", "version.py")
+_version_ns = {}
+with open(_APP_VERSION_FILE, "r", encoding="utf-8") as _f:
+    exec(_f.read(), _version_ns)
+APP_VERSION = _version_ns["__version__"]
+
+print("=" * 72)
+print("Building DouyinLowLatencyViewer %s" % APP_VERSION)
+print("=" * 72)
 
 # ---------------------------------------------------------------------------
 # Required build inputs (Phase 7.2-8G)
@@ -200,6 +220,46 @@ require_build_inputs(
         ("Tesseract core library", _TESSERACT_DLL_REQUIRED),
     )
 )
+
+# pytesseract is an *importable* dependency, so require_build_inputs() (which only
+# stats files) cannot see this failure. PyInstaller treats a missing hidden import
+# as a warning, not an error: the build succeeds, ships no pytesseract, and every
+# customer sees "OCR 组件缺失" the moment they press 识别. That exact defect
+# shipped once; fail the build instead of rediscovering it on a user's machine.
+#
+# The check runs in the spec's own interpreter, which is the same one PyInstaller
+# uses to walk the import graph, so "resolves here" == "gets bundled".
+_pytesseract_missing = []
+for _mod in ("pytesseract", "PIL.Image"):
+    if importlib.util.find_spec(_mod) is None:
+        _pytesseract_missing.append(_mod)
+
+if _pytesseract_missing:
+    raise FileNotFoundError(
+        "\n".join(
+            [
+                "",
+                "=" * 72,
+                "BUILD ABORTED: the OCR Python dependency is missing.",
+                "",
+                "  not importable in the build interpreter (%s):"
+                % sys.executable,
+                "    %s" % ", ".join(_pytesseract_missing),
+                "",
+                "pytesseract is the only entry point to the bundled tesseract.exe.",
+                "PyInstaller only *warns* about an unresolvable hidden import, so",
+                "without this guard the build succeeds and produces an installer",
+                "whose OCR never starts on any machine -- including this one.",
+                "PIL.Image is listed alongside it because pytesseract imports it at",
+                "module scope; without it the frozen import fails the same way.",
+                "",
+                "Fix: install the runtime requirements into the build environment",
+                "  python -m pip install -r requirements.txt",
+                "=" * 72,
+                "",
+            ]
+        )
+    )
 
 # Same reasoning as Tesseract: a present-but-partial DLL set is the case
 # require_build_inputs() cannot see. ffmpeg.exe needs all of them at process
@@ -456,6 +516,10 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
+    # EXE name is fixed at DouyinLowLatencyViewer (Phase 0 decision).
+    # "LiveLens" is the product/window name only -- it must NOT be used here
+    # without a matching change to the update system, which derives the process
+    # to wait for, the backup name and the relaunch target from this value.
     name='DouyinLowLatencyViewer',
     debug=False,
     bootloader_ignore_signals=False,

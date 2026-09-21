@@ -19,19 +19,131 @@ import cv2
 import numpy as np
 import logging
 import os
+import shutil
+import sys
 from typing import Optional, List
+
+logger = logging.getLogger("DouyinLowLatencyViewer.ocr.engine")
 
 try:
     import pytesseract
     TESSERACT_AVAILABLE = True
 except ImportError:
+    pytesseract = None
     TESSERACT_AVAILABLE = False
-    logger = logging.getLogger("DouyinLowLatencyViewer.ocr.engine")
-    logger.warning("pytesseract 未安装，OCR 功能不可用。请运行: pip install pytesseract")
 
-logger = logging.getLogger("DouyinLowLatencyViewer.ocr.engine")
+__all__ = [
+    "OCREngine",
+    "OCREngineError",
+    "TesseractLocator",
+    "TesseractNotFoundError",
+    "is_frozen",
+]
 
-__all__ = ["OCREngine", "OCREngineError"]
+# ---------------------------------------------------------------------------
+# 随包 OCR 运行时定位 — 发布打包修复
+#
+# 背景：
+#   安装包必须自带 OCR 运行时。最终用户的机器上没有 Python、没有 pytesseract、
+#   没有 Tesseract-OCR，也不会去设置 PATH；因此 tesseract.exe / 其 DLL /
+#   tessdata 全部随包分发，并由本模块__唯一__负责定位。
+#
+# 事故成因（两条独立的缺陷，都只在安装包上暴露）：
+#   1. pytesseract 未列入 requirements.txt，构建环境里根本没有它。spec 的
+#      hiddenimports 写着 "pytesseract"，但 PyInstaller 对找不到的 hidden import
+#      只警告不报错，于是包里没有 pytesseract。冻结后 `import pytesseract` 失败，
+#      TESSERACT_AVAILABLE=False，OCR 一次都没跑过。
+#   2. find_tesseract() 用 `dirname(__file__)`（即 ocr/ 目录）去拼 runtime/，
+#      源码树下永远找不到仓库根的 runtime/tesseract/，于是静默落到
+#      `C:\Program Files\Tesseract-OCR` 和 PATH —— 开发机上"碰巧"能跑，
+#      客户机上必然失败。
+#
+# 冻结环境刻意不做 PATH 回退：客户机上并没有 Tesseract，静默回退只会把明确的
+# 「随包文件缺失」变成含糊的「找不到命令」，掩盖打包缺陷。
+# ---------------------------------------------------------------------------
+
+#: runtime/ 下的子目录名，与 douyin_viewer.spec 的 _TESSERACT_DEST 必须一致。
+_TESSERACT_SUBDIR = "tesseract"
+
+#: 部署覆盖用的环境变量名，与 DLV_FFMPEG_PATH / SUSI_HELPER_PATH 同一模式。
+_ENV_TESSERACT = "DLV_TESSERACT_PATH"
+_ENV_TESSDATA = "DLV_TESSDATA_PATH"
+
+#: 面向安装用户的提示。不含 pip / PATH / 手动安装 Tesseract ——
+#: 那些说法只对源码开发环境成立，出现在安装包上就是无效指引。
+FROZEN_OCR_MISSING_MESSAGE = "内置 OCR 组件缺失或损坏，请重新安装 LiveLens。"
+
+
+def is_frozen() -> bool:
+    """当前是否为 PyInstaller 冻结环境（含 Velopack 安装后的 onedir）。"""
+    return bool(getattr(sys, "frozen", False))
+
+
+def ocr_missing_message(dev_detail: str) -> str:
+    """把一句开发环境诊断转换成当前环境下真正可执行的提示。
+
+    ``dev_detail`` 只说给能改代码的人听（pip install / PATH / 手动装 Tesseract）。
+    冻结环境里这些都不成立，只返回重装安装包的指引。
+    """
+    if is_frozen():
+        return FROZEN_OCR_MISSING_MESSAGE
+    return dev_detail
+
+
+if not TESSERACT_AVAILABLE:
+    # 安装包里出现这句就代表打包缺陷（pytesseract 没被带上），
+    # 因此文案按环境分流：最终用户看到的是重装指引，不是 pip 命令。
+    logger.warning(
+        "pytesseract 不可用，OCR 功能不可用: %s",
+        ocr_missing_message("请运行: pip install pytesseract"),
+    )
+
+
+def _exe_name(name: str) -> str:
+    """Windows 下补 .exe 后缀，其余平台沿用裸名。"""
+    return name + ".exe" if os.name == "nt" else name
+
+
+def _project_root() -> str:
+    """源码树根目录（本文件位于 <root>/ocr/ 下）。"""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _is_usable(path: str) -> bool:
+    """存在且非空。0 字节的占位文件不能算"找到"。"""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def _frozen_base_dirs():
+    """冻结构建中可能承载 runtime/ 的目录，按优先级排列。
+
+    ``sys._MEIPASS`` 在 PyInstaller onedir 下指向 ``<exe_dir>/_internal``，
+    也就是 COLLECT 实际落盘的位置；``<exe_dir>`` 本身是 Velopack 更新后
+    ``current/`` 的形态。两处都查，避免把布局固定死在某一个上。
+
+    返回空列表表示当前不是冻结环境，调用方应改走源码树路径。
+    """
+    if not is_frozen():
+        return []
+
+    dirs = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        dirs.append(meipass)
+
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if exe_dir not in dirs:
+        dirs.append(exe_dir)
+
+    return dirs
+
+
+def _bundled_dirs():
+    """随包 runtime/ 的候选父目录：冻结环境用冻结目录，源码环境用仓库根。"""
+    return _frozen_base_dirs() or [_project_root()]
 
 
 class TesseractNotFoundError(Exception):
@@ -41,14 +153,34 @@ class TesseractNotFoundError(Exception):
 
 class TesseractLocator:
     """
-    Tesseract路径定位器
+    Tesseract 运行时路径解析器（随包 OCR 的唯一定位边界）
 
-    负责查找tesseract.exe和tessdata路径，支持多种环境：
-    1. PyInstaller环境
-    2. 源码开发环境
-    3. 系统安装
-    4. PATH环境变量
+    负责把「随包 runtime/tesseract/」解析成 tesseract.exe 与 tessdata 的绝对路径。
+    布局与 douyin_viewer.spec 的 _TESSERACT_DEST 一致：
+
+        <base>/runtime/tesseract/tesseract.exe
+        <base>/runtime/tesseract/*.dll
+        <base>/runtime/tesseract/tessdata/eng.traineddata
+
+    其中 <base> 在冻结环境是 _MEIPASS / exe 目录，在源码环境是仓库根。
+
+    查找顺序（与 utils.runtime_paths 的 FFmpeg 解析保持同一套语义）：
+        1. 环境变量覆盖（部署用，便于同一份构建适配不同部署）
+        2. 随包目录：冻结环境 <MEIPASS>/runtime/... 或 <exe_dir>/runtime/...
+           源码环境 <项目根>/runtime/...
+        3. 仅非冻结的开发环境，回退到 PATH
+
+    冻结环境不做 PATH 回退，也不查 C:\\Program Files —— 客户机上没有这些，
+    查了只会把「随包文件缺失」掩盖成「找不到命令」。
     """
+
+    @staticmethod
+    def _bundled_candidates() -> List[str]:
+        """随包 tesseract.exe 的候选路径，按优先级排列。"""
+        return [
+            os.path.join(base, "runtime", _TESSERACT_SUBDIR, _exe_name("tesseract"))
+            for base in _bundled_dirs()
+        ]
 
     @staticmethod
     def find_tesseract(test_mode: bool = False) -> str:
@@ -56,7 +188,8 @@ class TesseractLocator:
         查找tesseract.exe路径
 
         参数：
-            test_mode: 测试模式，优先查找测试目录
+            test_mode: 测试模式。只查随包目录，连开发环境的 PATH 回退也禁用，
+                       便于测试断言"不依赖系统 PATH"。
 
         返回：
             tesseract.exe的完整路径
@@ -64,62 +197,38 @@ class TesseractLocator:
         异常：
             TesseractNotFoundError: 如果未找到tesseract
         """
-        import sys
-        import os
+        override = os.environ.get(_ENV_TESSERACT, "").strip()
+        if override:
+            if _is_usable(override):
+                return override
+            raise TesseractNotFoundError(
+                ocr_missing_message(
+                    f"DLV_TESSERACT_PATH 指向的文件不存在或为空: {override}"
+                )
+            )
 
-        # 测试模式：优先查找测试目录，并禁用系统路径
+        for candidate in TesseractLocator._bundled_candidates():
+            if _is_usable(candidate):
+                return candidate
+
+        if is_frozen():
+            # 走到这里说明随包文件缺失：这是发布包的缺陷，不是用户环境问题。
+            raise TesseractNotFoundError(FROZEN_OCR_MISSING_MESSAGE)
+
         if test_mode:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            tesseract_path = os.path.join(current_dir, "runtime", "tesseract", "tesseract.exe")
-            if os.path.exists(tesseract_path):
-                return tesseract_path
-            # 测试模式下不查找系统路径
-            raise TesseractNotFoundError("测试模式下未找到Tesseract")
+            raise TesseractNotFoundError(
+                "测试模式下未找到随包 Tesseract（不回退系统 PATH）"
+            )
 
-        # 第一优先级：PyInstaller环境
-        if getattr(sys, "frozen", False):
-            # sys._MEIPASS存在（PyInstaller onefile模式）
-            if hasattr(sys, '_MEIPASS'):
-                meipass_path = sys._MEIPASS
-                tesseract_path = os.path.join(meipass_path, "runtime", "tesseract", "tesseract.exe")
-                if os.path.exists(tesseract_path):
-                    return tesseract_path
+        # 仅源码开发环境：允许 PATH 上的 Tesseract 安装。
+        for name in ("tesseract", "tesseract.exe"):
+            found = shutil.which(name)
+            if found:
+                return found
 
-                # exe目录/runtime/tesseract/tesseract.exe
-                exe_dir = os.path.dirname(sys.executable)
-                tesseract_path = os.path.join(exe_dir, "runtime", "tesseract", "tesseract.exe")
-                if os.path.exists(tesseract_path):
-                    return tesseract_path
-
-        # 第二优先级：源码环境
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        tesseract_path = os.path.join(current_dir, "runtime", "tesseract", "tesseract.exe")
-        if os.path.exists(tesseract_path):
-            return tesseract_path
-
-        # 第三优先级：系统安装路径
-        system_paths = [
-            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"
-        ]
-
-        for path in system_paths:
-            if os.path.exists(path):
-                return path
-
-        # 第四优先级：PATH环境变量
-        try:
-            import subprocess
-            result = subprocess.run(['where', 'tesseract'], capture_output=True, text=True, check=True)
-            lines = result.stdout.strip().split('\n')
-            if lines:
-                return lines[0].strip()
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-
-        # 如果全部失败
         raise TesseractNotFoundError(
-            "Tesseract OCR 未找到。请确保已安装Tesseract-OCR并添加到系统PATH，或提供runtime/tesseract目录。"
+            "Tesseract OCR 未找到。请确保已安装 Tesseract-OCR 并添加到系统 PATH，"
+            "或提供 runtime/tesseract 目录。"
         )
 
     @staticmethod
@@ -136,32 +245,34 @@ class TesseractLocator:
         异常：
             TesseractNotFoundError: 如果未找到tessdata
         """
-        import os
+        candidates = []
 
-        # 尝试从runtime/tesseract/tessdata查找
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        tessdata_path = os.path.join(current_dir, "runtime", "tesseract", "tessdata")
-        if os.path.exists(tessdata_path):
-            return tessdata_path
+        override = os.environ.get(_ENV_TESSDATA, "").strip()
+        if override:
+            candidates.append(override)
 
-        # 尝试从tesseract.exe所在目录的父目录查找
-        tesseract_dir = os.path.dirname(tesseract_path)
-        tessdata_path = os.path.join(tesseract_dir, "tessdata")
-        if os.path.exists(tessdata_path):
-            return tessdata_path
+        # tesseract.exe 同级目录 —— 随包布局即如此，源码 / 冻结 / 系统安装都适用，
+        # 因此这是唯一的主规则，不需要在任何地方重复写死路径。
+        candidates.append(
+            os.path.join(os.path.dirname(os.path.abspath(tesseract_path)), "tessdata")
+        )
 
-        # 尝试系统默认路径
-        system_paths = [
-            r"C:\Program Files\Tesseract-OCR\tessdata",
-            r"C:\Program Files (x86)\Tesseract-OCR\tessdata"
-        ]
+        # 随包目录：源码树下 tesseract.exe 可能来自 PATH，但语言数据仍应取随包的那份。
+        candidates.extend(
+            os.path.join(base, "runtime", _TESSERACT_SUBDIR, "tessdata")
+            for base in _bundled_dirs()
+        )
 
-        for path in system_paths:
-            if os.path.exists(path):
-                return path
+        for candidate in candidates:
+            if os.path.isdir(candidate):
+                return candidate
 
-        # 如果全部失败
-        raise TesseractNotFoundError("Tessdata未找到。请确保已安装Tesseract-OCR语言数据。")
+        raise TesseractNotFoundError(
+            ocr_missing_message(
+                "Tessdata 未找到。请确保已安装 Tesseract-OCR 语言数据，"
+                "或提供 runtime/tesseract/tessdata 目录。"
+            )
+        )
 
     @staticmethod
     def get_tesseract_version(tesseract_path: str) -> str:
@@ -226,8 +337,10 @@ class OCREngine:
         """
         if not TESSERACT_AVAILABLE:
             raise OCREngineError(
-                "pytesseract 未安装。请运行: pip install pytesseract\n"
-                "同时确保 Tesseract-OCR 已安装并添加到系统 PATH。"
+                ocr_missing_message(
+                    "pytesseract 未安装。请运行: pip install pytesseract\n"
+                    "同时确保 Tesseract-OCR 已安装并添加到系统 PATH。"
+                )
             )
 
         # 查找 Tesseract 路径
@@ -235,8 +348,10 @@ class OCREngine:
             if tesseract_cmd:
                 # 使用自定义路径
                 tesseract_path = tesseract_cmd
-                if not os.path.exists(tesseract_path):
-                    raise TesseractNotFoundError(f"自定义 Tesseract 路径不存在: {tesseract_path}")
+                if not _is_usable(tesseract_path):
+                    raise TesseractNotFoundError(
+                        ocr_missing_message(f"自定义 Tesseract 路径不存在: {tesseract_path}")
+                    )
             else:
                 # 使用 TesseractLocator 查找
                 tesseract_path = TesseractLocator.find_tesseract()
@@ -251,14 +366,24 @@ class OCREngine:
             # 版本信息仅为诊断用途，需要时用 TesseractLocator.get_tesseract_version()
             # 单独、显式地获取，不放在 OCREngine 的构造路径上。
 
-            # 查找 tessdata 路径
+            # 查找 tessdata 路径。
+            # 这里的作用已经不止"记个路径"：find_tessdata() 缺失时会抛
+            # TesseractNotFoundError，把"exe 在但语言数据没打进去"这种半残包
+            # 在引擎构造时就变成本模块的缺失提示，而不是等到第一帧识别才报
+            # 一句含糊的 tesseract 错误。
             tessdata_path = TesseractLocator.find_tessdata(tesseract_path)
             logger.info("[TESSDATA] path=%s", tessdata_path)
 
-            # 设置 tessdata 目录
+            # pytesseract 0.3.13 并不读这个属性（源码里没有 tessdata_dir），
+            # 因此它不承担定位职责 —— tesseract 自己按 exe 同级目录找 tessdata，
+            # 而随包布局正是 <...>/runtime/tesseract/tessdata。保留赋值只为兼容
+            # 既有测试对 pytesseract 模块属性的建模，不要误以为它生效。
             pytesseract.pytesseract.tessdata_dir = tessdata_path
 
         except TesseractNotFoundError as e:
+            # 冻结环境里 e 已经是面向最终用户的成品文案，不再加开发向的前缀。
+            if is_frozen():
+                raise OCREngineError(str(e))
             raise OCREngineError(f"Tesseract OCR 未找到: {e}")
 
         # 配置参数

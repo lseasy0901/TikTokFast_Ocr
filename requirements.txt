@@ -4,3 +4,16 @@ numpy
 pyyaml
 requests
 psutil
+
+# OCR 运行时。必须是正式运行依赖，不能当成"用户自己安装的软件"：
+# 安装包自带 tesseract.exe 与 tessdata（见 douyin_viewer.spec），pytesseract 是
+# 调用它们的唯一入口，构建环境缺了它，冻结包里 import 就会失败，OCR 一次都跑不起来。
+# pillow 是 pytesseract 的硬依赖（pytesseract 在模块顶层 import PIL.Image），
+# 显式写出以免依赖解析把它漏掉导致冻结包缺少 PIL。
+pytesseract
+pillow
+
+# 自动更新（Phase 3）。版本必须固定：Velopack 的客户端库、Update.exe 与
+# vpk 打包器是一个整体，运行库与打包器版本错配会导致更新链在用户机器上失败。
+# 配套的构建工具链固定为：Python 3.11.9 / vpk 1.2.0（dotnet tool，.NET SDK 8.x）。
+velopack==1.2.0

@@ -9,6 +9,22 @@
 - 持久化：本地JSON文件存储
 - 线程安全：读写锁保护
 
+存储位置（Phase 0）：
+    Windows: %LOCALAPPDATA%/LiveLens/stream_history.json
+    其它:    ~/.local/share/LiveLens/stream_history.json
+
+    此前这里写的是 ``<项目根>/stream_history.json``（由 ``__file__`` 推导）。
+    源码环境下那确实是项目根；但**冻结构建下 ``__file__`` 指向 _MEIPASS**，
+    于是实际写到了安装目录内的 ``_internal/stream_history.json``。这有两个后果：
+        1. 更新系统整体替换安装目录时会连带删掉用户的历史记录；
+        2. 安装目录若不可写（例如解压到 Program Files），保存会静默失败。
+    因此改为写入用户数据目录 —— 与 utils/license_store.py 的做法一致，
+    该目录在安装目录之外，更新时不受影响。
+
+    注意本模块**不**复用 license_store.default_data_dir()：两者的基础目录
+    （LOCALAPPDATA vs APPDATA）与目录名（LiveLens vs DouyinLowLatencyViewer）
+    都不同，是有意的独立配置，不是重复代码。
+
 数据结构：
 {
     "streams": [
@@ -23,10 +39,57 @@
 
 import json
 import os
+import shutil
 import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
+
+#: 用户数据目录名。产品名是 LiveLens（窗口标题），与 EXE 名
+#: DouyinLowLatencyViewer 刻意不同 —— 见 douyin_viewer.spec 的 EXE name 说明。
+APP_DIR_NAME = "LiveLens"
+HISTORY_FILENAME = "stream_history.json"
+
+
+def default_data_dir() -> str:
+    """返回历史记录的存放目录（不存在时不创建；由保存时创建）。"""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "share"
+        )
+    return os.path.join(base, APP_DIR_NAME)
+
+
+def _legacy_file_path() -> Path:
+    """Phase 0 之前的历史记录位置（安装目录内 / 源码树根）。"""
+    return Path(__file__).parent.parent / HISTORY_FILENAME
+
+
+def _migrate_legacy_file(default_path: Path) -> None:
+    """把旧位置的历史记录一次性搬到用户数据目录。
+
+    只在新位置**尚无文件**时执行，且全程 best-effort：任何失败都忽略。
+    迁移失败最坏只是丢掉一份最近连接列表，不影响任何功能；而为此中断启动
+    是不可接受的。
+
+    为什么需要它：本项目目前是手工解压 ZIP 分发，旧安装目录里的
+    ``_internal/stream_history.json`` 只有在"覆盖式更新且新版首次启动"时
+    才可能被搬到新位置。更新系统整体替换目录的那种流程下旧文件会先被删除，
+    因此 Phase 3 的 Updater 也必须单独保留它 —— 本函数不是那条路径的替代品。
+    """
+    try:
+        if default_path.exists():
+            return
+        legacy = _legacy_file_path()
+        if not legacy.exists() or legacy.resolve() == default_path.resolve():
+            return
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(legacy, default_path)
+    except OSError:
+        pass
+
 
 class StreamHistory:
     """最近连接的流历史记录管理器"""
@@ -38,7 +101,8 @@ class StreamHistory:
 
         # Set file path (use provided path or default)
         if file_path is None:
-            self._file_path = Path(__file__).parent.parent / "stream_history.json"
+            self._file_path = Path(default_data_dir()) / HISTORY_FILENAME
+            _migrate_legacy_file(self._file_path)
         else:
             self._file_path = Path(file_path)
 
@@ -64,6 +128,9 @@ class StreamHistory:
         with self._lock:
             try:
                 self._trim_to_max()
+                # 用户数据目录可能尚不存在（首次运行）。不创建的话 open() 会抛
+                # FileNotFoundError，被下面的 except 吞掉，表现为"保存静默失效"。
+                self._file_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(self._file_path, 'w', encoding='utf-8') as f:
                     json.dump(self._data, f, ensure_ascii=False, indent=2)
             except Exception as e:

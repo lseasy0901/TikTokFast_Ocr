@@ -20,6 +20,7 @@ from unittest.mock import patch, MagicMock
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from ocr import engine as engine_mod
 from ocr.engine import TesseractLocator, TesseractNotFoundError
 
 
@@ -67,17 +68,12 @@ class TestTesseractLocator(TestCase):
         with open(tesseract_exe, 'w') as f:
             f.write("# Mock tesseract executable")
 
-        # 修改sys.path模拟源码环境
-        original_path = sys.path[0]
-        sys.path[0] = self.test_dir
-
-        try:
-            # 使用TesseractLocator查找（测试模式）
+        # 把随包目录指向临时目录。定位规则本身由 _bundled_dirs() 提供，
+        # 测试替换的是"仓库根在哪"，不是路径拼接规则。
+        with patch.object(engine_mod, "_bundled_dirs", return_value=[self.test_dir]):
             tesseract_path = TesseractLocator.find_tesseract(test_mode=True)
-            self.assertEqual(tesseract_path, tesseract_exe)
-            print(f"在runtime目录中找到Tesseract: {tesseract_path}")
-        finally:
-            sys.path[0] = original_path
+        self.assertEqual(tesseract_path, tesseract_exe)
+        print(f"在runtime目录中找到Tesseract: {tesseract_path}")
 
     def test_find_tessdata_in_runtime(self):
         """测试在runtime目录中查找Tessdata"""
@@ -92,17 +88,11 @@ class TestTesseractLocator(TestCase):
         with open(eng_traineddata, 'w') as f:
             f.write("# Mock eng.traineddata")
 
-        # 修改sys.path模拟源码环境
-        original_path = sys.path[0]
-        sys.path[0] = self.test_dir
-
-        try:
-            # 使用TesseractLocator查找
-            tessdata_path = TesseractLocator.find_tessdata(tesseract_exe)
-            self.assertEqual(tessdata_path, tessdata_dir)
-            print(f"在runtime目录中找到Tessdata: {tessdata_path}")
-        finally:
-            sys.path[0] = original_path
+        # tessdata 的主规则是"与 tesseract.exe 同级"，随包目录只是兜底，
+        # 因此这里不需要替换 _bundled_dirs。
+        tessdata_path = TesseractLocator.find_tessdata(tesseract_exe)
+        self.assertEqual(tessdata_path, tessdata_dir)
+        print(f"在runtime目录中找到Tessdata: {tessdata_path}")
 
     def test_get_tesseract_version(self):
         """测试获取Tesseract版本"""
@@ -158,8 +148,9 @@ class TestTesseractLocator(TestCase):
 
     def test_tesseract_not_found(self):
         """测试Tesseract未找到的情况"""
-        # 在测试模式下，确保没有找到任何Tesseract
-        with patch('subprocess.run', side_effect=FileNotFoundError):
+        # 随包目录指向一个空的临时目录：既不碰仓库自带的 runtime/，
+        # 也不允许回退到系统 PATH。
+        with patch.object(engine_mod, "_bundled_dirs", return_value=[self.test_dir]):
             with self.assertRaises(TesseractNotFoundError):
                 TesseractLocator.find_tesseract(test_mode=True)
 
@@ -170,8 +161,9 @@ class TestTesseractLocator(TestCase):
         with open(fake_tesseract_path, 'w') as f:
             f.write("# Fake tesseract")
 
-        with self.assertRaises(TesseractNotFoundError):
-            TesseractLocator.find_tessdata(fake_tesseract_path)
+        with patch.object(engine_mod, "_bundled_dirs", return_value=[self.test_dir]):
+            with self.assertRaises(TesseractNotFoundError):
+                TesseractLocator.find_tessdata(fake_tesseract_path)
 
 
 if __name__ == '__main__':
