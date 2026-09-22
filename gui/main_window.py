@@ -41,6 +41,7 @@ import logging
 import threading
 import time
 from datetime import date, datetime, timezone
+from urllib.parse import urlparse
 
 from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
@@ -83,7 +84,8 @@ from utils import update_state
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
-from stream.douyin import DouyinStream, DouyinStreamError
+from stream.models import StreamInfo, StreamResolveError
+from stream.resolver import StreamResolver
 from stream.ffmpeg_reader import FFmpegReader
 from stream.frame_buffer import LatestFrameBuffer
 from utils.performance import PerformanceMonitor
@@ -100,20 +102,22 @@ logger = logging.getLogger("DouyinLowLatencyViewer.gui.main_window")
 
 
 # ======================================================================
-# 后台连接线程：执行 DouyinStream 网络请求，不阻塞 GUI
+# 后台连接线程：执行流解析（平台无关），不阻塞 GUI
 # ======================================================================
 class _ConnectWorker:
-    """后台线程：解析直播间 URL 获取真实流地址"""
+    """后台线程：把直播间 URL 解析为统一的 StreamInfo"""
 
-    def __init__(self, live_url: str, on_success, on_error):
+    def __init__(self, live_url: str, on_success, on_error, resolver=None):
         """
         :param live_url:   直播间 URL
-        :param on_success: 成功回调，签名为 callback(result: dict)
+        :param on_success: 成功回调，签名为 callback(info: StreamInfo)
         :param on_error:   失败回调，签名为 callback(error_msg: str)
+        :param resolver:   StreamResolver；不传则新建一个默认的
         """
         self._live_url = live_url
         self._on_success = on_success
         self._on_error = on_error
+        self._resolver = resolver if resolver is not None else StreamResolver()
         self._thread = threading.Thread(
             target=self._run,
             name="connect-worker",
@@ -128,13 +132,13 @@ class _ConnectWorker:
 
     def _run(self):
         try:
-            ds = DouyinStream(self._live_url)
-            result = ds.get_stream_url()
-            logger.info("[GUI] stream_url received: type=%s url=%s",
-                        result.get("stream_type"), result.get("stream_url", "")[:80])
-            self._on_success(result)
-        except DouyinStreamError as e:
-            logger.error("[GUI] DouyinStream failed: %s", e)
+            info = self._resolver.resolve(self._live_url)
+            logger.info("[GUI] stream resolved: platform=%s room=%s type=%s url=%s",
+                        info.platform, info.room_id, info.protocol,
+                        (info.url or "")[:80])
+            self._on_success(info)
+        except StreamResolveError as e:
+            logger.error("[GUI] stream resolve failed: %s", e)
             self._on_error(str(e))
         except Exception as e:
             logger.exception("连接过程未知异常")
@@ -288,7 +292,7 @@ class MainWindow(QMainWindow):
     """Douyin Low Latency Stream Viewer 主窗口"""
 
     # 跨线程安全 Signal：后台线程 → GUI 线程
-    _connect_success_sig = Signal(dict)
+    _connect_success_sig = Signal(object)   # StreamInfo
     _connect_error_sig = Signal(str)
     _license_loaded_sig = Signal(object)  # 启动时许可证校验结果
     _heartbeat_done_sig = Signal(object)  # 心跳上报结果
@@ -311,6 +315,9 @@ class MainWindow(QMainWindow):
         # 当前连接的帧到达通知器（随 FrameBridge 一同创建/废弃）
         self._frame_notifier: _FrameNotifier | None = None
         self._connect_worker: _ConnectWorker | None = None
+        # 平台解析统一入口：MainWindow 只认识 StreamResolver 和 StreamInfo，
+        # 不 import 也不判断任何具体平台。
+        self._resolver = StreamResolver()
         self._perf: PerformanceMonitor | None = None
         self._connected: bool = False
         self._roi_manager: ROIManager = ROIManager()
@@ -908,13 +915,14 @@ class MainWindow(QMainWindow):
             self._recent_combo.addItem(display_text, url)
 
     def _extract_room_id(self, url: str) -> str:
-        """从URL提取房间ID"""
+        """从URL提取房间ID（仅用于最近记录列表的显示文本）
+
+        按路径取房间标识，不判断具体平台 —— 直播间 URL 的房间号就在第一段
+        路径上（如 https://live.douyin.com/123456789 -> 123456789）。
+        """
         try:
-            # 处理不同格式的URL
-            if "live.douyin.com/" in url:
-                return url.split("live.douyin.com/")[1].split("/")[0]
-            return ""
-        except:
+            return urlparse(url).path.strip("/").split("/")[0]
+        except Exception:
             return ""
 
     def _on_recent_selected(self, text: str):
@@ -1044,33 +1052,34 @@ class MainWindow(QMainWindow):
             live_url=url,
             on_success=self._on_connect_success,
             on_error=self._on_connect_error,
+            resolver=self._resolver,
         )
         self._connect_worker.start()
 
-    def _on_connect_success(self, result: dict):
+    def _on_connect_success(self, info: StreamInfo):
         """连接成功回调（从后台线程调用，通过 Signal 安全回到 GUI 线程）"""
         logger.info("[GUI] _on_connect_success called (bg thread), emitting _connect_success_sig")
-        self._connect_success_sig.emit(result)
+        self._connect_success_sig.emit(info)
 
-    def _handle_connect_success(self, result: dict):
+    def _handle_connect_success(self, info: StreamInfo):
         """在 GUI 线程中处理连接成功"""
-        stream_url = result["stream_url"]
-        stream_type = result["stream_type"]
-        room_id = result["room_id"]
+        stream_url = info.url
+        stream_type = info.protocol
+        room_id = info.room_id
 
         self.statusBar().showMessage(
             f"已获取流地址 (room={room_id}, type={stream_type})，正在连接视频流..."
         )
         logger.info(
             "[GUI] _handle_connect_success: room_id=%s, stream_type=%s, url=%s",
-            room_id, stream_type, stream_url[:80],
+            room_id, stream_type, (stream_url or "")[:80],
         )
 
         # 创建并启动 FFmpegReader
         try:
-            # 从结果中获取检测到的视频分辨率
-            video_width = result.get("video_width")
-            video_height = result.get("video_height")
+            # 从解析结果中获取检测到的视频分辨率
+            video_width = info.width
+            video_height = info.height
 
             # 如果检测到分辨率，使用实际分辨率
             if video_width and video_height:
