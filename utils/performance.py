@@ -10,6 +10,9 @@
     display_time  — GUI 显示帧时记录
     latency_ms   = display_time - capture_time
 
+    即"帧到达 buffer → GUI 消费"的等待。帧消费由 frameReady 通知驱动后
+    （Phase B-2），该值不再包含固定轮询周期的等待，指标含义不变、量级下降。
+
     当前延迟：最近一次帧的延迟
     平均延迟：指数移动平均（EMA），无需缓存历史帧
 

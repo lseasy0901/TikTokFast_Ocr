@@ -8,7 +8,7 @@
     - 视频显示区域（VideoWidget）
     - 性能信息面板（FPS / Latency / Resolution / Status）
     - 状态栏信息
-    - QTimer 轮询 LatestFrameBuffer 刷新显示
+    - frameReady 通知驱动刷新显示（不再由固定周期 QTimer 消费帧）
 
 数据流：
     FFmpegReader 读取线程
@@ -16,14 +16,19 @@
           ↓  reader.read_frame()
     _FrameBridge 线程
           │
-          ↓  buffer.update(frame)  +  perf.on_capture()
-    LatestFrameBuffer
+          ↓  buffer.update(frame)  +  perf.on_capture()  +  notifier.notify()
+    LatestFrameBuffer（单槽，只保留最新帧）
           │
-          ↓  buffer.get()
-    MainWindow QTimer (30ms)
+          ↓  frameReady 信号（可合并，队列投递到 GUI 线程）
+          ↓  clear_pending()
+          ↓  buffer.get() 取当前最新帧
+    MainWindow._on_frame_ready
           │
           ↓  video_widget.set_frame(frame)  +  perf.on_display()
     VideoWidget
+
+    注：QTimer(16ms) 仍在运行，但只承担连接健康检查（断流/结束检测），
+    不再负责帧消费。
 
 约束：
     - GUI 线程只负责界面，网络/读取均在后台线程
@@ -37,7 +42,7 @@ import threading
 import time
 from datetime import date, datetime, timezone
 
-from PySide6.QtCore import QEvent, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -139,16 +144,55 @@ class _ConnectWorker:
 # ======================================================================
 # 帧桥接线程：FFmpegReader → LatestFrameBuffer
 # ======================================================================
+class _FrameNotifier(QObject):
+    """跨线程"帧已到达"通知器（Phase B-2）
+
+    由 FrameBridge 子线程在写入 LatestFrameBuffer 之后调用 notify()，
+    经 Qt 队列连接把 GUI 唤到 GUI 线程消费。设计要点：
+
+    - **可合并**：上一通知未被消费前，后续通知只计数不再发信号，
+      因此事件队列里最多只有一个待处理通知，不会无限堆积。
+    - **不携带内容**：信号不带帧数据，GUI 被唤醒后自己重读
+      LatestFrameBuffer 的当前最新帧，因此永远不会消费到旧帧。
+    - 只发信号、不触碰任何 QWidget，子线程不会直接操作 GUI。
+    """
+
+    frameReady = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lock = threading.Lock()
+        self._pending = False
+        self.notify_count = 0      # 实际发出的通知数
+        self.coalesced_count = 0   # 因 pending 未清而被合并掉的通知数
+
+    def notify(self) -> None:
+        """帧已写入 buffer：请求一次 GUI 唤醒（子线程调用，不阻塞）"""
+        with self._lock:
+            if self._pending:
+                self.coalesced_count += 1
+                return
+            self._pending = True
+            self.notify_count += 1
+        self.frameReady.emit()
+
+    def clear_pending(self) -> None:
+        """GUI 线程的消费者在处理通知前调用，允许下一帧再次唤醒"""
+        with self._lock:
+            self._pending = False
+
+
 class _FrameBridge:
     """
     后台线程：持续从 FFmpegReader 读取最新帧，写入 LatestFrameBuffer
 
     运行频率 1ms 轮询，保证 buffer 始终持有最新帧，
-    即使 GUI QTimer (30ms) 采样间隔内有多个新帧，buffer 只保留最新的，
+    即使 GUI 消费间隔内有多个新帧，buffer 只保留最新的，
     天然实现"宁可丢帧，不要累计延迟"。
 
     每次写入 buffer 后调用 perf.on_capture() 记录采集时间戳，
-    用于后续计算 capture → display 延迟。
+    用于后续计算 capture → display 延迟；随后通过 notifier 唤醒 GUI
+    （不再依赖 GUI 侧的固定周期轮询）。
     """
 
     def __init__(
@@ -163,6 +207,9 @@ class _FrameBridge:
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_reader_frame_id: int = -1
+        # 每次连接新建一个：旧 bridge 停止后其通知器一并废弃，
+        # 因此重连不会产生重复的信号连接。
+        self.notifier = _FrameNotifier()
 
     def start(self):
         """启动桥接线程"""
@@ -195,6 +242,8 @@ class _FrameBridge:
                     self._buffer.update(frame)
                     # 记录采集时间戳（在 buffer 写入后立即记录）
                     self._perf.on_capture()
+                    # 唤醒 GUI 消费（可合并、不携带帧数据、不阻塞本线程）
+                    self.notifier.notify()
                     self._last_reader_frame_id = current_id
                     _log_count += 1
                     if _log_count <= 3 or _log_count % 100 == 0:
@@ -259,6 +308,8 @@ class MainWindow(QMainWindow):
         self._reader: FFmpegReader | None = None
         self._frame_buffer: LatestFrameBuffer | None = None
         self._frame_bridge: _FrameBridge | None = None
+        # 当前连接的帧到达通知器（随 FrameBridge 一同创建/废弃）
+        self._frame_notifier: _FrameNotifier | None = None
         self._connect_worker: _ConnectWorker | None = None
         self._perf: PerformanceMonitor | None = None
         self._connected: bool = False
@@ -1061,8 +1112,12 @@ class MainWindow(QMainWindow):
 
         # 创建并启动 FrameBridge: reader → buffer (+ perf.on_capture)
         self._frame_bridge = _FrameBridge(self._reader, self._frame_buffer, self._perf)
+        # 先接线再启动：确保 bridge 一开始发通知时消费者已经就位。
+        # 通知器随 bridge 新建，重连即换新对象，不存在重复连接。
+        self._frame_notifier = self._frame_bridge.notifier
+        self._frame_notifier.frameReady.connect(self._on_frame_ready)
         self._frame_bridge.start()
-        logger.info("[BRIDGE] FrameBridge.start() called")
+        logger.info("[BRIDGE] FrameBridge.start() called (frameReady 通知驱动)")
 
         # 切换到观看状态
         self._connected = True
@@ -1088,11 +1143,14 @@ class MainWindow(QMainWindow):
         # 禁用备注按钮（只有在选择历史项时才启用）
         self._edit_note_btn.setEnabled(False)
 
-        # 启动帧轮询（16ms ≈ 60Hz 采样率，更快响应新帧）
+        # 启动连接健康检查定时器（不再消费帧；帧消费由 frameReady 通知驱动）
         self._frame_timer.start(16)
         # 启动状态栏刷新（每秒更新一次）
         self._status_timer.start(1000)
-        logger.info("[GUI] frame_timer started (16ms), status_timer started (1000ms)")
+        logger.info(
+            "[GUI] health timer started (16ms), status_timer started (1000ms); "
+            "frames are frameReady-driven"
+        )
 
     def _on_connect_error(self, error_msg: str):
         """连接失败回调（从后台线程调用，通过 Signal 安全回到 GUI 线程）"""
@@ -1120,6 +1178,9 @@ class MainWindow(QMainWindow):
         if self._frame_bridge is not None:
             self._frame_bridge.stop()
             self._frame_bridge = None
+        # 一并废弃通知器：bridge 线程已停，不会再有新通知；
+        # 已排队的旧通知由 _on_frame_ready 的 reader/buffer 空值判断兜住。
+        self._frame_notifier = None
 
         # 停止 FFmpegReader
         if self._reader is not None:
@@ -1443,12 +1504,58 @@ class MainWindow(QMainWindow):
         set_property(self._ocr_btn, "variant", "danger" if running else "primary")
 
     # ------------------------------------------------------------------
-    # 帧轮询（QTimer 驱动，从 LatestFrameBuffer 取帧，不阻塞 GUI）
+    # 帧消费：由 frameReady 通知驱动（Phase B-2）
+    # ------------------------------------------------------------------
+    def _on_frame_ready(self):
+        """帧到达通知（GUI 线程）：消费当前最新帧
+
+        信号不携带帧数据，因此这里重新读取 LatestFrameBuffer 的当前最新帧，
+        永远不会消费到旧帧；处理期间到达的帧会被单槽覆盖并合并成一次新通知。
+        """
+        notifier = self._frame_notifier
+        if notifier is not None:
+            # 先放行下一帧的唤醒再消费：消费耗时内到达的帧仍能触发下一轮
+            notifier.clear_pending()
+        self._consume_latest_frame()
+
+    def _consume_latest_frame(self):
+        """取 LatestFrameBuffer 的当前最新帧并显示（仅在出现新帧时）"""
+        if self._reader is None or self._frame_buffer is None:
+            return
+
+        # 从 buffer 获取最新帧（仅当有新帧时才刷新显示）
+        buffer_frame_id = self._frame_buffer.frame_id
+        if buffer_frame_id != self._last_displayed_frame_id:
+            frame = self._frame_buffer.get()
+            if frame is not None:
+                # 记录「帧到达 buffer → 被 GUI 取走」的等待。
+                # 必须放在 set_frame 之前：否则会把本帧的渲染耗时（毫秒级）
+                # 也算进延迟指标，使读数变成本地渲染成本而非消费等待。
+                # 渲染耗时另有 set_frame_p50/p95 单独统计。
+                if self._perf is not None:
+                    self._perf.on_display()
+                self._video_widget.set_frame(frame)
+                # 隐藏连接状态消息（当有帧时）
+                self._connection_status_label.hide()
+                self._last_displayed_frame_id = buffer_frame_id
+                if buffer_frame_id <= 3 or buffer_frame_id % 100 == 0:
+                    logger.info(
+                        "[DISPLAY] set_frame called: buf_id=%d shape=%s",
+                        buffer_frame_id, frame.shape,
+                    )
+
+    # ------------------------------------------------------------------
+    # 连接健康检查（QTimer 驱动；不再负责帧消费）
     # ------------------------------------------------------------------
     def _on_frame_timeout(self):
-        """每 30ms 被 QTimer 调用：从 LatestFrameBuffer 读取最新帧并显示"""
+        """每 16ms 被 QTimer 调用：只做 reader 健康检查，不再消费帧
+
+        帧消费已改由 frameReady 通知驱动（见 _on_frame_ready）。
+        该定时器保留的唯一职责是及时发现断流/直播结束，
+        避免画面停住却无人报错。
+        """
         if self._reader is None or self._frame_buffer is None:
-            logger.warning("[DISPLAY] timer fired but reader=%s buffer=%s, stopping timer",
+            logger.warning("[DISPLAY] health timer fired but reader=%s buffer=%s, stopping timer",
                            self._reader is not None, self._frame_buffer is not None)
             self._frame_timer.stop()
             return
@@ -1466,24 +1573,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("直播已结束")
             self._disconnect()
             return
-
-        # 从 buffer 获取最新帧（仅当有新帧时才刷新显示）
-        buffer_frame_id = self._frame_buffer.frame_id
-        if buffer_frame_id != self._last_displayed_frame_id:
-            frame = self._frame_buffer.get()
-            if frame is not None:
-                self._video_widget.set_frame(frame)
-                # 隐藏连接状态消息（当有帧时）
-                self._connection_status_label.hide()
-                # 记录显示事件（计算 capture → display 延迟）
-                if self._perf is not None:
-                    self._perf.on_display()
-                self._last_displayed_frame_id = buffer_frame_id
-                if buffer_frame_id <= 3 or buffer_frame_id % 100 == 0:
-                    logger.info(
-                        "[DISPLAY] set_frame called: buf_id=%d shape=%s",
-                        buffer_frame_id, frame.shape,
-                    )
 
     # ------------------------------------------------------------------
     # 状态栏 + 性能面板刷新（低频，1秒一次）
