@@ -17,10 +17,13 @@ OCR 引擎模块 (Phase 2.2 Step 1)
 
 import cv2
 import numpy as np
+import ctypes
 import logging
 import os
 import shutil
 import sys
+import threading
+import time
 from typing import Optional, List
 
 logger = logging.getLogger("DouyinLowLatencyViewer.ocr.engine")
@@ -308,6 +311,170 @@ class OCREngineError(Exception):
     pass
 
 
+# ---------------------------------------------------------------------------
+# OCR-3：进程内常驻 Tesseract（backend 选择）
+#
+# 背景（OCR-3 实测）：旧路径每次识别都要起一个 tesseract.exe 并重新加载语言模型，
+# 单次调用 ~77-80ms，其中真正的识别只有 ~5ms，其余是进程启动 + 模型加载的固定成本。
+# 常驻引擎把这两项都变成"每线程一次"：实测单次调用降到 ~4-7ms，输出与旧路径逐字一致。
+#
+# 硬约束（设计前提）：
+#   - TessBaseAPI 句柄**绝不能跨线程共享**：实测两个线程共用一个句柄会在
+#     TessBaseAPIGetUTF8Text 里触发原生访问冲突。因此本模块按**线程**各持一个句柄。
+#   - 每次调用都必须显式设置 PSM 与 whitelist，不依赖跨调用状态。
+#   - 使用的 libtesseract-5.dll 是**随包已有**的文件（tesseract.exe 本来就依赖它），
+#     没有引入任何新的 native 依赖。
+# ---------------------------------------------------------------------------
+
+#: 后端选择（仅影响 OCR 引擎内部实现，不影响任何识别/判定规则）
+BACKEND_PERSISTENT = "persistent"
+BACKEND_LEGACY = "legacy"
+
+#: 现场诊断用：设成 legacy 即强制回退旧的 pytesseract 子进程路径
+_ENV_OCR_BACKEND = "DLV_OCR_BACKEND"
+
+#: Tesseract OEM 枚举：等价于命令行 --oem 1（仅 LSTM）
+_OEM_LSTM_ONLY = 1
+
+#: 常驻引擎依赖的核心库（随包文件，与 tesseract.exe 同目录）
+_RESIDENT_DLL_NAME = "libtesseract-5.dll"
+
+
+def _resolve_backend(explicit: Optional[str]) -> str:
+    """决定用哪个后端：显式参数 > 环境变量 > 默认（常驻）。"""
+    value = (explicit or os.environ.get(_ENV_OCR_BACKEND) or "").strip().lower()
+    if not value:
+        return BACKEND_PERSISTENT
+    if value in (BACKEND_LEGACY, "pytesseract", "subprocess", "cli"):
+        return BACKEND_LEGACY
+    if value in (BACKEND_PERSISTENT, "resident", "inprocess"):
+        return BACKEND_PERSISTENT
+    logger.warning(
+        "[TESSERACT] 未知的 OCR 后端 %r（DLV_OCR_BACKEND/backend 参数），按默认常驻后端处理",
+        value,
+    )
+    return BACKEND_PERSISTENT
+
+
+class _UnsupportedInput(Exception):
+    """常驻引擎不支持的图像布局（可预期的、单次回退即可的情况）。
+
+    与"引擎出错"区分开：布局不支持只影响**这一次调用**（回退 legacy 处理），
+    不需要把整个会话降级——生产路径恒为 3 通道 BGR，只有测试/边角输入会走到这里。
+    """
+
+
+class _ResidentEngine:
+    """一个线程内常驻的 Tesseract 引擎（**不得跨线程共享**）。
+
+    生命周期：创建 → 初始化（加载 tessdata 模型）→ 多次 SetImage/识别 → 释放。
+    每次 run() 都显式设置 whitelist 与 PSM，识别完立即 Clear 释放页面图像，
+    避免跨调用的隐式状态与内存累积。
+    """
+
+    def __init__(self, tesseract_path: str, tessdata_path: str, language: str):
+        rt_dir = os.path.dirname(os.path.abspath(tesseract_path))
+        dll_path = os.path.join(rt_dir, _RESIDENT_DLL_NAME)
+        if not _is_usable(dll_path):
+            raise TesseractNotFoundError("常驻引擎缺少核心库: %s" % dll_path)
+
+        # 冻结环境下 DLL 的依赖也在同目录，必须先把这个目录加入搜索路径，
+        # 否则按绝对路径加载时找不到它自己的依赖（与 tesseract.exe 同理）。
+        if hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(rt_dir)
+
+        self._dll = ctypes.CDLL(dll_path)
+        d = self._dll
+        d.TessBaseAPICreate.restype = ctypes.c_void_p
+        d.TessBaseAPIInit2.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                       ctypes.c_char_p, ctypes.c_int]
+        d.TessBaseAPIInit2.restype = ctypes.c_int
+        d.TessBaseAPISetVariable.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                             ctypes.c_char_p]
+        d.TessBaseAPISetPageSegMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        d.TessBaseAPISetImage.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                          ctypes.c_int, ctypes.c_int,
+                                          ctypes.c_int, ctypes.c_int]
+        d.TessBaseAPIGetUTF8Text.argtypes = [ctypes.c_void_p]
+        d.TessBaseAPIGetUTF8Text.restype = ctypes.c_void_p
+        d.TessDeleteText.argtypes = [ctypes.c_void_p]
+        d.TessBaseAPIClear.argtypes = [ctypes.c_void_p]
+        d.TessBaseAPIDelete.argtypes = [ctypes.c_void_p]
+        self._closed = False
+
+        self._handle = d.TessBaseAPICreate()
+        if not self._handle:
+            raise OCREngineError("TessBaseAPICreate 失败")
+        # 关掉 C 库自己的调试输出（否则 "Estimating resolution as N" 会刷 stderr）
+        d.TessBaseAPISetVariable(self._handle, b"debug_file",
+                                 os.devnull.encode())
+        t0 = time.perf_counter()
+        rc = d.TessBaseAPIInit2(self._handle, os.fspath(tessdata_path).encode(),
+                                language.encode(), _OEM_LSTM_ONLY)
+        self.init_ms = (time.perf_counter() - t0) * 1000.0
+        if rc != 0:
+            self.close()
+            raise OCREngineError(
+                "TessBaseAPIInit2 失败 (rc=%d, tessdata=%s, lang=%s)"
+                % (rc, tessdata_path, language)
+            )
+
+    @staticmethod
+    def _layout(arr: np.ndarray):
+        """numpy 图像 → (bytes_per_pixel, bytes_per_line)。
+
+        支持生产路径实际会出现的两种布局：
+            2 维 uint8（灰度，1 字节/像素）
+            3 通道 uint8（BGR，3 字节/像素 —— 与生产 ROI 一致，实测输出与
+            旧 pytesseract 路径逐字相同）
+        其它布局（4 通道 / 浮点 / 16 位等）不在生产路径上，交给旧路径处理。
+        """
+        if arr.dtype != np.uint8:
+            raise _UnsupportedInput("dtype=%s 非常驻引擎支持类型" % arr.dtype)
+        if arr.ndim == 2:
+            bpp = 1
+        elif arr.ndim == 3 and arr.shape[2] == 3:
+            bpp = 3
+        else:
+            raise _UnsupportedInput("shape=%s 非常驻引擎支持布局" % (arr.shape,))
+        return bpp, arr.shape[1] * bpp
+
+    def run(self, image: np.ndarray, psm: int, whitelist: str) -> str:
+        """识别一帧（每次显式设置 whitelist + PSM，不依赖跨调用状态）。"""
+        arr = np.ascontiguousarray(image)
+        bpp, bytes_per_line = self._layout(arr)
+        d, h = self._dll, self._handle
+        d.TessBaseAPISetVariable(h, b"tessedit_char_whitelist",
+                                 whitelist.encode())
+        d.TessBaseAPISetPageSegMode(h, int(psm))
+        height, width = arr.shape[:2]
+        d.TessBaseAPISetImage(h, arr.ctypes.data_as(ctypes.c_void_p),
+                              width, height, bpp, bytes_per_line)
+        ptr = d.TessBaseAPIGetUTF8Text(h)
+        try:
+            text = (ctypes.string_at(ptr).decode("utf-8", errors="replace")
+                    if ptr else "")
+        finally:
+            if ptr:
+                d.TessDeleteText(ptr)
+            d.TessBaseAPIClear(h)      # 释放本帧页面图像，不跨调用累积
+        return text.strip()
+
+    def close(self) -> None:
+        """释放句柄（幂等）。"""
+        if getattr(self, "_closed", True):
+            return
+        self._closed = True
+        try:
+            self._dll.TessBaseAPIDelete(self._handle)
+        except Exception:  # noqa: BLE001 - 释放失败不应影响调用方
+            pass
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+
 class OCREngine:
     """
     Tesseract OCR 引擎封装
@@ -325,7 +492,8 @@ class OCREngine:
                  tesseract_cmd: Optional[str] = None,
                  whitelist: str = DEFAULT_WHITELIST,
                  language: str = "eng",
-                 psm_modes: List[int] = None):
+                 psm_modes: List[int] = None,
+                 backend: Optional[str] = None):
         """
         初始化 OCR 引擎
 
@@ -334,6 +502,13 @@ class OCREngine:
             whitelist: 允许识别的字符白名单
             language: OCR 语言 (默认 'eng' - 英语)
             psm_modes: PSM 模式列表，按优先级尝试 (默认 [7, 6])
+            backend: OCR 后端选择（OCR-3）：
+                     "persistent"（默认）进程内常驻引擎，每线程一个句柄，
+                                  单次调用 ~4-7ms（实测，旧路径 ~77-80ms）；
+                     "legacy"      旧的 pytesseract 子进程 + 临时文件路径
+                                  （保留作 A/B 对照与故障回退）。
+                     也可以由环境变量 DLV_OCR_BACKEND 覆盖（现场诊断用）。
+                     两条后端产出的文本逐字一致（见 test_phase_ocr3_*）。
         """
         if not TESSERACT_AVAILABLE:
             raise OCREngineError(
@@ -391,10 +566,81 @@ class OCREngine:
         self.language = language
         self.psm_modes = psm_modes if psm_modes else [6, 7, 11]  # 多行优先，然后单行，最后稀疏文本
 
+        # ---- OCR-3：常驻引擎状态（本实例私有；每线程一个句柄）----
+        self._tesseract_path = tesseract_path
+        self._tessdata_path = tessdata_path
+        self._backend = _resolve_backend(backend)
+        self._engines: dict = {}          # thread id -> _ResidentEngine
+        #: 常驻引擎不可用的原因（一旦设置即本实例永久回退 legacy）
+        self._persistent_error: Optional[str] = None
+
         logger.info(
-            "[TESSERACT] language=%s, whitelist_chars=%d, psm_modes=%s",
-            language, len(whitelist), self.psm_modes
+            "[TESSERACT] language=%s, whitelist_chars=%d, psm_modes=%s, backend=%s",
+            language, len(whitelist), self.psm_modes, self._backend
         )
+
+    # ------------------------------------------------------------------
+    # OCR-3：常驻引擎（backend = persistent）
+    # ------------------------------------------------------------------
+    @property
+    def backend(self) -> str:
+        """当前后端：persistent / legacy（只读，供诊断与 A/B）"""
+        return self._backend
+
+    def backend_status(self) -> dict:
+        """后端状态快照（诊断用，不参与识别）"""
+        return {
+            "backend": self._backend,
+            "persistent_error": self._persistent_error,
+            "live_engines": len([e for e in self._engines.values()
+                                 if not e.closed]),
+            "threads": list(self._engines.keys()),
+        }
+
+    def _thread_engine(self) -> Optional["_ResidentEngine"]:
+        """取**本线程**的常驻引擎；不可用时返回 None（调用方走 legacy）。
+
+        为什么按线程持有：TessBaseAPI 句柄不能跨线程共享（实测会触发原生
+        访问冲突）。因此每个用到本引擎的线程各自创建一个句柄，互不干扰。
+
+        初始化失败（缺 DLL / tessdata / Init 返回非 0）时，记下原因并让本实例
+        永久回退 legacy 后端 —— 识别功能不受影响，只是回到旧的子进程路径。
+        """
+        if self._backend != BACKEND_PERSISTENT or self._persistent_error:
+            return None
+
+        key = threading.get_ident()
+        engine = self._engines.get(key)
+        if engine is not None and not engine.closed:
+            return engine
+
+        try:
+            engine = _ResidentEngine(self._tesseract_path, self._tessdata_path,
+                                     self.language)
+        except Exception as e:  # noqa: BLE001 - 任何失败都回退，不抛出
+            self._persistent_error = "%s: %s" % (type(e).__name__, e)
+            logger.warning(
+                "[TESSERACT] 常驻引擎初始化失败，回退 legacy 子进程后端（识别继续可用）: %s",
+                self._persistent_error,
+            )
+            return None
+
+        self._engines[key] = engine
+        logger.info("[TESSERACT] 常驻引擎已就绪: thread=%s init=%.0fms",
+                    key, engine.init_ms)
+        return engine
+
+    def shutdown(self) -> None:
+        """释放本实例创建的所有常驻引擎（幂等；worker 停止时调用）。
+
+        只释放句柄，不卸载 DLL（进程内其它引擎可能还在用），也不影响 legacy 路径。
+        """
+        engines = list(self._engines.values())
+        self._engines.clear()
+        for engine in engines:
+            engine.close()
+        if engines:
+            logger.info("[TESSERACT] 常驻引擎已释放: %d 个", len(engines))
 
     def _build_config(self, psm: int) -> str:
         """
@@ -420,7 +666,32 @@ class OCREngine:
         return " ".join(config_parts)
 
     def _run_psm(self, image: np.ndarray, psm: int) -> str:
-        """按单个 PSM 跑一次 Tesseract，返回去掉首尾空白的文本（可能是空串）。"""
+        """按单个 PSM 跑一次 Tesseract，返回去掉首尾空白的文本（可能是空串）。
+
+        OCR-3：默认走**进程内常驻引擎**（每线程一个句柄，单次调用 ~4-7ms）；
+        常驻不可用或调用失败时，本次及后续自动走 legacy 子进程路径。
+        两条路径的 PSM / whitelist / 语言 / OEM 完全一致，输出逐字相同。
+        """
+        engine = self._thread_engine()
+        if engine is not None:
+            try:
+                return engine.run(image, psm, self.whitelist)
+            except _UnsupportedInput as e:
+                # 可预期的布局问题：只这一次走 legacy，常驻引擎保持可用
+                logger.debug("[TESSERACT] 本次图像非常驻引擎支持，单次回退 legacy: %s", e)
+            except Exception as e:  # noqa: BLE001 - 引擎出错则本会话永久回退
+                self._persistent_error = "%s: %s" % (type(e).__name__, e)
+                logger.warning(
+                    "[TESSERACT] 常驻引擎调用失败，回退 legacy 子进程后端"
+                    "（识别继续可用）: %s", self._persistent_error,
+                )
+        return self._run_psm_legacy(image, psm)
+
+    def _run_psm_legacy(self, image: np.ndarray, psm: int) -> str:
+        """旧路径：pytesseract 每次起一个 tesseract.exe + 临时文件。
+
+        保留为 A/B 对照与故障回退（OCR-3 实测单次 ~77-80ms，其中识别只占 ~5ms）。
+        """
         config = self._build_config(psm)
 
         # 执行 OCR

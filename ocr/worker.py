@@ -69,7 +69,7 @@ class OCRWorker(QThread):
                           （不带参数；worker 不会因此换档或重启）
 
     特性：
-        - 每 100ms 识别一次
+        - 稳态 interval_ms（默认 300ms）识别一次；确认窗口内用更短的间隔
         - 只在文本变化时发送信号
         - 支持动态启停
         - 完善的错误处理
@@ -94,7 +94,8 @@ class OCRWorker(QThread):
                  profile=None,
                  scale: float = DEFAULT_SCALE,
                  recognizer: Optional[RoomCodeRecognizer] = None,
-                 resolver=None):
+                 resolver=None,
+                 pending_interval_ms: int = 100):
         """
         初始化 OCR 工作线程
 
@@ -103,7 +104,7 @@ class OCRWorker(QThread):
                                  返回: LatestFrameBuffer 实例
             roi_manager: ROI 管理器实例
             engine: OCR 引擎实例（为 None 时在【工作线程内】延迟创建）
-            interval_ms: 识别间隔（毫秒，默认 300）
+            interval_ms: 稳态识别间隔（毫秒，默认 300）
             profile: 游戏档（GameProfile 或 profile_id）。
                      【必须】是具体某一款游戏（delta_force / valorant）：
                      None 或 "auto" 会抛 ValueError，见 _require_explicit_game()
@@ -114,6 +115,12 @@ class OCRWorker(QThread):
                         TemporalResolver(2/3)：同一房间号连续两帧一致才算数。
                         需要单帧直通时显式传 SingleFrameResolver()。
                         裁决器只做时序判定，不参与格式校验/纠正。
+            pending_interval_ms: 【确认窗口】内的采样间隔（毫秒，默认 100）。
+                        当裁决器报告"有一个新候选正在被确认"时，下一次采样
+                        用这个更短的间隔，好让连续一致的那几次观测尽快凑齐；
+                        一旦成立/没有待确认候选，立刻回到 interval_ms。
+                        它**只改采样节奏**，不改任何判定规则（见 _interval_for_wait）。
+                        设为 >= interval_ms 即等价于关闭该行为。
         """
         super().__init__()
 
@@ -127,6 +134,8 @@ class OCRWorker(QThread):
         # 放在 GUI 线程会让点击「识别」后界面卡死。延迟到 run() 内构造。
         self._engine = engine
         self._interval_ms = interval_ms
+        # 确认窗口内的采样间隔（只影响"隔多久再采一次"，不影响任何判定）
+        self._pending_interval_ms = int(pending_interval_ms)
         self._profile = profile
         self._scale = scale
         # 同上：识别器也延迟到工作线程内构造（它依赖引擎）
@@ -254,6 +263,7 @@ class OCRWorker(QThread):
             logger.error("OCR 引擎初始化失败: %s", e, exc_info=True)
             self.error_occurred.emit(str(e))
             logger.info("OCRWorker 主循环结束")
+            self._shutdown_engine()      # 引擎可能已建好而识别器构造失败：一并回收
             return
 
         while self._running and not self._stopped_event.is_set():
@@ -267,10 +277,47 @@ class OCRWorker(QThread):
                 self._last_error = error_msg
                 self.error_occurred.emit(error_msg)
 
-            # 等待指定间隔
-            self._stopped_event.wait(self._interval_ms / 1000.0)
+            # 等待间隔：稳态用 interval_ms；有新候选待确认时用更短的间隔
+            self._stopped_event.wait(self._interval_for_wait() / 1000.0)
 
         logger.info("OCRWorker 主循环结束")
+        self._shutdown_engine()
+
+    def _shutdown_engine(self) -> None:
+        """释放本线程持有的 OCR 引擎资源（OCR-3：常驻引擎句柄随 worker 退出释放）。
+
+        只做资源回收：不改变任何识别/判定行为，失败也只记日志。
+        引擎是延迟在工作线程内创建的，因此释放也必须发生在这里。
+        """
+        engine = self._engine
+        if engine is None:
+            return
+        try:
+            engine.shutdown()
+        except Exception as e:  # noqa: BLE001 - 回收失败不影响线程退出
+            logger.warning("OCR 引擎资源释放失败（不影响识别）: %s", e)
+
+    def _interval_for_wait(self) -> int:
+        """本次循环结束后的等待间隔（毫秒）。
+
+        唯一目的是**采样节奏**：待确认的新候选需要尽快凑齐连续一致的那几次
+        观测，所以确认窗口内采样密一些；一旦成立或没有待确认候选，立刻回到
+        稳态间隔。
+
+        刻意**不在这里做任何判定**：
+          - "是否待确认"完全由裁决器从它自己的观测窗口推导（TemporalResolver
+            .has_pending），本层不另存候选/已确认状态，也就不可能出现两套
+            状态不一致的情况；
+          - 是否成立、是否复制，仍由裁决器与下面的既有逻辑决定，本方法
+            只返回一个等待时长。
+        稳态间隔 <= 确认窗口间隔时取稳态值，因此 set_interval() 调小之后
+        不会出现"确认期间反而等得更久"。
+        """
+        # has_pending 是裁决器的**可选**能力（单帧直通等无状态裁决器没有它）：
+        # 拿不到就按"没有待确认候选"处理，即稳态间隔。
+        if getattr(self._resolver, "has_pending", False):
+            return min(self._pending_interval_ms, self._interval_ms)
+        return self._interval_ms
 
     def _perform_recognition(self) -> None:
         """执行一次 OCR 识别"""

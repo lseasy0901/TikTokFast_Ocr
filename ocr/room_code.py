@@ -158,6 +158,11 @@ class CandidateResolver:
 
     约定：传进来的 candidate 一定是【已经通过严格校验】的房间号或 None，
     裁决器不得再参与格式校验、纠正或模糊匹配。
+
+    可选能力：
+        has_pending（只读属性）—— 是否有"正在确认、尚未成立"的新候选。
+        只用于让调用方决定**下一次采样隔多久**（确认窗口内采样密一些）。
+        它不参与任何判定；没有这个属性的裁决器一律按"没有待确认候选"处理。
     """
 
     def offer(self, candidate: Optional[RoomCodeCandidate]) -> Optional[RoomCodeCandidate]:

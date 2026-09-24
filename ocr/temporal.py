@@ -109,6 +109,36 @@ class TemporalResolver(CandidateResolver):
         return self._last_emitted
 
     # ------------------------------------------------------------------
+    # 只读推导：当前是否「有一个新候选正在被确认」
+    # ------------------------------------------------------------------
+    # 说明（OCR-2）：调用方需要据此决定"下一次采样隔多久"（确认窗口内采样密一些）。
+    # 这里**不新增任何状态**——只从既有的观测窗口与阈值推导，
+    # 因此判定规则、阈值、成立条件仍然是唯一的一份（在本类里），
+    # 调用方永远不可能拿到一个与本类不一致的"待确认"结论。
+    @property
+    def pending_code(self) -> Optional[str]:
+        """正在被确认、但**尚未成立**的新候选（None = 没有这样的候选）。
+
+        推导规则（全部来自既有字段）：
+          1. 取窗口末尾最近的、非 None 的观测（None 只代表"这帧没读出来"，
+             按既有语义不打断连续计数）；
+          2. 该码还没有达到 min_agreement（达到即已在 offer() 里成立）；
+          3. 且它不是最近一次已经成立过的码（已成立的码再出现属于 repeated，
+             不存在"需要再确认一次"这回事）。
+
+        注意它**只描述采样时机**，不参与任何判定：是否成立一律由 offer() 决定。
+        """
+        code = next((c for c in reversed(self._window) if c is not None), None)
+        if code is None or code == self._last_emitted:
+            return None
+        return code if self._agreement(code) < self._min_agreement else None
+
+    @property
+    def has_pending(self) -> bool:
+        """是否有"正在被确认、但尚未成立"的新候选。"""
+        return self.pending_code is not None
+
+    # ------------------------------------------------------------------
     # 裁决
     # ------------------------------------------------------------------
     def reset(self) -> None:
