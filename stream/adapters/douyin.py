@@ -27,7 +27,7 @@
 import json
 import logging
 import re
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import requests
 
@@ -51,6 +51,11 @@ class DouyinStream:
 
     # 直播间URL匹配模式：https://live.douyin.com/{room_id}
     _ROOM_URL_PATTERN = re.compile(r"^https?://live\.douyin\.com/(\d+)")
+
+    # 关注页里的直播入口：www.douyin.com/follow/live/{id}?anchor_id={aid}
+    # 只认领这一条路径，**不**整站认领 www.douyin.com —— 那个域名下还有
+    # 大量视频页、用户页等与直播无关的地址。
+    _FOLLOW_LIVE_PATH = re.compile(r"^/follow/live/(\d+)$")
 
     # 旧版页面 RENDER_DATA 提取模式
     _RENDER_DATA_PATTERN = re.compile(
@@ -126,6 +131,9 @@ class DouyinStream:
         """
         self.live_url = live_url
         self.room_id = None    # 解析出的房间号
+        # 待尝试的 room_id 候选（关注页链接有两个）。标准直播间链接只有一个，
+        # 因此这条路径上的行为与从前完全一致。
+        self._room_id_candidates: list[str] = []
         self.live_info = None  # 直播信息原始数据（用于调试）
         # 最近一次流地址提取所用的原始数据 (source, data)：
         # 供 get_stream_info() 还原完整候选列表，不参与任何解析决策。
@@ -144,15 +152,46 @@ class DouyinStream:
         if not self.live_url or not isinstance(self.live_url, str):
             raise DouyinStreamError("URL格式错误：直播间URL为空或类型不正确")
 
-        match = self._ROOM_URL_PATTERN.match(self.live_url.strip())
-        if not match:
+        candidates = self._parse_room_id_candidates(self.live_url.strip())
+        if not candidates:
             raise DouyinStreamError(
                 f"URL格式错误：无法解析room_id -> {self.live_url}"
             )
 
-        self.room_id = match.group(1)
-        logger.info("解析 room_id = %s", self.room_id)
+        self._room_id_candidates = candidates
+        self.room_id = candidates[0]
+        logger.info("解析 room_id 候选 = %s", candidates)
         return self.room_id
+
+    @classmethod
+    def _parse_room_id_candidates(cls, url: str) -> list[str]:
+        """从 URL 提取 room_id 候选，顺序即尝试顺序。
+
+        两种受支持的形态：
+            https://live.douyin.com/{id}                     → [id]
+            https://www.douyin.com/follow/live/{id}?anchor_id={aid}
+                                                             → [id, aid]
+
+        关注页那条**刻意返回两个候选**：路径里的 id 与 anchor_id 谁都不假定
+        就是内部 room_id，由调用方拿它们各自去问直播信息接口，以响应为准。
+        """
+        match = cls._ROOM_URL_PATTERN.match(url)
+        if match:
+            return [match.group(1)]
+
+        parts = urlsplit(url)
+        if (parts.hostname or "").lower() not in ("www.douyin.com", "douyin.com"):
+            return []
+        path_match = cls._FOLLOW_LIVE_PATH.match(parts.path.rstrip("/"))
+        if not path_match:
+            return []
+
+        candidates = [path_match.group(1)]
+        # anchor_id 也可能带在查询串里；拿不到就只试路径 id
+        anchor = (parse_qs(parts.query).get("anchor_id") or [""])[0]
+        if anchor.isdigit() and anchor not in candidates:
+            candidates.append(anchor)
+        return candidates
 
     # ------------------------------------------------------------------
     # 第2步：获取 Cookie（ttwid 等必要 Cookie）
@@ -861,7 +900,7 @@ class DouyinStream:
         if not self.room_id:
             self.get_room_id()
 
-        result = self.get_live_info()
+        result = self._get_live_info_with_candidates()
 
         if result and result.get("stream_url"):
             logger.info(
@@ -889,6 +928,42 @@ class DouyinStream:
         raise DouyinStreamError(
             f"没有可用播放地址 (room_id={self.room_id})"
         )
+
+    def _get_live_info_with_candidates(self):
+        """按 room_id 候选依次尝试直播信息请求。
+
+        标准直播间链接只有一个候选，因此这里**只请求一次**，行为与改动前
+        完全一致（错误与异常原样抛出）。
+
+        关注页链接有两个候选（路径 id 与 anchor_id）。谁都不是"内部 room_id"
+        的既定答案，所以拿它们各自去问同一个接口：先问到可用播放地址的那个
+        胜出，对外报告的 room_id 始终来自响应本身。
+
+        全部失败时抛**第一个**候选的异常 —— 它是最主要的那个 id 的真实答复，
+        用它报错比用后备 id 的答复更有信息量。
+        """
+        candidates = self._room_id_candidates or (
+            [self.room_id] if self.room_id else [])
+        first_error = None
+        last_result = None
+        for index, candidate in enumerate(candidates):
+            if index:
+                logger.info("[API] 主候选未取到播放地址，改用候选 id=%s", candidate)
+            self.room_id = candidate
+            try:
+                result = self.get_live_info()
+            except DouyinStreamError as e:
+                if first_error is None:
+                    first_error = e
+                continue
+            if result and result.get("stream_url"):
+                return result
+            last_result = result
+
+        self.room_id = candidates[0] if candidates else None
+        if first_error is not None:
+            raise first_error
+        return last_result
 
     def get_stream_info(self):
         """
@@ -975,12 +1050,18 @@ class DouyinAdapter(PlatformAdapter):
     # 只按主机名判断归属：URL 里的房间号是否合法留给 resolve() 报错，
     # 这样非法房间号仍然得到原来的 "URL格式错误：无法解析room_id" 提示。
     _HOST_PATTERN = re.compile(r"^https?://live\.douyin\.com/", re.IGNORECASE)
+    #: 关注页里的直播入口。只认领这一条路径，不整站认领 www.douyin.com。
+    _FOLLOW_LIVE_PATTERN = re.compile(
+        r"^https?://(?:www\.)?douyin\.com/follow/live/\d+(?:[/?#]|$)",
+        re.IGNORECASE)
 
     def can_handle(self, url: str) -> bool:
         """URL 是否属于抖音直播间（纯 URL 判断，不发请求）"""
         if not url or not isinstance(url, str):
             return False
-        return bool(self._HOST_PATTERN.match(url.strip()))
+        stripped = url.strip()
+        return bool(self._HOST_PATTERN.match(stripped)
+                    or self._FOLLOW_LIVE_PATTERN.match(stripped))
 
     def resolve(self, url: str) -> StreamInfo:
         """:raises DouyinStreamError: 解析失败"""

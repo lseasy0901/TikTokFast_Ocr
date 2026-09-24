@@ -354,12 +354,15 @@ def t_errors():
     except DouyinStreamError as e:
         check("无流时抛 DouyinStreamError", "未找到可用流地址" in str(e), str(e))
 
+    # 未注册平台的 URL：resolver 层在发请求之前就拒绝。
+    # 注意：Phase 2 起 huya.com 已被 HuyaAdapter 接管，不再是"未支持平台"，
+    # 这里改用仍未接入的平台，避免测试退化成一次真实网络请求。
     r = StreamResolver()
     try:
-        r.resolve("https://www.huya.com/dank1ng")
-        check("非抖音 URL 在 resolver 层被拒", False, "no exception")
+        r.resolve("https://www.douyu.com/9999")
+        check("未支持平台 URL 在 resolver 层被拒", False, "no exception")
     except StreamResolveError as e:
-        check("非抖音 URL 抛 StreamResolveError", "直播平台" in str(e), str(e))
+        check("未支持平台 URL 抛 StreamResolveError", "直播平台" in str(e), str(e))
 
     try:
         r.resolve("")
@@ -435,9 +438,12 @@ def t_end_to_end():
         DouyinStream._fetch_room_page = orig_fetch
 
     # registry / resolver 结构
+    # Phase 2 起注册表同时包含抖音与虎牙；抖音仍注册在首位，且按主机名互斥，
+    # 因此抖音的解析路径不受影响（这里只断言"含抖音"与"抖音优先"）。
     reg = build_default_registry()
-    check("默认注册表含 1 个适配器", len(reg.adapters) == 1)
-    check("注册的是 DouyinAdapter", isinstance(reg.adapters[0], DouyinAdapter))
+    check("默认注册表含 DouyinAdapter", isinstance(reg.adapters[0], DouyinAdapter))
+    check("注册表含 2 个适配器（抖音 + 虎牙）", len(reg.adapters) == 2,
+          str([type(a).__name__ for a in reg.adapters]))
     check("registry 按 URL 选中 adapter",
           isinstance(StreamResolver().registry.get_adapter(ROOM_URL), DouyinAdapter))
     check("重复注册被忽略",
