@@ -7,10 +7,13 @@
 
 from .base import PlatformAdapter
 from .douyin import DouyinAdapter, DouyinStream, DouyinStreamError
+from .huya import HuyaAdapter, HuyaStreamError
 
 __all__ = [
     "PlatformAdapter",
     "DouyinAdapter",
     "DouyinStream",
     "DouyinStreamError",
+    "HuyaAdapter",
+    "HuyaStreamError",
 ]

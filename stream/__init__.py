@@ -6,15 +6,21 @@
 """
 
 from .douyin import DouyinStream, DouyinStreamError
+from .failover import CandidateFailover
 from .ffmpeg_reader import FFmpegReader
 from .frame_buffer import LatestFrameBuffer
 from .models import StreamCandidate, StreamInfo, StreamResolveError
 from .resolver import StreamResolver
 from .video_info import get_video_info, VideoInfo
 
+from .adapters.huya import HuyaAdapter, HuyaStreamError
+
 __all__ = [
     "DouyinStream",
     "DouyinStreamError",
+    "HuyaAdapter",
+    "HuyaStreamError",
+    "CandidateFailover",
     "FFmpegReader",
     "LatestFrameBuffer",
     "StreamCandidate",

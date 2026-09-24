@@ -48,9 +48,15 @@ class PlatformRegistry:
 
 
 def build_default_registry() -> PlatformRegistry:
-    """构建内置注册表（目前只有抖音）"""
+    """构建内置注册表（抖音 + 虎牙）。
+
+    两者按主机名互斥（live.douyin.com / huya.com），因此注册顺序不影响
+    匹配结果；抖音保持在前，维持既有解析路径的优先地位不变。
+    """
     from .adapters.douyin import DouyinAdapter
+    from .adapters.huya import HuyaAdapter
 
     reg = PlatformRegistry()
     reg.register(DouyinAdapter())
+    reg.register(HuyaAdapter())
     return reg

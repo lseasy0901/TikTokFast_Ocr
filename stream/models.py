@@ -30,6 +30,7 @@ class StreamCandidate:
     :param bitrate:   码率（kbps），未知为 None
     :param width/height/fps: 已知时填写，未知为 None
     :param metadata:  平台附加信息（CDN 名等），核心层不解释
+    :param http_headers: 播放该地址所需的 HTTP 请求头（平台提供，核心层执行）
     """
 
     url: str
@@ -40,6 +41,10 @@ class StreamCandidate:
     height: int | None = None
     fps: float | None = None
     metadata: dict = field(default_factory=dict)
+    #: 播放该候选所需的 HTTP 请求头。为空表示"用播放器的默认请求头"。
+    #: 放在明确字段而不是 metadata 里，是因为它不是"仅供参考的附加信息"，
+    #: 而是播放能否成功的一部分：核心播放层必须原样把它交给 FFmpeg。
+    http_headers: dict = field(default_factory=dict)
 
 
 @dataclass
