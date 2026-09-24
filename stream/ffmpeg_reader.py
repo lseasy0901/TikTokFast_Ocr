@@ -3,7 +3,8 @@
 FFmpeg 低延迟读取模块 (Phase 1 - Step 3, 延迟优化)
 
 流程：
-    直播流URL -> subprocess启动FFmpeg -> rawvideo(bgr24) -> stdout逐帧读取 -> numpy.ndarray
+    直播流URL -> [尺寸未知时在读取线程内探测] -> subprocess启动FFmpeg
+              -> rawvideo(bgr24) -> stdout逐帧读取 -> numpy.ndarray
 
 延迟优化要点：
     - 跳帧读取：每次 read 后用 PeekNamedPipe/select 检查管道中是否还有完整帧，
@@ -12,6 +13,11 @@ FFmpeg 低延迟读取模块 (Phase 1 - Step 3, 延迟优化)
     - 独立子线程读取，绝不阻塞主线程
     - 单槽"最新帧"缓冲：读取跟不上时直接覆盖旧帧，宁可丢帧不增加延迟
     - np.frombuffer 零拷贝视图，不产生 Python 层像素复制
+
+启动阻塞（Phase 3.3）：
+    构造器不执行任何网络探测。尺寸要么由调用方给定，要么是 None —— 后者留到
+    读取线程里用 ffprobe 解析，因此"尺寸未知"不会让 GUI 线程同步等待；
+    探测进程句柄由 stop() 负责 kill，断开/切换候选时不会等满超时。
 
 使用方法：
     reader = FFmpegReader(stream_url, width=1920, height=1080, use_cuda=True)
@@ -31,10 +37,27 @@ import time
 import numpy as np
 
 from utils.runtime_paths import resolve_ffmpeg_path
+from utils.startup_timing import (
+    STAGE_FFMPEG_SPAWN,
+    STAGE_FFPROBE_END,
+    STAGE_FFPROBE_START,
+    STAGE_FIRST_FRAME,
+    StartupTiming,
+)
 
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.ffmpeg_reader")
 
 __all__ = ["FFmpegReader"]
+
+#: 「本次尝试没有 ffprobe 阶段」的说明文案（Phase 3.2 分段计时用）
+_PROBE_SKIP_REASON = "分辨率已知，无需探测"
+
+#: 读取线程内尺寸探测的超时（秒）与探测失败时的回退尺寸。
+#: 回退值保持与 Phase 3.3 之前一致：超时/失败不影响"这次尝试能不能起来"，
+#: 只是按 1920x1080 切片；尺寸不对会在后续的帧长度校验里暴露出来。
+_PROBE_TIMEOUT_S = 5
+_FALLBACK_WIDTH = 1920
+_FALLBACK_HEIGHT = 1080
 
 # ---- 管道数据可用性检查（跨平台） ----
 _IS_WINDOWS = os.name == "nt"
@@ -76,41 +99,58 @@ else:
 class FFmpegReader:
     """FFmpeg 低延迟视频帧读取器"""
 
-    def __init__(self, stream_url, width=1920, height=1080, use_cuda=True):
+    def __init__(self, stream_url, width=None, height=None, use_cuda=True,
+                 http_headers=None, timing=None):
         """
+        构造**不做任何网络探测**：尺寸要么是调用方给的确定值，要么是显式
+        None（= 尺寸未知，留到读取线程里解析，见 :meth:`_resolve_pending_size`）。
+
         :param stream_url: 直播流URL，例如 https://xxx.flv
-        :param width:      输出帧宽度（必须与FFmpeg输出一致，默认1920）
-                          注意：如果不提供，将尝试自动检测流媒体实际分辨率
-        :param height:     输出帧高度（默认1080）
+        :param width:      输出帧宽度，必须与 FFmpeg 输出一致；
+                           None = 未知（本层在读取线程内探测，不阻塞调用方线程）
+        :param height:     输出帧高度，语义同 width
         :param use_cuda:   True 时启用 CUDA 硬件解码
+        :param http_headers: 平台提供的媒体请求头（如 {"User-Agent": ...}）。
+                          由平台适配器决定，本层不判断平台、不区分字段含义，
+                          只负责把它注入到 FFmpeg 的**输入**选项里。
+                          None / 空字典 = 沿用 FFmpeg 默认请求头（抖音即此路径）。
+        :param timing:     Phase 3.2 启动分段计时对象。调用方传入时由调用方负责
+                          输出汇总（它还要记录 GUI 侧的首帧时刻）；未传入时本层
+                          自己持有，并在首帧到达后输出一条汇总，供命令行自测使用。
+                          计时对象不改变任何播放行为。
         """
         self.stream_url = stream_url
+        self._http_headers = dict(http_headers) if http_headers else {}
 
-        # 分辨率检测标志（是否使用了自动检测）
-        self._auto_detected = (width is None or height is None)
+        self._owns_timing = timing is None
+        self._timing = timing if timing is not None else StartupTiming()
 
-        # 如果没有提供分辨率，先尝试检测
-        if self._auto_detected:
-            logger.info("[FFMPEG] 未提供完整分辨率，尝试自动检测...")
-            detected_width, detected_height = self._detect_stream_resolution()
-            if detected_width and detected_height:
-                width = width if width is not None else detected_width
-                height = height if height is not None else detected_height
-                logger.info("[FFMPEG] 使用检测到的分辨率: %dx%d", width, height)
-            else:
-                # 检测失败，使用默认值或提供的部分值
-                width = width if width is not None else 1920
-                height = height if height is not None else 1080
-                logger.warning("[FFMPEG] 分辨率检测失败，使用: %dx%d", width, height)
+        # 尺寸是否留待读取线程解析（Phase 3.3）。默认 None 而不是 1920x1080：
+        # "没给尺寸"必须是"未知"，绝不能悄悄当成 1080p —— 那会让切片逻辑按错误
+        # 尺寸工作，而且是在没有任何探测依据的情况下。
+        self._size_pending = (width is None or height is None)
 
-        self.width = int(width)
-        self.height = int(height)
+        if self._size_pending:
+            # 尺寸未知时不在这里探测：探测被推迟到 _reader_loop（读取线程）里，
+            # 这样构造/启动不会阻塞调用方线程（GUI 线程）。
+            self.width = None
+            self.height = None
+            self._frame_size = None      # 尺寸确定后计算（见 _resolve_pending_size）
+        else:
+            self.width = int(width)
+            self.height = int(height)
+            self._frame_size = self.width * self.height * 3
+            # 尺寸已知的候选不跑 ffprobe：显式记下"本次尝试没有这个阶段"，
+            # 让日志区分"跳过"与"没测到"
+            self._timing.skip(STAGE_FFPROBE_START, _PROBE_SKIP_REASON)
+            self._timing.skip(STAGE_FFPROBE_END, _PROBE_SKIP_REASON)
+            self._timing.note(f"size={self.width}x{self.height}(已知)")
+
         self.use_cuda = bool(use_cuda)
 
-        # 一帧 BGR24 的字节数
-        self._frame_size = self.width * self.height * 3
-
         self._process = None
+        # 尺寸探测进程（读取线程内运行）。stop() 会 kill 它，好让探测立即结束。
+        self._probe_process = None
         self._thread = None
         self._running = False
         self._error = None
@@ -132,17 +172,91 @@ class FFmpegReader:
         # FFmpeg stderr 尾部日志（最多保留20行，用于诊断连接失败）
         self._stderr_tail = collections.deque(maxlen=20)
 
-    def _detect_stream_resolution(self):
-        """
-        自动检测流媒体的分辨率
+        # 管道积压观测（Phase B-1）：每读完一帧做一次非阻塞 Peek，
+        # 只把字节数存进环形窗口，不改变 stdout 的读取方式。
+        self._pipe_samples = collections.deque(maxlen=300)
+        self._pipe_bytes_last = 0
+        self._pipe_bytes_max = 0
 
-        返回：
-            (width, height) 元组，检测失败返回 (None, None)
+    def _resolve_pending_size(self) -> bool:
+        """尺寸未知时，在**读取线程内**解析它（构造器不再探测）。
+
+        这是 Phase 3.3 的核心：探测从前移到这里的唯一变化是"谁在等"。
+        探测期间 GUI 线程依然在跑事件循环，界面不会卡住；探测耗时照旧由
+        Phase 3.2 的 StartupTiming 分段记录（ffprobe_start → ffprobe_end）。
+
+        :return: True = 尺寸已确定，可以启动 FFmpeg；
+                 False = 期间被 :meth:`stop` 取消，调用方必须放弃启动
         """
+        if not self._size_pending:
+            return True
+        if not self._running:
+            # stop() 在探测开始前就落下了：一个进程都不该再起
+            return False
+
+        logger.info("[FFMPEG] 未提供分辨率，在读取线程内探测...")
+        self._timing.mark(STAGE_FFPROBE_START)
         try:
-            from .video_info import get_video_info
+            width, height = self._probe_size()
+        finally:
+            # 无论成功、失败还是被 kill，探测都到此结束（finally 保证不留空洞）
+            self._timing.mark(STAGE_FFPROBE_END)
 
-            video_info = get_video_info(self.stream_url, timeout=5)
+        if not self._running:
+            # 探测期间被 stop()：绝不能再启动 FFmpeg（否则会留下无人回收的进程）
+            logger.info("[FFMPEG] 尺寸探测期间已被停止，放弃启动")
+            return False
+
+        if width and height:
+            self._timing.note(f"size={width}x{height}(探测)")
+        else:
+            # 与 Phase 3.3 之前完全一致的回退：探测失败沿用 1920x1080 并告警，
+            # 由后续的"帧数据长度不符"路径去暴露尺寸不对。
+            width, height = _FALLBACK_WIDTH, _FALLBACK_HEIGHT
+            logger.warning("[FFMPEG] 分辨率探测失败，使用: %dx%d", width, height)
+            self._timing.note(f"size={width}x{height}(探测失败→默认)")
+
+        self.width = int(width)
+        self.height = int(height)
+        self._frame_size = self.width * self.height * 3
+        self._size_pending = False
+        # 探测耗时不属于"FFmpeg 启动到首帧"：把计时起点挪到探测结束，
+        # 让 first_frame_ms（状态栏"首帧"，也是历史 benchmark 的口径）保持原义。
+        # 探测本身由 Phase 3.2 的 StartupTiming 单独记录。
+        self._start_time = time.perf_counter()
+        return True
+
+    def _probe_size(self):
+        """用 ffprobe 探测流尺寸；返回 (width, height)，失败返回 (None, None)。
+
+        用 Popen 而不是 subprocess.run，是为了让 :meth:`stop` 能 kill 掉这个
+        进程：读取线程会立刻从 communicate() 返回，join 不会把断开/切换候选的
+        调用方（GUI 线程）拖满超时。
+        """
+        proc = None
+        try:
+            from .video_info import build_probe_cmd, parse_probe_output
+
+            creationflags = subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0
+            proc = subprocess.Popen(
+                build_probe_cmd(self.stream_url),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+            self._probe_process = proc
+            if not self._running:
+                # stop() 可能刚好在这两行之间跑过、没看到这个句柄：自己补一刀，
+                # 否则下面的 communicate() 会把读取线程（进而 join）拖满超时
+                proc.kill()
+            stdout, _ = proc.communicate(timeout=_PROBE_TIMEOUT_S)
+
+            if proc.returncode != 0:
+                if self._running:   # 被 stop() kill 掉的不算探测失败，不必告警
+                    logger.warning("[FFMPEG] 分辨率探测返回错误 (code=%d)", proc.returncode)
+                return (None, None)
+
+            video_info = parse_probe_output(stdout.decode("utf-8", errors="replace"))
             if video_info.width and video_info.height:
                 logger.info(
                     "[VIDEO INFO] width=%d, height=%d, pix_fmt=%s, fps=%s, codec=%s",
@@ -150,15 +264,23 @@ class FFmpegReader:
                     video_info.height,
                     video_info.pix_fmt or "unknown",
                     f"{video_info.fps:.2f}" if video_info.fps else "unknown",
-                    video_info.codec_name or "unknown"
+                    video_info.codec_name or "unknown",
                 )
                 return (video_info.width, video_info.height)
-            else:
-                return (None, None)
 
+            logger.warning("[FFMPEG] 分辨率探测未返回有效尺寸")
+            return (None, None)
+
+        except subprocess.TimeoutExpired:
+            logger.warning("[FFMPEG] 分辨率探测超时 (%.0fs)", _PROBE_TIMEOUT_S)
+            return (None, None)
         except Exception as e:
             logger.warning("[FFMPEG] 自动分辨率检测失败: %s", e)
             return (None, None)
+        finally:
+            self._probe_process = None
+            if proc is not None and proc.poll() is None:
+                proc.kill()
 
     # ------------------------------------------------------------------
     # 对外接口
@@ -180,7 +302,10 @@ class FFmpegReader:
         self._start_time = time.perf_counter()
         self._first_frame_time = None
 
-        logger.info("视频尺寸: %dx%d", self.width, self.height)
+        logger.info(
+            "视频尺寸: %s",
+            "待读取线程探测" if self._size_pending else f"{self.width}x{self.height}",
+        )
         logger.info("CUDA状态: %s", "启用" if self.use_cuda else "关闭")
 
         self._thread = threading.Thread(
@@ -204,6 +329,15 @@ class FFmpegReader:
     def stop(self):
         """停止 FFmpeg 并释放资源（可重复调用，线程安全）"""
         self._running = False
+
+        # 正在探测尺寸的话，kill 掉 ffprobe：读取线程会立刻从 communicate()
+        # 返回，下面的 join 不会把调用方（GUI 线程）拖满探测超时。
+        probe = self._probe_process
+        if probe is not None and probe.poll() is None:
+            try:
+                probe.kill()
+            except Exception:  # noqa: BLE001 - 已在退出的进程不值得再报错
+                pass
 
         proc = self._process
         if proc is not None and proc.poll() is None:
@@ -263,7 +397,21 @@ class FFmpegReader:
     # 内部实现
     # ------------------------------------------------------------------
     def _reader_loop(self):
-        """子线程入口：启动FFmpeg -> 逐帧读取 -> 跳帧到最新 -> 覆盖单槽"""
+        """子线程入口：解析尺寸 -> 启动FFmpeg -> 逐帧读取 -> 跳帧到最新 -> 覆盖单槽"""
+        # 0. 尺寸未知的候选：在本线程内探测（Phase 3.3 —— 绝不在调用方线程等）
+        #    探测阶段的任何异常都必须转成 reader 错误：本线程静默死掉的话，
+        #    GUI 只会一直停在"连接中"，既不会换候选也不会报错。
+        try:
+            size_ready = self._resolve_pending_size()
+        except Exception as e:  # noqa: BLE001 - 探测路径不得让读取线程静默退出
+            self._set_error(f"尺寸探测异常: {e}")
+            self._running = False
+            return
+        if not size_ready:
+            # 已被 stop()：不启动 FFmpeg，也不留下任何待清理的资源
+            self._running = False
+            return
+
         # 1. 启动 FFmpeg 进程
         try:
             proc = self._spawn_ffmpeg()
@@ -317,12 +465,17 @@ class FFmpegReader:
         # 首帧成功 -> 连接状态确认
         self.connected = True
         self._first_frame_time = time.perf_counter()
+        self._timing.mark(STAGE_FIRST_FRAME)
         first_frame_ms = (self._first_frame_time - self._start_time) * 1000.0
         logger.info(
             "[FFMPEG] first frame received! connected=True, first_frame=%.0fms",
             first_frame_ms,
         )
         self._store_frame(frame_bytes)
+        if self._owns_timing:
+            # 计时对象由本层自己持有（命令行自测 / bench 直连）：首帧就是终点。
+            # 调用方传入计时对象时不由本层输出 —— 它还要记录 GUI 侧的首帧时刻。
+            self._timing.log()
 
         # 3. 持续逐帧读取（跳帧到最新）
         error = None
@@ -342,6 +495,11 @@ class FFmpegReader:
                         "（实际视频尺寸与配置 width/height 不符，或视频断流）"
                     )
                     break
+
+                # Phase B-1：记录"刚读到的这帧之后、管道里还排着多少字节"。
+                # 必须在跳帧之前采样，否则测得的是排空后的残量，反映不出积压。
+                # 这是一次非阻塞 Peek，不读取、不改变读取逻辑。
+                self._sample_pipe_backlog(proc.stdout)
 
                 # ★ 延迟优化核心：跳帧读取
                 # 检查管道中是否还有完整帧可读，有则丢弃当前帧、读取更新的帧
@@ -415,6 +573,55 @@ class FFmpegReader:
 
         return latest
 
+    # ------------------------------------------------------------------
+    # Phase B-1：管道积压观测（纯只读，不影响读取逻辑）
+    # ------------------------------------------------------------------
+    def _sample_pipe_backlog(self, pipe):
+        """记录一次管道可读字节数（复用已有的非阻塞 Peek，不新增阻塞 read）"""
+        try:
+            avail = _pipe_bytes_available(pipe)
+        except Exception:
+            return
+        if avail < 0:
+            return
+        self._pipe_bytes_last = avail
+        if avail > self._pipe_bytes_max:
+            self._pipe_bytes_max = avail
+        self._pipe_samples.append(avail)
+
+    def pipe_backlog_stats(self) -> dict:
+        """管道积压样本的分位数汇总（由调用方在既有刷新周期中调用）
+
+        :return: {"samples", "last", "max", "p50", "p95"}，单位为字节；
+                 无样本时数值全为 0
+        """
+        samples = list(self._pipe_samples)
+        n = len(samples)
+        if n == 0:
+            return {"samples": 0, "last": 0, "max": 0, "p50": 0, "p95": 0}
+        ordered = sorted(samples)
+
+        def _pct(p: float) -> int:
+            return ordered[int((len(ordered) - 1) * p)]
+
+        return {
+            "samples": n,
+            "last": samples[-1],
+            "max": self._pipe_bytes_max,
+            "p50": _pct(0.50),
+            "p95": _pct(0.95),
+        }
+
+    @property
+    def pipe_bytes_last(self) -> int:
+        """最近一次采样到的管道可读字节数"""
+        return self._pipe_bytes_last
+
+    @property
+    def pipe_bytes_max(self) -> int:
+        """管道可读字节数的历史峰值"""
+        return self._pipe_bytes_max
+
     def _store_frame(self, frame_bytes):
         """将一帧字节串转为 numpy 视图并写入单槽（覆盖旧帧 = 主动丢帧）"""
         # np.frombuffer + reshape 为零拷贝视图：不产生 Python 层像素复制
@@ -443,6 +650,25 @@ class FFmpegReader:
         if self.use_cuda:
             cmd += ["-hwaccel", "cuda"]  # GPU解码，帧自动回传CPU（rawvideo需要CPU内存）
 
+        # ---- 平台请求上下文（Phase 2.4）----
+        # 必须放在 -i **之前**：这些都是 input option，放到 -i 之后会被当成
+        # 输出选项，FFmpeg 要么报错要么静默忽略。
+        # 本层不判断平台：headers 为空时命令与改动前逐字相同（抖音路径）。
+        if self._http_headers:
+            user_agent = None
+            extra_headers = []
+            for key, value in self._http_headers.items():
+                # User-Agent 走 FFmpeg 原生选项，其余走 -headers 机制
+                if key.lower() == "user-agent":
+                    user_agent = value
+                else:
+                    extra_headers.append((key, value))
+            if user_agent:
+                cmd += ["-user_agent", user_agent]
+            if extra_headers:
+                blob = "".join(f"{k}: {v}\r\n" for k, v in extra_headers)
+                cmd += ["-headers", blob]
+
         cmd += ["-i", self.stream_url]
 
         # ---- 输出侧：仅视频 rawvideo ----
@@ -463,13 +689,17 @@ class FFmpegReader:
         # Windows 下不弹出黑色控制台窗口（后续由 GUI 调用时需要）
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=creationflags,
         )
+        # Popen 返回 = 进程已创建。此刻之后 FFmpeg 自己的连接/探测/首个关键帧
+        # 等待都算在 "ffmpeg_spawn → first_decoded_frame" 这一段里。
+        self._timing.mark(STAGE_FFMPEG_SPAWN)
+        return proc
 
     def _drain_stderr(self, proc):
         """排空 FFmpeg stderr，保留最近若干行用于诊断"""

@@ -20,7 +20,11 @@ from utils.runtime_paths import resolve_ffmpeg_path, resolve_ffprobe_path
 
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.video_info")
 
-__all__ = ["get_video_info", "VideoInfo"]
+__all__ = ["get_video_info", "build_probe_cmd", "parse_probe_output", "VideoInfo"]
+
+#: 探测时向 ffprobe 请求的字段。命令构造与结果解析共用这一份定义，
+#: 避免"请求了 A、解析 B"的漂移。
+_PROBE_ENTRIES = "stream=width,height,pix_fmt,codec_name,r_frame_rate"
 
 
 class VideoInfo:
@@ -59,6 +63,65 @@ class VideoInfo:
         return ", ".join(parts) if parts else "Unknown"
 
 
+def build_probe_cmd(stream_url: str) -> list:
+    """构造 ffprobe 探测命令（命令定义只有这一处）。
+
+    单独暴露这条命令，是为了让调用方在需要「可被中断的探测」时自己管理
+    进程：例如 FFmpegReader 在读取线程里探测分辨率，断开时必须能立刻 kill
+    掉这个进程，而不是让持有它的线程（进而让 GUI）等满超时。
+
+    :param stream_url: 流地址（URL 或本地文件路径）
+    """
+    return [
+        resolve_ffprobe_path(),
+        "-hide_banner",
+        "-loglevel", "error",  # 只显示错误
+        "-show_entries", _PROBE_ENTRIES,
+        "-select_streams", "v:0",  # 只检测视频流
+        "-of", "json",  # JSON 格式输出
+        stream_url,
+    ]
+
+
+def parse_probe_output(stdout_text: str) -> VideoInfo:
+    """把 ffprobe 的 JSON 输出解析成 VideoInfo。
+
+    不抛异常：JSON 损坏 / 没有视频流 / 字段缺失都返回空的 VideoInfo，
+    由调用方决定如何回退。这与本模块"探测失败不影响主流程"的既有约定一致。
+
+    :param stdout_text: ffprobe 的 stdout 文本
+    """
+    try:
+        data = json.loads(stdout_text)
+    except json.JSONDecodeError as e:
+        logger.warning("[VIDEO INFO] JSON 解析失败: %s", e)
+        return VideoInfo()
+
+    streams = data.get("streams", [])
+    if not streams:
+        logger.warning("[VIDEO INFO] 未找到视频流")
+        return VideoInfo()
+
+    video_stream = streams[0]
+
+    fps = None
+    r_frame_rate = video_stream.get("r_frame_rate")
+    if r_frame_rate:
+        try:
+            num, den = r_frame_rate.split("/")
+            fps = float(num) / float(den) if den else 0
+        except (ValueError, ZeroDivisionError):
+            pass
+
+    return VideoInfo(
+        width=video_stream.get("width"),
+        height=video_stream.get("height"),
+        pix_fmt=video_stream.get("pix_fmt"),
+        fps=fps,
+        codec_name=video_stream.get("codec_name"),
+    )
+
+
 def get_video_info(stream_url: str, timeout: int = 10) -> VideoInfo:
     """
     使用 ffprobe 检测视频流信息
@@ -78,16 +141,8 @@ def get_video_info(stream_url: str, timeout: int = 10) -> VideoInfo:
     start_time = time.perf_counter()
 
     try:
-        # 构建 ffprobe 命令
-        cmd = [
-            resolve_ffprobe_path(),
-            "-hide_banner",
-            "-loglevel", "error",  # 只显示错误
-            "-show_entries", "stream=width,height,pix_fmt,codec_name,r_frame_rate",
-            "-select_streams", "v:0",  # 只检测视频流
-            "-of", "json",  # JSON 格式输出
-            stream_url
-        ]
+        # 构建 ffprobe 命令（命令定义在 build_probe_cmd，与可中断探测共用同一份）
+        cmd = build_probe_cmd(stream_url)
 
         logger.debug("[VIDEO INFO] 执行命令: %s", " ".join(cmd))
 
@@ -111,53 +166,13 @@ def get_video_info(stream_url: str, timeout: int = 10) -> VideoInfo:
             )
             return VideoInfo()
 
-        # 解析 JSON 输出
-        try:
-            data = json.loads(process.stdout)
-        except json.JSONDecodeError as e:
-            logger.warning("[VIDEO INFO] JSON 解析失败: %s", e)
-            return VideoInfo()
+        info = parse_probe_output(process.stdout)
 
-        # 提取视频流信息
-        streams = data.get("streams", [])
-        if not streams:
-            logger.warning("[VIDEO INFO] 未找到视频流")
-            return VideoInfo()
-
-        video_stream = streams[0]
-
-        # 提取分辨率
-        width = video_stream.get("width")
-        height = video_stream.get("height")
-
-        # 提取像素格式
-        pix_fmt = video_stream.get("pix_fmt")
-
-        # 提取编码格式
-        codec_name = video_stream.get("codec_name")
-
-        # 提取帧率
-        fps = None
-        r_frame_rate = video_stream.get("r_frame_rate")
-        if r_frame_rate:
-            try:
-                num, den = r_frame_rate.split("/")
-                fps = float(num) / float(den) if den else 0
-            except (ValueError, ZeroDivisionError):
-                pass
-
-        info = VideoInfo(
-            width=width,
-            height=height,
-            pix_fmt=pix_fmt,
-            fps=fps,
-            codec_name=codec_name
-        )
-
-        logger.info(
-            "[VIDEO INFO] 检测完成 (%.2fs): %s",
-            elapsed, info
-        )
+        if info.width and info.height:
+            logger.info(
+                "[VIDEO INFO] 检测完成 (%.2fs): %s",
+                elapsed, info
+            )
 
         return info
 
