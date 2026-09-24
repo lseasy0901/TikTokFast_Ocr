@@ -71,6 +71,20 @@ debug_*.png
 # real host address and root login, so it stays on the dev machine and out of
 # the repository. It is not part of the app and the spec never collects it.
 LiveLens_Admin.bat
+# Same reasoning for the download-link updater: it logs into the production
+# host as root over SSH to rewrite the site's release links. Anchored to the
+# repo root so only this one file is matched.
+/更新LiveLens下载链接.bat
+# Local-only authorisation module. It carries the built-in offline key pool,
+# which must not be published alongside the source. Anchored for the same
+# reason -- a same-named module elsewhere would stay visible.
+/utils/offline_activation.py
+# UI review screenshots: the directory form of the _ui_review_*.png rule above.
+/ui_screenshots/
+# Stray redirect targets: an empty file, and one holding the output of
+# `git diff --stat` written under an option string. Neither is project content.
+/bool
+/-files --others --exclude-standard
 
 # OS/editor
 Thumbs.db
