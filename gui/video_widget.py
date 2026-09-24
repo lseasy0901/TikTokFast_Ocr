@@ -3,7 +3,7 @@
 视频显示控件 (Phase 1 - Step 4)
 
 功能：
-    接收 numpy.ndarray (BGR) 帧 → 转为 RGB → QImage → QPixmap → 居中缩放绘制
+    接收 numpy.ndarray (BGR) 帧 → 以 BGR 布局直接包装为 QImage → QPixmap → 居中缩放绘制
 
 约束：
     - 禁止 cv2.imshow()
@@ -12,6 +12,7 @@
 """
 
 import logging
+import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QRect
@@ -29,14 +30,23 @@ class VideoWidget(QWidget):
         super().__init__(parent)
         self._pixmap: QPixmap | None = None
         # 保持 numpy 数据引用，防止 QImage 底层缓冲被 GC 回收
-        self._rgb_data: np.ndarray | None = None
+        self._frame_data: np.ndarray | None = None
         self._roi_rect: QRect | None = None
         self._video_size: tuple[int, int] = (0, 0)  # (width, height)
         self.setMinimumSize(320, 180)
+        # Phase B-1：可选的耗时观测接收方（只记录，不参与任何渲染决策）
+        self._perf = None
 
     # ------------------------------------------------------------------
     # 对外接口
     # ------------------------------------------------------------------
+    def attach_monitor(self, perf) -> None:
+        """挂接/解挂性能监控器（传 None 解挂）。
+
+        只用于把 set_frame / paintEvent 的耗时汇总给既有性能面板，
+        不改变任何渲染行为。仅应在 GUI 线程调用。
+        """
+        self._perf = perf
     def set_frame(self, frame: np.ndarray) -> None:
         """
         设置并显示一帧视频
@@ -46,6 +56,9 @@ class VideoWidget(QWidget):
         if frame is None or frame.size == 0:
             return
 
+        # Phase B-1：只计量耗时，不改变下面的转换/绘制顺序
+        _t0 = time.perf_counter()
+
         global _set_frame_count
         _set_frame_count += 1
         if _set_frame_count <= 3 or _set_frame_count % 100 == 0:
@@ -54,27 +67,37 @@ class VideoWidget(QWidget):
                 frame.shape[1], frame.shape[0], _set_frame_count,
             )
 
-        # BGR → RGB（[::-1] 产生非连续视图，.copy() 确保连续内存）
-        self._rgb_data = frame[:, :, ::-1].copy()
+        # QImage 原生支持 BGR 字节序，直接按原布局包装即可：
+        # 省掉整帧 BGR→RGB 拷贝（1080p 下约 5ms/帧），像素语义完全一致。
+        # 数组必须是 C 连续的，QImage 才能按 bytes_per_line 正确寻址；
+        # 生产路径传入的帧恒为连续数组（frombuffer → reshape），此处不触发拷贝。
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
 
-        h, w, ch = self._rgb_data.shape
+        # 保留引用：QImage 只引用不拥有这块内存
+        self._frame_data = frame
+
+        h, w, ch = frame.shape
         bytes_per_line = ch * w
 
-        # QImage 引用 self._rgb_data 的内存（不拷贝），但 QPixmap.fromImage 会拷贝
+        # QImage 引用 self._frame_data 的内存（不拷贝），但 QPixmap.fromImage 会拷贝
         qimg = QImage(
-            self._rgb_data.data,
+            self._frame_data.data,
             w, h,
             bytes_per_line,
-            QImage.Format_RGB888,
+            QImage.Format_BGR888,
         )
 
         self._pixmap = QPixmap.fromImage(qimg)
         self.update()  # 触发 paintEvent
 
+        if self._perf is not None:
+            self._perf.on_set_frame((time.perf_counter() - _t0) * 1000.0)
+
     def clear_frame(self) -> None:
         """清除当前画面，恢复黑色背景"""
         self._pixmap = None
-        self._rgb_data = None
+        self._frame_data = None
         self._video_size = (0, 0)
         self.update()
 
@@ -101,6 +124,10 @@ class VideoWidget(QWidget):
     # 绘制
     # ------------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802
+        # Phase B-1：计量整个 paintEvent（进入 → 绘制完成），不只测 scaled()
+        _t0 = time.perf_counter()
+        _drew_frame = bool(self._pixmap and not self._pixmap.isNull())
+
         painter = QPainter(self)
 
         # 黑色背景
@@ -123,12 +150,7 @@ class VideoWidget(QWidget):
                 # 获取原始帧尺寸
                 source_w, source_h = self._video_size
 
-                # 计算保持宽高比缩放后的实际绘制尺寸
-                scaled = self._pixmap.scaled(
-                    self.size(),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
+                # 复用上面已经算好的缩放结果，不重复执行相同的 scaled()
                 scaled_w = scaled.width()
                 scaled_h = scaled.height()
 
@@ -149,3 +171,8 @@ class VideoWidget(QWidget):
                 painter.drawRect(roi_x, roi_y, roi_w, roi_h)
 
         painter.end()
+
+        if self._perf is not None:
+            self._perf.on_paint_event(
+                (time.perf_counter() - _t0) * 1000.0, _drew_frame
+            )

@@ -14,8 +14,10 @@ LiveLens 通用 UI 组件
 避免为了几个控件把整个 FluentWidgets 变成运行时依赖。
 """
 
+import math
+
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -33,6 +35,9 @@ __all__ = [
     "DockPanel",
     "TitleBar",
     "WindowButton",
+    "IconButton",
+    "InfoPopup",
+    "icon_pixmap",
     "FramelessController",
     "OverlayHost",
     "set_property",
@@ -178,10 +183,17 @@ class OverlayHost(QFrame):
         super().__init__(parent)
         self._overlays: list[QWidget] = []
 
-    def add_overlay(self, widget: QWidget) -> None:
-        """登记一个「铺满容器」的浮层。"""
+    def add_overlay(self, widget: QWidget, interactive: bool = False) -> None:
+        """登记一个「铺满容器」的浮层。
+
+        :param interactive: 浮层是否接收鼠标事件。默认 False —— 纯展示浮层
+            （连接提示、复制反馈）必须让点击穿透到底下的视频区。
+            需要点击的浮层（未激活遮罩）必须传 True：``WA_TransparentForMouseEvents``
+            不只作用于浮层自身，Qt 官方语义是「连同它的子控件一起」不再接收事件，
+            因此设了它就等于把浮层里的按钮也一并作废。
+        """
         widget.setParent(self)
-        widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        widget.setAttribute(Qt.WA_TransparentForMouseEvents, not interactive)
         self._overlays.append(widget)
         widget.setGeometry(self.rect())
 
@@ -268,6 +280,264 @@ class WindowButton(QPushButton):
         painter.end()
 
 
+def _draw_icon_glyph(painter, kind: str, cx: float, cy: float,
+                     s: float) -> None:
+    """把一个图标种类画在 (cx, cy)，`s` 是半尺寸基准。
+
+    抽成模块函数是为了让"图标 + 文字"的普通按钮也能复用同一套画法
+    （见 :func:`icon_pixmap`），而不是各画一份、慢慢画歪。
+    """
+    if kind == IconButton.HELP:
+        # 问号用字形而不是画弧：小尺寸下自绘的弧线会被读成 "C"，
+        # 而 "?" 是 ASCII，任何系统字体都有，且一眼可辨。
+        side = s * 28.0 / 6.0        # 还原成 IconButton 控件边长
+        font = painter.font()
+        font.setPixelSize(int(side * 0.62))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(QRectF(cx - side / 2, cy - side / 2, side, side),
+                         Qt.AlignCenter, "?")
+    elif kind == IconButton.LICENSE:
+        # 钥匙：左侧细圆环 + 右侧长杆与两枚齿（杆要够长才不会被读成圆点）
+        painter.drawEllipse(QRectF(cx - s, cy - 2.6, 5.2, 5.2))
+        painter.drawLine(QPointF(cx - s + 5.2, cy), QPointF(cx + s, cy))
+        painter.drawLine(QPointF(cx + s - 1.5, cy), QPointF(cx + s - 1.5, cy + 3.2))
+        painter.drawLine(QPointF(cx + s - 4.5, cy), QPointF(cx + s - 4.5, cy + 3.2))
+    elif kind == IconButton.CONTACT:
+        # message-circle：圆角对话气泡 + 左下小尾巴
+        half_w = s * 0.86
+        half_h = s * 0.66
+        bubble = QRectF(cx - half_w, cy - half_h - 0.5,
+                        half_w * 2, half_h * 2)
+        painter.drawRoundedRect(bubble, s * 0.40, s * 0.40)
+        tail_x = cx - half_w * 0.42
+        painter.drawLine(QPointF(tail_x, bubble.bottom()),
+                         QPointF(tail_x - s * 0.12, bubble.bottom() + s * 0.40))
+        painter.drawLine(QPointF(tail_x - s * 0.12, bubble.bottom() + s * 0.40),
+                         QPointF(tail_x + s * 0.44, bubble.bottom()))
+    elif kind == IconButton.SETTINGS:
+        # 标准齿轮：一圈齿 + 齿圈 + 中心孔
+        teeth = s * 0.86      # 齿顶半径
+        ring = s * 0.52       # 齿根半径（也是齿圈半径）
+        for i in range(8):
+            angle = math.radians(i * 45.0)
+            dx, dy = math.cos(angle), math.sin(angle)
+            painter.drawLine(QPointF(cx + dx * ring, cy + dy * ring),
+                             QPointF(cx + dx * teeth, cy + dy * teeth))
+        painter.drawEllipse(QRectF(cx - ring, cy - ring, ring * 2, ring * 2))
+        hole = s * 0.22
+        painter.drawEllipse(QRectF(cx - hole, cy - hole, hole * 2, hole * 2))
+    elif kind in (IconButton.FULLSCREEN, IconButton.FULLSCREEN_EXIT):
+        # 四个直角括号；退出全屏时改画向内收拢的括号
+        d = 2.5 if kind == IconButton.FULLSCREEN else 4.5
+        a = s - 1.0
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            painter.drawLine(QPointF(cx + sx * a, cy + sy * a),
+                             QPointF(cx + sx * a - sx * d, cy + sy * a))
+            painter.drawLine(QPointF(cx + sx * a, cy + sy * a),
+                             QPointF(cx + sx * a, cy + sy * a - sy * d))
+
+
+def icon_pixmap(kind: str, size: int = 14,
+                color: str = Palette.TEXT_DIM) -> QPixmap:
+    """把某个图标渲染成 QPixmap，供"图标 + 文字"的普通 QPushButton 使用。
+
+    尺寸按 IconButton 的比例（28px 对应 s=6）等比缩放，保证两处图标
+    看起来是同一种粗细与大小。
+    """
+    pix = QPixmap(size, size)
+    pix.fill(Qt.transparent)
+
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.2)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    _draw_icon_glyph(painter, kind, size / 2.0, size / 2.0, size * 6.0 / 28.0)
+    painter.end()
+    return pix
+
+
+class IconButton(QPushButton):
+    """标题栏操作区的紧凑图标按钮（帮助 / 授权 / 联系作者 / 设置 / 全屏）。
+
+    与 :class:`WindowButton` 同一个理由自绘：图标是几何线条而不是字体字形，
+    因此 DPI / 字体变化下不会出现粗细与基线漂移，也不需要引入图标资源。
+    QSS 只负责背景、hover 与按下反馈，字形一律由 :func:`_draw_icon_glyph` 画。
+
+    ``variant="primary"`` 时字形用强调色，用于「授权」这个唯一被强调的入口。
+    """
+
+    HELP, LICENSE, CONTACT, SETTINGS, FULLSCREEN, FULLSCREEN_EXIT = (
+        "help", "license", "contact", "settings", "fullscreen",
+        "fullscreenExit")
+
+    def __init__(self, kind: str, tooltip: str = "",
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self._kind = kind
+        self.setObjectName("titleIconBtn")
+        self.setFlat(True)
+        self.setFixedSize(Metrics.ICON_BUTTON_SIZE, Metrics.ICON_BUTTON_SIZE)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAttribute(Qt.WA_Hover, True)
+        if tooltip:
+            self.setToolTip(tooltip)
+
+    def set_kind(self, kind: str) -> None:
+        """切换图标（全屏 ↔ 还原），同时刷新 tooltip。"""
+        self._kind = kind
+        self.setToolTip("退出全屏工作台" if kind == self.FULLSCREEN_EXIT
+                        else "全屏工作台")
+        self.update()
+
+    # -- 绘制 ----------------------------------------------------------
+    def _glyph_color(self) -> str:
+        if self.property("variant") == "primary":
+            return Palette.TEXT
+        if self.underMouse():
+            return Palette.TEXT
+        return Palette.TEXT_DIM
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)   # QSS 先画背景 / hover / pressed
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor(self._glyph_color()))
+        pen.setWidthF(1.2)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        s = 6.0
+
+        _draw_icon_glyph(painter, self._kind, cx, cy, s)
+        painter.end()
+
+
+# ======================================================================
+# 就近弹出的小卡片（标题栏按钮下方）
+# ======================================================================
+_POPUP_QSS = f"""
+#infoPopup {{
+    background-color: {Palette.POPUP_BG};
+    border: 1px solid {Palette.BORDER_STRONG};
+    border-radius: 10px;
+}}
+#infoPopup QLabel {{ background: none; }}
+#popupTitle {{ font-size: 13px; font-weight: 600; color: {Palette.TEXT}; }}
+#popupSubtitle {{ font-size: 11px; color: {Palette.TEXT_MUTED}; }}
+#popupLabel {{ font-size: 12px; color: {Palette.TEXT_DIM}; }}
+#popupValue {{ font-size: 12px; color: {Palette.TEXT};
+               font-family: {Palette.MONO_FAMILY}; }}
+#popupHint {{ font-size: 11px; color: {Palette.OK_TEXT}; }}
+#infoPopup QPushButton {{ font-size: 11px; }}
+"""
+
+
+class InfoPopup(QFrame):
+    """挂在某个按钮下方的深色信息卡片：标题 + 副标题 + 若干「标签/值/复制」行。
+
+    用 ``Qt.Popup`` 而不是普通顶层窗口：它天然满足"点外面就关掉"，
+    不需要自己装应用级事件过滤器去判断点在哪儿 —— 那种过滤器在窗口销毁
+    之后还活着的话很容易踩到悬空指针。
+
+    Popup 不是模态对话框：它不阻塞事件循环，正在跑的直播解码与 OCR 照常工作，
+    只是鼠标点别处会先被用来关掉本卡片（与菜单一致）。
+    """
+
+    WIDTH = 300
+
+    def __init__(self, title: str, subtitle: str, rows, parent=None):
+        """
+        :param rows: [(标签, 值, 复制成功后的提示文案), ...]
+        """
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
+        self.setObjectName("infoPopup")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(_POPUP_QSS)
+        self.setFixedWidth(self.WIDTH)
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(16, 14, 16, 14)
+        col.setSpacing(8)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("popupTitle")
+        col.addWidget(title_label)
+
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("popupSubtitle")
+        col.addWidget(subtitle_label)
+
+        for label, value, copied_text in rows:
+            col.addLayout(self._row(label, value, copied_text))
+
+    @staticmethod
+    def _row(label: str, value: str, copied_text: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        name = QLabel(label)
+        name.setObjectName("popupLabel")
+        name.setFixedWidth(38)          # 两行标签对齐
+        row.addWidget(name)
+
+        text = QLabel(value)
+        text.setObjectName("popupValue")
+        # 值完整展示、可选中，不省略
+        text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        row.addWidget(text)
+
+        hint = QLabel("")
+        hint.setObjectName("popupHint")
+        row.addWidget(hint)
+        row.addStretch(1)
+
+        btn = QPushButton("复制")
+        btn.setFixedHeight(24)
+        btn.setMinimumWidth(48)
+        btn.setCursor(Qt.PointingHandCursor)
+
+        def _copy():
+            clipboard = QApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(value)
+                hint.setText(copied_text)
+
+        btn.clicked.connect(_copy)
+        row.addWidget(btn)
+        return row
+
+    # ------------------------------------------------------------------
+    def show_below(self, anchor: QWidget) -> None:
+        """贴在 anchor 下方弹出，并夹回屏幕可用范围内。"""
+        self.adjustSize()
+        btn_rect = QRect(anchor.mapToGlobal(QPoint(0, 0)), anchor.size())
+
+        screen = QApplication.screenAt(btn_rect.center()) or QApplication.primaryScreen()
+        area = screen.availableGeometry() if screen is not None else btn_rect
+
+        # 水平方向尽量与按钮中心对齐；越界就夹回屏内
+        x = btn_rect.center().x() - self.width() // 2
+        x = max(area.left() + 8, min(x, area.right() - self.width() - 8))
+        y = btn_rect.bottom() + 6
+        if y + self.height() > area.bottom() - 8:
+            # 下面放不下就翻到按钮上方
+            y = max(area.top() + 8, btn_rect.top() - self.height() - 6)
+
+        self.move(x, y)
+        self.show()
+
+
 # ======================================================================
 # 自定义标题栏
 # ======================================================================
@@ -311,6 +581,16 @@ class TitleBar(QFrame):
 
         layout.addStretch(1)
 
+        # 自定义操作区（帮助 / 授权 / 设置 …）：位于窗口按钮**左侧**的空位。
+        # 默认没有内容、不占可视宽度，既有调用方的标题栏外观与行为不变。
+        # 放在这里而不是让调用方自己拼布局：窗口按钮的贴角布局是标题栏的职责。
+        self._actions = QWidget()
+        self._actions.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self._actions_layout = QHBoxLayout(self._actions)
+        self._actions_layout.setContentsMargins(0, 0, 6, 0)
+        self._actions_layout.setSpacing(2)
+        layout.addWidget(self._actions)
+
         # 窗口按钮单独一行，按钮之间不留间距（贴住窗口右上角）
         buttons = QWidget()
         buttons_layout = QHBoxLayout(buttons)
@@ -327,6 +607,37 @@ class TitleBar(QFrame):
 
         # 拖动状态（仅在没有系统级拖动能力时使用）
         self._drag_offset: QPoint | None = None
+
+    # -- 自定义操作区 --------------------------------------------------
+    def add_action_button(self, text: str, tooltip: str = "",
+                          object_name: str = "") -> QPushButton:
+        """在窗口按钮左侧加一个操作按钮（帮助 / 授权 / 设置…）并返回它。
+
+        只负责摆放；按钮的语义、样式变体与信号接线由调用方决定。
+        """
+        button = QPushButton(text, self)
+        if object_name:
+            button.setObjectName(object_name)
+        if tooltip:
+            button.setToolTip(tooltip)
+        button.setFixedHeight(26)
+        button.setCursor(Qt.PointingHandCursor)
+        self._actions_layout.addWidget(button)
+        return button
+
+    def add_icon_button(self, kind: str, tooltip: str = "") -> "IconButton":
+        """在操作区加一个紧凑图标按钮并返回它。
+
+        与 :meth:`add_action_button` 同一个位置，但用自绘图标取代文字，
+        避免标题栏被三个中文按钮撑满（Phase UI-3.1）。
+        """
+        button = IconButton(kind, tooltip, self)
+        self._actions_layout.addWidget(button)
+        return button
+
+    def add_action_widget(self, widget: QWidget) -> None:
+        """往操作区插入任意控件（例如一个状态标签）。"""
+        self._actions_layout.addWidget(widget)
 
     # -- 拖动 ----------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -390,6 +701,8 @@ class FramelessController(QObject):
     def __init__(self, window: QWidget):
         super().__init__(window)
         self._window = window
+        #: 窗口是否处于全屏（由 MainWindow 通过 set_fullscreen 同步进来）
+        self._fullscreen = False
         self._manual_edge = Qt.Edges()
         self._manual_start_geo: QRect | None = None
         self._manual_start_pos: QPoint | None = None
@@ -398,6 +711,14 @@ class FramelessController(QObject):
         if self._app is not None:
             self._app.installEventFilter(self)
         window.destroyed.connect(self._detach)
+
+    def set_fullscreen(self, enabled: bool) -> None:
+        """由窗口在状态变化时同步：全屏期间停用边角缩放。
+
+        不用查询窗口的方式实现，是为了在事件的每个分支上都不去解引用
+        ``self._window`` —— 见 :meth:`eventFilter` 里的说明。
+        """
+        self._fullscreen = bool(enabled)
 
     def _detach(self, *_args) -> None:
         """窗口销毁时摘掉应用级过滤器，避免留下悬空引用。"""
@@ -474,6 +795,17 @@ class FramelessController(QObject):
             QEvent.Type.MouseButtonPress,
             QEvent.Type.MouseButtonRelease,
         ):
+            return False
+
+        # 全屏时不参与边角缩放。全屏窗口本来就不可缩放，而顶部 5px 的缩放
+        # 热区（RESIZE_MARGIN）会整个盖住 4px 高的"鼠标到顶滑出标题栏"热区：
+        # 鼠标移到屏幕顶端想唤出标题栏，却变成按住窗口上边缘拖拽。
+        #
+        # 刻意读自己的标志位而不是 self._window.isFullScreen()：窗口销毁后
+        # 访问它会**直接段错误**（不是 RuntimeError，try/except 兜不住）。
+        # 原实现对 MouseButtonRelease 完全不碰 _window，多这一次解引用就足以
+        # 让「反复创建/销毁主窗口」的用例崩溃。
+        if self._fullscreen:
             return False
 
         try:
