@@ -40,6 +40,10 @@ class ROISelector(QWidget):
     # 信号
     roi_selected = Signal(object)       # 发出 ROI 实例
     roi_selection_canceled = Signal()
+    #: 鼠标松开、画面上出现一个有效选区时发出（屏幕坐标）。
+    #: 引导用它把"Enter 确认 · Esc 取消"的轻量提示放到选区旁边；
+    #: 它只报告，不影响任何选择逻辑。
+    selection_drawn = Signal(object)
 
     # 选择框样式
     _BORDER_COLOR = QColor(0, 255, 128, 220)   # 绿色边框
@@ -114,6 +118,11 @@ class ROISelector(QWidget):
             self._selecting = False
             self._end_pos = event.position().toPoint()
             self.update()
+            # 只报告"已经框出一块区域"，不确认、不推进任何流程
+            rect = self._get_selection_rect()
+            if rect is not None:
+                self.selection_drawn.emit(
+                    QRect(self.mapToGlobal(rect.topLeft()), rect.size()))
 
     # ------------------------------------------------------------------
     # 键盘事件
@@ -130,6 +139,18 @@ class ROISelector(QWidget):
                 self._confirmed = True
                 self.roi_selected.emit(roi)
                 self.close()
+
+    def closeEvent(self, event):
+        """关窗（Esc 之外的另一条退出路径）也要如实报告"没选成"。
+
+        只有 Esc 会发 roi_selection_canceled，而右上角关窗同样会结束本次框选。
+        不补这一条的话，监听这个信号的一方（首次引导）会一直停在"正在框选"
+        的等待状态里，再也不会恢复。
+        """
+        if not self._confirmed:
+            logger.info("ROI selection canceled (window closed)")
+            self.roi_selection_canceled.emit()
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # 绘制

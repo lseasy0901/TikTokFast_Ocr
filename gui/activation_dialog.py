@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
-"""
-许可证激活对话框 - Phase 7.2-6.5
+"""统一激活弹窗（Phase UI-3，Studio Minimal）。
 
-用户输入许可证密钥 → 后台线程完成「服务器兑换 + 本地验证」→ 展示结果。
+设计：
+    只呈现「一个 KEY 输入框 + 一个立即激活按钮」。**不再让用户选择在线/离线**——
+    分派由 KEY 本身决定，规则就是现有授权实现里那条唯一的分派依据：
+        normalize_key(key) ∈ OFFLINE_KEYS  → 离线激活（本地池，不联网）
+        否则                                → 在线激活（服务器兑换 + 签名验证）
+    刻意不做"在线失败就试离线"：那条路会让无效在线 KEY 去碰离线池，
+    既掩盖真实失败原因，也让两条授权路径的语义互相污染。
 
-线程约束（与 _ConnectWorker 一致）：
-    网络请求与 susi_helper 子进程调用都在后台线程执行，
-    GUI 线程只负责界面更新。结果通过 Qt Signal（自动排队）回到 GUI 线程。
+    失败：在输入框下方显示简短错误，**保留用户输入**便于修正重试。
+    成功：切换到结果视图，展示真实状态 / 有效期 / 功能权限（有才显示），
+          并提供「开始使用」按钮。
+
+线程约束（与既有实现一致）：
+    网络请求与 susi_helper 子进程调用都在后台线程执行，结果经 Qt Signal
+    排队回到 GUI 线程；对话框自身不触碰任何生命周期方法。
 """
 
 import logging
@@ -19,9 +28,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
+    QWidget,
 )
 
+from gui import theme
 from gui.theme import Metrics, Palette
 from utils.license_manager import (
     STATUS_TEXT,
@@ -29,22 +41,39 @@ from utils.license_manager import (
     LicenseResult,
     LicenseStatus,
 )
+from utils.offline_activation import OFFLINE_KEYS, normalize_key
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.activation")
 
+_QSS = f"""
+QLabel {{ background: none; }}
+#actTitle {{ font-size: 16px; font-weight: 600; color: {Palette.TEXT}; }}
+#actHint {{ font-size: 12px; color: {Palette.TEXT_DIM}; }}
+#actError {{ font-size: 12px; color: {Palette.DANGER_TEXT}; }}
+#actState {{ font-size: 12px; color: {Palette.TEXT_DIM}; }}
+#actState[tone="ok"] {{ color: {Palette.OK_TEXT}; }}
+#actBig {{ font-size: 20px; font-weight: 600; color: {Palette.TEXT};
+           letter-spacing: 1px; }}
+#actMeta {{ font-size: 12px; color: {Palette.TEXT_DIM};
+            font-family: {Palette.MONO_FAMILY}; }}
+#actKey {{
+    background-color: {Palette.INPUT_BG};
+    border: 1px solid {Palette.BORDER};
+    border-radius: {Metrics.RADIUS}px;
+    padding: 8px 10px;
+    color: {Palette.TEXT};
+    font-family: {Palette.MONO_FAMILY};
+    font-size: 13px;
+}}
+#actKey:focus {{ border-color: {Palette.TEXT_DISABLED}; }}
+#actKey:disabled {{ background-color: {Palette.DISABLED_BG}; color: {Palette.TEXT_DISABLED}; }}
+"""
+
 
 class LicenseWorker:
-    """后台线程：执行一次许可证任务，不阻塞 GUI。
-
-    与 gui.main_window._ConnectWorker 相同的模式：线程内直接调用回调，
-    回调再 emit Qt Signal，由 Qt 排队投递回 GUI 线程。
-    """
+    """后台线程：执行一次许可证任务，不阻塞 GUI（与既有实现同构）。"""
 
     def __init__(self, task, on_done, name: str = "license-worker"):
-        """
-        :param task:    无参可调用对象，返回 LicenseResult
-        :param on_done: 完成回调，签名为 callback(result: LicenseResult)
-        """
         self._task = task
         self._on_done = on_done
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
@@ -58,18 +87,43 @@ class LicenseWorker:
     def _run(self):
         try:
             result = self._task()
-        except Exception as e:  # 兜底：任何异常都不能让线程静默死掉
+        except Exception as e:  # noqa: BLE001 - 任何异常都不能让线程静默死掉
             logger.exception("许可证任务异常")
-            result = LicenseResult(
-                LicenseStatus.ACTIVATION_FAILED, f"激活异常: {e}"
-            )
+            result = LicenseResult(LicenseStatus.ACTIVATION_FAILED, f"激活异常: {e}")
         self._on_done(result)
 
 
-class ActivationDialog(QDialog):
-    """许可证激活对话框。"""
+def dispatch_activation(manager: LicenseManager, license_key: str) -> LicenseResult:
+    """按 KEY 决定走在线还是离线（**唯一**分派入口，供弹窗与测试共用）。
 
-    # 跨线程安全 Signal：后台线程 → GUI 线程
+    规则来自现有授权实现：内置离线 KEY 池命中 → 离线；否则在线。
+    绝不在任何一条路径失败后再尝试另一条。
+    """
+    if normalize_key(license_key) in OFFLINE_KEYS:
+        logger.info("[LICENSE] 命中内置离线 KEY 池 → 走离线激活")
+        return manager.activate_offline(license_key)
+    logger.info("[LICENSE] 未命中离线池 → 走在线激活")
+    return manager.activate(license_key)
+
+
+def _format_expiry(result: LicenseResult) -> str:
+    """把签名凭据里的过期时间转成本地时区展示（只读，不做任何计算）。"""
+    expires = result.expires_at
+    if expires is None:
+        return "永久"
+    try:
+        return expires.astimezone().strftime("%Y-%m-%d %H:%M")
+    except Exception:  # noqa: BLE001 - 时区库缺失时退回 ISO 日期
+        return str(expires)[:16]
+
+
+class ActivationDialog(QDialog):
+    """统一的激活 / 追加授权弹窗。
+
+    Acrylic 只尝试一次（首次显示时），失败即保持 QSS 的不透明深色 —— 见
+    :func:`gui.theme.apply_dialog_acrylic`。它是纯视觉的，不改变任何授权行为。
+    """
+
     _activation_done_sig = Signal(object)
 
     def __init__(self, manager: LicenseManager, parent=None):
@@ -78,141 +132,178 @@ class ActivationDialog(QDialog):
         self._worker: LicenseWorker | None = None
         self._result: LicenseResult | None = None
 
-        self.setWindowTitle("激活许可证")
+        self.setWindowTitle("激活 LiveLens")
         self.setModal(True)
-        self.setFixedSize(420, 260)
+        self.setFixedSize(440, 300)
 
+        self._acrylic_done = False
         self._activation_done_sig.connect(self._on_activation_done)
-
         self._setup_ui()
-        self._show_current_status()
+        self._refresh_state_line()
+        self._key_input.setFocus()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        # 必须在有原生窗口句柄之后才能设 DWM 属性，因此放在 showEvent；
+        # 只试一次，失败就一直是不透明深色。
+        if not self._acrylic_done:
+            self._acrylic_done = True
+            if not theme.apply_dialog_acrylic(self):
+                logger.info("[UI] 激活弹窗 Acrylic 不可用，保持不透明深色")
 
     # ------------------------------------------------------------------
-    # 结果
+    # 对外接口（调用方只依赖这两个）
     # ------------------------------------------------------------------
     def result_data(self) -> LicenseResult | None:
-        """激活成功时的结果；未成功则为 None。"""
+        """本次成功激活的结果；未成功为 None（不改变任何本地状态）。"""
         return self._result
 
     # ------------------------------------------------------------------
     # UI
     # ------------------------------------------------------------------
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
+        self.setStyleSheet(_QSS)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 22, 24, 20)
+        outer.setSpacing(12)
 
-        # 内联样式只保留「这个对话框独有的排版」，颜色全部取自主题调色板，
-        # 避免这里和 QSS 各写一套十六进制以后互相漂移。
-        title = QLabel("激活许可证")
-        title.setStyleSheet(
-            f"QLabel {{ font-size: 15px; font-weight: 600;"
-            f" color: {Palette.TEXT}; background: none; }}"
-        )
-        layout.addWidget(title)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_input_page())
+        self._stack.addWidget(self._build_success_page())
+        outer.addWidget(self._stack, 1)
 
-        hint = QLabel("请输入许可证密钥，激活后凭据将保存在本机。")
+    def _build_input_page(self) -> QWidget:
+        page = QWidget()
+        col = QVBoxLayout(page)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(10)
+
+        title = QLabel("激活 LiveLens")
+        title.setObjectName("actTitle")
+        col.addWidget(title)
+
+        hint = QLabel("输入许可证密钥后点击「立即激活」。密钥与设备绑定，激活后凭据保存在本机。")
+        hint.setObjectName("actHint")
         hint.setWordWrap(True)
-        hint.setStyleSheet(
-            f"QLabel {{ font-size: 12px; color: {Palette.TEXT_DIM}; background: none; }}"
-        )
-        layout.addWidget(hint)
+        col.addWidget(hint)
+
+        self._state_label = QLabel()
+        self._state_label.setObjectName("actState")
+        self._state_label.setWordWrap(True)
+        col.addWidget(self._state_label)
 
         self._key_input = QLineEdit()
+        self._key_input.setObjectName("actKey")
         self._key_input.setPlaceholderText("许可证密钥")
-        self._key_input.setFixedHeight(36)
-        self._key_input.setStyleSheet(
-            f"""
-            QLineEdit {{
-                padding: 6px 10px;
-                border: 1px solid {Palette.BORDER};
-                border-radius: {Metrics.RADIUS}px;
-                background-color: {Palette.INPUT_BG};
-                color: {Palette.TEXT};
-                font-size: 13px;
-            }}
-            QLineEdit:focus {{ border-color: {Palette.ACCENT}; }}
-            QLineEdit:disabled {{
-                background-color: {Palette.DISABLED_BG};
-                color: {Palette.TEXT_DISABLED};
-            }}
-            """
-        )
+        self._key_input.setFixedHeight(38)
         self._key_input.returnPressed.connect(self._on_activate_clicked)
-        layout.addWidget(self._key_input)
+        self._key_input.textChanged.connect(self._clear_error)
+        col.addWidget(self._key_input)
 
-        self._status_label = QLabel()
-        self._status_label.setWordWrap(True)
-        self._status_label.setStyleSheet(
-            f"QLabel {{ font-size: 12px; color: {Palette.TEXT_DIM}; background: none; }}"
-        )
-        layout.addWidget(self._status_label)
+        self._error_label = QLabel("")
+        self._error_label.setObjectName("actError")
+        self._error_label.setWordWrap(True)
+        col.addWidget(self._error_label)
 
-        layout.addStretch()
+        col.addStretch(1)
 
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(12)
-
-        # 主 / 次按钮直接复用主题里的按钮样式（variant=primary 即强调色）
-        self._activate_btn = QPushButton("激活")
-        self._activate_btn.setFixedHeight(36)
-        self._activate_btn.setProperty("variant", "primary")
-        self._activate_btn.setMinimumWidth(96)
-        self._activate_btn.clicked.connect(self._on_activate_clicked)
-
-        self._close_btn = QPushButton("关闭")
-        self._close_btn.setFixedHeight(36)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addStretch(1)
+        self._close_btn = QPushButton("稍后再说")
+        self._close_btn.setFixedHeight(34)
         self._close_btn.setMinimumWidth(96)
         self._close_btn.clicked.connect(self.reject)
+        row.addWidget(self._close_btn)
 
-        button_layout.addStretch()
-        button_layout.addWidget(self._activate_btn)
-        button_layout.addWidget(self._close_btn)
-        layout.addLayout(button_layout)
+        self._activate_btn = QPushButton("立即激活")
+        self._activate_btn.setFixedHeight(34)
+        self._activate_btn.setMinimumWidth(120)
+        self._activate_btn.setProperty("variant", "primary")
+        self._activate_btn.clicked.connect(self._on_activate_clicked)
+        row.addWidget(self._activate_btn)
+        col.addLayout(row)
+        return page
 
-    def _show_current_status(self):
-        """打开对话框时显示当前已知状态。"""
+    def _build_success_page(self) -> QWidget:
+        page = QWidget()
+        col = QVBoxLayout(page)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(10)
+
+        self._ok_label = QLabel("已激活")
+        self._ok_label.setObjectName("actBig")
+        col.addWidget(self._ok_label)
+
+        self._expiry_label = QLabel()
+        self._expiry_label.setObjectName("actMeta")
+        self._expiry_label.setWordWrap(True)
+        col.addWidget(self._expiry_label)
+
+        # 功能权限只在凭据里真的有 features 时显示（不虚构授权信息）
+        self._features_label = QLabel()
+        self._features_label.setObjectName("actMeta")
+        self._features_label.setWordWrap(True)
+        col.addWidget(self._features_label)
+
+        col.addStretch(1)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._start_btn = QPushButton("开始使用")
+        self._start_btn.setFixedHeight(34)
+        self._start_btn.setMinimumWidth(120)
+        self._start_btn.setProperty("variant", "primary")
+        self._start_btn.clicked.connect(self.accept)
+        row.addWidget(self._start_btn)
+        col.addLayout(row)
+        return page
+
+    # ------------------------------------------------------------------
+    # 状态 / 交互
+    # ------------------------------------------------------------------
+    def _refresh_state_line(self):
+        """展示**真实**的当前授权状态（读取既有结果，不做任何推断）。"""
         current = self._manager.last_result
         if current is not None and current.status is LicenseStatus.ACTIVATED:
-            self._set_status(f"当前状态：{current.display_text}", ok=True)
+            self._state_label.setText(
+                f"当前状态：{current.display_text} · 有效期至 {_format_expiry(current)}"
+            )
+            self._state_label.setProperty("tone", "ok")
+        elif current is not None and current.status is not LicenseStatus.NOT_ACTIVATED:
+            self._state_label.setText(f"当前状态：{current.display_text}")
+            self._state_label.setProperty("tone", "")
         else:
-            self._set_status("当前状态：未激活")
+            self._state_label.setText("当前状态：未激活")
+            self._state_label.setProperty("tone", "")
+        self._state_label.style().unpolish(self._state_label)
+        self._state_label.style().polish(self._state_label)
 
-    def _set_status(self, text: str, ok: bool | None = None):
-        color = Palette.TEXT_DIM
-        if ok is True:
-            color = Palette.OK_TEXT
-        elif ok is False:
-            color = Palette.DANGER_TEXT
-        self._status_label.setStyleSheet(
-            f"QLabel {{ font-size: 12px; color: {color}; background: none; }}"
-        )
-        self._status_label.setText(text)
+    def _clear_error(self):
+        if self._error_label.text():
+            self._error_label.setText("")
 
-    # ------------------------------------------------------------------
-    # 交互
-    # ------------------------------------------------------------------
     def _set_busy(self, busy: bool):
         self._key_input.setEnabled(not busy)
         self._activate_btn.setEnabled(not busy)
         self._close_btn.setEnabled(not busy)
-        self._activate_btn.setText("激活中..." if busy else "激活")
+        self._activate_btn.setText("激活中…" if busy else "立即激活")
+        self.setCursor(Qt.BusyCursor if busy else Qt.ArrowCursor)
 
     def _on_activate_clicked(self):
+        # 重复点击保护：任务在飞时直接忽略（后台同样有锁兜底）
         if self._worker is not None and self._worker.is_running():
             return
 
         license_key = self._key_input.text().strip()
         if not license_key:
-            self._set_status("请输入许可证密钥", ok=False)
+            self._error_label.setText("请输入许可证密钥")
             return
 
         self._set_busy(True)
-        self._set_status("正在激活，请稍候...")
-
-        # 网络请求 + 子进程验证全部在后台线程完成
+        self._error_label.setText("")
         self._worker = LicenseWorker(
-            task=lambda: self._manager.activate(license_key),
+            task=lambda: dispatch_activation(self._manager, license_key),
             on_done=self._activation_done_sig.emit,
         )
         self._worker.start()
@@ -223,15 +314,22 @@ class ActivationDialog(QDialog):
 
         if result.is_activated:
             self._result = result
-            self._key_input.clear()
             self._key_input.setEnabled(False)
-            self._activate_btn.setEnabled(False)
-            self._activate_btn.setText("已激活")
-            self._set_status(f"激活成功：{result.display_text}", ok=True)
+            self._ok_label.setText(result.display_text)
+            self._expiry_label.setText(f"有效期至 {_format_expiry(result)}")
+            features = sorted(result.features) if result.features else []
+            self._features_label.setText(
+                "功能权限：" + "、".join(features) if features else ""
+            )
+            self._stack.setCurrentIndex(1)
+            self._start_btn.setFocus()
             return
 
-        # 失败：保持对话框打开，用户可以修正密钥后重试
+        # 失败：留在输入页，保留用户输入，只在下方给出行内错误
         self._result = None
         detail = STATUS_TEXT.get(result.status, "激活失败")
-        message = f"{detail}：{result.message}" if result.message else detail
-        self._set_status(message, ok=False)
+        self._error_label.setText(
+            f"{detail}：{result.message}" if result.message else detail
+        )
+        self._refresh_state_line()
+        self._key_input.setFocus()

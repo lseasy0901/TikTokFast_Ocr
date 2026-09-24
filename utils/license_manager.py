@@ -43,6 +43,14 @@ from utils.license_client import (
     LicenseServerError,
 )
 from utils.license_store import LicenseStore
+from utils.offline_activation import (
+    OFFLINE_KEYS,
+    TEXT_INVALID_KEY,
+    TEXT_KEY_USED,
+    OfflineActivation,
+    duration_text,
+    normalize_key,
+)
 from utils.susi_verifier import (
     SusiVerifier,
     SusiVerifierError,
@@ -130,6 +138,11 @@ class LicenseManager:
         self.server_url = resolve_server_url(server_url)
         self.store = store or LicenseStore()
 
+        # 临时离线灾备（见 utils/offline_activation.py）。
+        # 刻意复用 store.data_dir，这样调用方注入 store 时离线状态也被一起隔离。
+        # 本功能整体可删：删掉这一行与下面两个分支即可。
+        self.offline = OfflineActivation(self.store.data_dir)
+
         if verifier is None:
             public_key = resolve_public_key(extra_dirs=[self.store.data_dir])
             verifier = SusiVerifier(public_key_pem=public_key)
@@ -215,6 +228,67 @@ class LicenseManager:
 
         return result
 
+    # ------------------------------------------------------------------
+    # 临时离线灾备激活（可整体删除）
+    # ------------------------------------------------------------------
+    def activate_offline(self, license_key: str) -> LicenseResult:
+        """用内置离线 KEY 完成一次本地授权，全程不联网。
+
+        与在线 activate() 的语义差异：这里没有服务器裁决，也没有签名凭据，
+        到期时间由本地在激活时刻当场算出（1 天 = 24 小时，30 天 = 720 小时），
+        并且**覆盖**当前授权而不是累加。
+
+        顺序是硬要求，不可调换：
+            校验 KEY → 查本机消费记录 → 写离线授权 → 确认写入成功 → 消费 KEY
+
+        任何一步在「写离线授权」之前或之中失败，KEY 都不会被消费；
+        无效 KEY 也绝不会触碰已有授权状态。
+        """
+        if not self._activation_lock.acquire(blocking=False):
+            return LicenseResult(
+                LicenseStatus.ACTIVATION_FAILED, "正在激活中，请稍候"
+            )
+        try:
+            return self._activate_offline_locked(license_key)
+        finally:
+            self._activation_lock.release()
+
+    def _activate_offline_locked(self, license_key: str) -> LicenseResult:
+        normalized = normalize_key(license_key)
+
+        # 1) 必须属于内置 KEY 池
+        duration_hours = OFFLINE_KEYS.get(normalized)
+        if duration_hours is None:
+            return LicenseResult(LicenseStatus.INVALID, TEXT_INVALID_KEY)
+
+        # 2) 同一台电脑不能重复使用同一个 KEY
+        if self.offline.is_used(normalized):
+            return LicenseResult(LicenseStatus.INVALID, TEXT_KEY_USED)
+
+        # 3) 先建立授权 —— 失败则直接返回，KEY 保持未消费
+        try:
+            expires_at = self.offline.save_license(duration_hours)
+        except OSError as e:
+            logger.error("写入离线授权失败: %s", e)
+            return LicenseResult(
+                LicenseStatus.ACTIVATION_FAILED, f"无法保存离线授权: {e}"
+            )
+
+        # 4) 授权已成立，此时才消费 KEY
+        try:
+            self.offline.mark_used(normalized, duration_hours)
+        except OSError as e:
+            # 授权已经可用，不回滚：宁可少记一次消费，也不让用户失去授权
+            logger.warning("离线 KEY 消费记录写入失败（授权已生效）: %s", e)
+
+        result = LicenseResult(
+            LicenseStatus.ACTIVATED,
+            f"离线激活成功，有效期 {duration_text(duration_hours)}",
+            expires_at=expires_at,
+        )
+        self.last_result = result
+        return result
+
     @staticmethod
     def _result_from_server_error(error: LicenseServerError) -> LicenseResult:
         """服务器错误 → 客户端状态。"""
@@ -276,7 +350,22 @@ class LicenseManager:
     # 启动恢复
     # ------------------------------------------------------------------
     def load_stored(self) -> LicenseResult:
-        """启动时加载并本地验证已保存的许可证。"""
+        """启动时加载并本地验证已保存的许可证。
+
+        临时离线灾备：本机存在未过期的离线授权时优先采用它（离线激活按设计
+        覆盖既有授权）。离线授权过期或不存在时，继续走原有的签名凭据验证，
+        在线授权完全不受影响。
+        """
+        offline_expires = self.offline.load_license()
+        if offline_expires is not None:
+            result = LicenseResult(
+                LicenseStatus.ACTIVATED,
+                "离线授权有效",
+                expires_at=offline_expires,
+            )
+            self.last_result = result
+            return result
+
         record = self.store.load()
         if not record:
             result = LicenseResult(LicenseStatus.NOT_ACTIVATED, "尚未激活许可证")
