@@ -38,18 +38,21 @@
 """
 
 import logging
+import os
 import threading
 import time
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
 from PySide6.QtCore import (QEvent, QEasingCurve, QObject,
-                             QPropertyAnimation, QTimer, Qt, Signal)
+                             QPropertyAnimation, QStandardPaths, QTimer, Qt, Signal)
 from PySide6.QtGui import QAction, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -121,7 +124,10 @@ from ocr.roi_manager import ROI, ROIManager
 from ocr.roi_selector import ROISelector
 from ocr.worker import OCRWorker
 from ocr.clipboard import ClipboardManager
-from ocr.profiles import DELTA_FORCE, VALORANT, get_profile
+from ocr.copy_log import CopyLog
+from ocr.diagnostics import OCRDiagnostics
+from ocr.sample_capture import SampleCapture
+from ocr.profiles import game_profiles, get_profile
 from utils.stream_history import StreamHistory
 from utils.first_run import FirstRunStore
 from utils.startup_timing import (
@@ -295,18 +301,22 @@ class _FrameBridge:
 # 主窗口
 # ======================================================================
 #: 游戏选择器里的可选项：(profile_id, 界面短名)。
+#:
+#: 直接由 ocr/profiles.py 的注册表派生，不在 GUI 里再手写一份——两份清单
+#: 各自维护时，新增一款游戏很容易只改一边（注册了档位却选不到，或者反过来）。
+#: 界面短名来自 GameProfile.short_name，与游戏配置同处一地。
+#:
 #: 只暴露具体游戏——"auto" 仅作为内部默认档保留，不出现在 UI 上，
-#: 因为用户显式选择某一款游戏才能消除 6 位/7 位的长度歧义。
-OCR_GAME_CHOICES = (
-    (DELTA_FORCE.profile_id, "三角洲行动"),
-    (VALORANT.profile_id, "无畏契约"),
+#: 因为用户显式选择某一款游戏才能消除不同位数之间的长度歧义。
+OCR_GAME_CHOICES = tuple(
+    (profile.profile_id, profile.short_name) for profile in game_profiles()
 )
 
 #: profile_id → 界面短名（左栏场景列表与右栏下拉框共用同一份文案）
 GAME_LABELS = dict(OCR_GAME_CHOICES)
 
-#: 默认游戏档（与 OCR_GAME_CHOICES[0] 一致）
-DEFAULT_OCR_GAME_PROFILE_ID = DELTA_FORCE.profile_id
+#: 默认游戏档（= 注册表里的第一款游戏）
+DEFAULT_OCR_GAME_PROFILE_ID = OCR_GAME_CHOICES[0][0]
 
 #: OCR 检测到「游戏选错了」时给用户看的固定文案。
 #: 只说明需要重新选择，不含任何技术细节（不出现位数、格式名、档位名，
@@ -500,6 +510,19 @@ class MainWindow(QMainWindow):
         # 当前选择的游戏档（OCRWorker 构造/切换时使用）
         self._ocr_profile_id: str = DEFAULT_OCR_GAME_PROFILE_ID
         self._clipboard_manager: ClipboardManager = ClipboardManager()
+        # 成功复制的房间码流水（内存内、只追加），仅供「导出 CSV」使用。
+        # 与右栏的 _session_list 是两回事：那是给人看的、带去重与 50 行上限的
+        # 显示历史，会丢事件；这份是事件账，每次成功复制都各记一条。
+        self._copy_log: CopyLog = CopyLog()
+        # OCR 诊断日志（默认关闭）。同一个实例交给 OCRWorker / 识别器使用：
+        # 识别线程往里写执行记录，GUI 线程回填复制结果，内部自带锁。
+        # 关闭时它不建记录、不占内存，也不会有任何文件写入。
+        self._diagnostics: OCRDiagnostics = OCRDiagnostics()
+        # ROI 样本采集（默认关闭）：把识别器真正看到的那一帧像素存下来，
+        # 供离线基准重跑真实引擎。落盘目录按进程时间戳分一次，
+        # 避免多次运行互相覆盖；目录在第一个样本落盘时才真正创建。
+        self._sample_capture: SampleCapture = SampleCapture(
+            self._default_sample_dir())
         self._stream_history: StreamHistory = StreamHistory()
 
         # 首次启动状态。构造只读一个本地文件（容错，失败按默认值处理），
@@ -958,7 +981,101 @@ class MainWindow(QMainWindow):
         # ---- 2) 本次会话识别历史 ----
         # 列表是可伸缩的那一块：面板里真正需要"余量"的只有历史，
         # 让它吃掉剩余高度，中段就不会再出现一条死的空白带（Phase UI-3.1）。
-        col.addWidget(self._section_label("本次会话"))
+        #
+        # 标题行用 QWidget 容器承载（与下方「识别区域」同样的做法）：
+        # 一个只被 Python 局部变量持有的无父 QHBoxLayout 会让解释器在 GC
+        # 阶段踩坏堆，详见「识别区域」那段的说明。
+        session_head = QWidget()
+        session_head_row = QHBoxLayout(session_head)
+        session_head_row.setContentsMargins(0, 0, 0, 0)
+        session_head_row.setSpacing(6)
+        session_head_row.addWidget(self._section_label("本次会话"))
+        session_head_row.addStretch(1)
+
+        # 「导出 CSV」：导出的是上面这份显示历史**背后的**流水 ——
+        # 每一次成功复制各一条（含重复复制的同一房间码），不受去重与
+        # 50 行上限影响，因此 tooltip 必须说清楚，别让人以为导出的就是所见列表。
+        self._export_csv_btn = QPushButton("导出 CSV", session_head)
+        self._export_csv_btn.setObjectName("sectionAction")
+        self._export_csv_btn.setCursor(Qt.PointingHandCursor)
+        self._export_csv_btn.setFocusPolicy(Qt.NoFocus)
+        self._export_csv_btn.setToolTip(
+            "导出本次运行中每一次成功复制的房间码（同一房间码重复复制也各记一条）")
+        self._export_csv_btn.clicked.connect(self._on_export_csv_clicked)
+        session_head_row.addWidget(self._export_csv_btn)
+        col.addWidget(session_head)
+
+        # 诊断开关与导出（默认关闭）。与上面的「导出 CSV」同一套 #sectionAction
+        # 小按钮样式，不再引入新的控件样式；两者都只动日志，不动识别。
+        diag_row = QWidget()
+        diag_row_layout = QHBoxLayout(diag_row)
+        diag_row_layout.setContentsMargins(0, 0, 0, 0)
+        diag_row_layout.setSpacing(6)
+
+        self._diag_btn = QPushButton("开始诊断", diag_row)
+        self._diag_btn.setObjectName("sectionAction")
+        self._diag_btn.setCursor(Qt.PointingHandCursor)
+        self._diag_btn.setFocusPolicy(Qt.NoFocus)
+        self._diag_btn.setToolTip(
+            "开启后记录每一次 OCR 执行的诊断信息（各 PSM 原始读法、候选、裁决、"
+            "确认与复制结果）；只记录，不改变识别行为。默认关闭，记录只留在内存里。")
+        self._diag_btn.clicked.connect(self._on_diag_toggled)
+        diag_row_layout.addWidget(self._diag_btn)
+
+        self._diag_export_btn = QPushButton("导出诊断 CSV", diag_row)
+        self._diag_export_btn.setObjectName("sectionAction")
+        self._diag_export_btn.setCursor(Qt.PointingHandCursor)
+        self._diag_export_btn.setFocusPolicy(Qt.NoFocus)
+        self._diag_export_btn.setToolTip("把诊断记录导出为 CSV（与房间码记录 CSV 分开的两份文件）")
+        self._diag_export_btn.clicked.connect(self._on_export_diagnostics_clicked)
+        diag_row_layout.addWidget(self._diag_export_btn)
+        diag_row_layout.addStretch(1)
+        col.addWidget(diag_row)
+
+        # 「全 PSM 观测」（默认不勾选）：只有诊断开启时才可勾选，识别运行期间
+        # 锁定。勾上后，本来会提前停止的那一帧会继续跑完 PSM 7/11，把它们的原始
+        # 读法也写进诊断 CSV；补跑结果【只进诊断】，不参与仲裁 / 游戏冲突判定 /
+        # 时序确认 / 剪贴板，因此复制结果与不勾选时完全一致。
+        obs_row = QWidget()
+        obs_row_layout = QHBoxLayout(obs_row)
+        obs_row_layout.setContentsMargins(0, 0, 0, 0)
+        obs_row_layout.setSpacing(6)
+
+        self._diag_obs_check = QCheckBox("全 PSM 观测", obs_row)
+        self._diag_obs_check.setCursor(Qt.PointingHandCursor)
+        self._diag_obs_check.setFocusPolicy(Qt.NoFocus)
+        self._diag_obs_check.setToolTip(
+            "连同 PSM 7/11 的读法一起记进诊断 CSV（默认不勾选）。\n"
+            "需要先点「开始诊断」；识别运行期间不可更改，停止后恢复。\n"
+            "补跑的读法只用于诊断，不参与仲裁、游戏冲突判定、连续确认与复制。")
+        self._diag_obs_check.toggled.connect(self._on_diag_observe_toggled)
+        obs_row_layout.addWidget(self._diag_obs_check)
+        obs_row_layout.addStretch(1)
+        col.addWidget(obs_row)
+
+        # 「采集 ROI 样本」（默认不勾选）：把识别器真正看到的那一帧像素存到
+        # 文档目录，供离线基准用真实引擎重跑。与诊断开关相互独立 ——
+        # 采集只落盘、不判定，也不依赖诊断。
+        cap_row = QWidget()
+        cap_row_layout = QHBoxLayout(cap_row)
+        cap_row_layout.setContentsMargins(0, 0, 0, 0)
+        cap_row_layout.setSpacing(6)
+
+        self._diag_capture_check = QCheckBox("采集 ROI 样本", cap_row)
+        self._diag_capture_check.setCursor(Qt.PointingHandCursor)
+        self._diag_capture_check.setFocusPolicy(Qt.NoFocus)
+        self._diag_capture_check.setToolTip(
+            "把识别器看到的那一帧 ROI 原图存到「文档/LiveLens-OCR样本」（默认不勾选）。\n"
+            "供离线准确率基准用真实 OCR 引擎重跑；有数量与磁盘上限，采满即停。\n"
+            "只落盘，不参与识别判定，也不影响复制结果。")
+        self._diag_capture_check.toggled.connect(self._on_sample_capture_toggled)
+        cap_row_layout.addWidget(self._diag_capture_check)
+        cap_row_layout.addStretch(1)
+        col.addWidget(cap_row)
+
+        # 初始状态：诊断默认关闭 -> 观测不可勾选
+        self._update_diag_controls()
+
         self._session_list = QListWidget()
         self._session_list.setObjectName("sessionList")
         self._session_list.setFrameShape(QFrame.NoFrame)
@@ -1271,6 +1388,10 @@ class MainWindow(QMainWindow):
         只有复制成功才会走到这里 —— 未经确认的 OCR 读数不算"拿到过房间号"，
         记进历史会让用户以为那个号码已经被采用过。写入点在
         :meth:`_on_copy_requested` 的成功分支，不在 OCR 文本回调里。
+
+        这里只是**给人看的**显示历史：连续重复的房间码折叠成一行、最多 50 行，
+        因此它不完整。导出（:meth:`_on_export_csv_clicked`）用的不是它，
+        而是同一事件另一侧的 :attr:`_copy_log` —— 别把两者合并。
         """
         if not code or getattr(self, "_session_list", None) is None:
             return
@@ -1309,6 +1430,193 @@ class MainWindow(QMainWindow):
             self._session_list.clear()
             self._session_placeholder = False
             self._show_session_placeholder()
+
+    # ------------------------------------------------------------------
+    # 房间码流水导出（CSV）
+    # ------------------------------------------------------------------
+    def _on_export_csv_clicked(self) -> None:
+        """把本次运行中【每一次成功复制】的房间码导出成 CSV。
+
+        导出的是 :attr:`_copy_log`（事件流水），不是右栏那份去重后的显示历史。
+        导出**不清空也不改动**记录：可以反复导出，每次内容只取决于当时的记录。
+        无记录时只提示，不打开保存对话框 —— 先让人选路径再告诉人没东西可存，
+        顺序是反的。
+        """
+        if not self._copy_log:
+            QMessageBox.information(
+                self, "导出 CSV", "本次运行还没有成功复制过房间码，暂无可导出的记录。")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出房间码记录", self._default_export_path("LiveLens-房间码"),
+            "CSV 文件 (*.csv)")
+
+        if not path:
+            # 用户取消：记录原样保留，状态栏也不改（这不是一次失败）
+            logger.info("[COPY-LOG] 用户取消导出")
+            return
+
+        if not path.lower().endswith(".csv"):
+            # 手输文件名时不一定自动补后缀，缺了后缀 Excel 双击认不出来
+            path += ".csv"
+
+        try:
+            count = self._copy_log.export_csv(path)
+        except OSError as exc:
+            logger.error("[COPY-LOG] 导出失败: %s", exc)
+            QMessageBox.warning(self, "导出 CSV", f"导出失败：{exc}")
+            return
+
+        logger.info("[COPY-LOG] 导出成功: %d 条 -> %s", count, path)
+        self.statusBar().showMessage(f"已导出 {count} 条房间码记录：{path}")
+
+    def _default_export_path(self, name_prefix: str) -> str:
+        """导出对话框的默认文件名（``<前缀>-<时间戳>.csv``），落在用户的文档目录。
+
+        两份导出（房间码记录 / OCR 诊断）共用这一段，只有前缀不同——
+        文件名里带用途前缀，用户一眼能分清哪个文件是哪个。
+
+        不从当前工作目录起手：打包后那可能是安装目录（往往不可写），
+        让用户在一个存不进去的地方开始选路径是很差的默认。
+        """
+        base = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DocumentsLocation)
+        if not base:
+            base = os.path.expanduser("~")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return os.path.join(base, f"{name_prefix}-{stamp}.csv")
+
+    @staticmethod
+    def _default_sample_dir() -> str:
+        """ROI 样本的落盘目录：``<文档>/LiveLens-OCR样本/<时间戳>``。
+
+        与导出 CSV 用同一个可写位置（打包后仓库目录可能是只读的），
+        但**不加文件后缀**：这是一个目录。
+        """
+        base = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DocumentsLocation)
+        if not base:
+            base = os.path.expanduser("~")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return os.path.join(base, "LiveLens-OCR样本", stamp)
+
+    # ------------------------------------------------------------------
+    # OCR 诊断日志（默认关闭）
+    # ------------------------------------------------------------------
+    def _on_diag_toggled(self) -> None:
+        """开启 / 关闭诊断记录。
+
+        只切换记录与否，不动 OCR 的任何规则、间隔或线程：开关本身不重启 OCR，
+        开启后**接下来**的执行才被记录，已有记录一律保留。
+        """
+        enabled = not self._diagnostics.enabled
+        self._diagnostics.set_enabled(enabled)
+        self._diag_btn.setText("停止诊断" if enabled else "开始诊断")
+        if not enabled and self._diag_obs_check.isChecked():
+            # 诊断关了就无从「看」起：同步清掉勾选，避免界面显示与实际行为
+            # 不一致（识别器那边同样会因为记录器关闭而停止补跑）。
+            # 用 blockSignals 抑制重入，勾选状态由这里独占改写。
+            self._diag_obs_check.blockSignals(True)
+            self._diag_obs_check.setChecked(False)
+            self._diag_obs_check.blockSignals(False)
+        self._update_diag_controls()
+        if enabled:
+            self.statusBar().showMessage(
+                "OCR 诊断日志已开启（只记录，不影响识别）：可从右栏「导出诊断 CSV」导出")
+        else:
+            self.statusBar().showMessage("OCR 诊断日志已关闭，已记录的内容仍可导出")
+        logger.info("[DIAG] 诊断记录已%s", "开启" if enabled else "关闭")
+
+    def _on_diag_observe_toggled(self, checked: bool) -> None:
+        """「全 PSM 观测」勾选变化。
+
+        只决定「下一次开始识别时，识别器要不要补跑其余的 PSM」。识别器在
+        构造时取值，所以改动对**正在运行**的那一轮不生效 —— 运行期间锁定该
+        复选框（见 _update_diag_controls），改动一律走「停止 → 改 → 重新开始」。
+        """
+        if checked and not self._diagnostics.enabled:
+            # 未开诊断时复选框本就是禁用的，这里只是兜底：不接受该状态。
+            self._diag_obs_check.blockSignals(True)
+            self._diag_obs_check.setChecked(False)
+            self._diag_obs_check.blockSignals(False)
+            return
+        logger.info("[DIAG] 全 PSM 观测已%s", "开启" if checked else "关闭")
+        if checked:
+            self.statusBar().showMessage(
+                "全 PSM 观测已开启：下次开始识别起生效（补跑的读法只进诊断，"
+                "不影响识别与复制）")
+        else:
+            self.statusBar().showMessage("全 PSM 观测已关闭")
+
+    def _on_sample_capture_toggled(self, checked: bool) -> None:
+        """「采集 ROI 样本」勾选变化。
+
+        采集是在识别线程里按帧判断开关的，因此这里改了**立刻生效**，
+        不需要重启 OCR，也不会改变任何识别结果与复制行为。
+        """
+        self._sample_capture.set_enabled(checked)
+        logger.info("[CAPTURE] ROI 样本采集已%s", "开启" if checked else "关闭")
+        if checked:
+            self.statusBar().showMessage(
+                f"开始采集 ROI 样本（上限 {self._sample_capture.max_samples} 张）："
+                f"{self._sample_capture.directory}")
+        else:
+            self.statusBar().showMessage(self._sample_capture.summary())
+
+    def _update_diag_controls(self) -> None:
+        """诊断相关控件的可用性。
+
+        规则（与产品约定一致）：
+            - 只有诊断开启时才允许勾选「全 PSM 观测」；
+            - 识别运行期间一律锁定，停止后恢复。
+        只改可用性，不动勾选状态本身：勾选状态是用户的意图，由用户自己
+        （或在关闭诊断时由 _on_diag_toggled）清除。
+        """
+        self._diag_obs_check.setEnabled(
+            self._diagnostics.enabled and not self._ocr_running
+        )
+
+    def _on_export_diagnostics_clicked(self) -> None:
+        """导出 OCR 诊断日志 CSV（与房间码记录 CSV 完全分开的两份文件）。
+
+        与房间码导出一样：导出不清空、不改动记录，可反复导出；
+        没有记录时只提示，不打开保存对话框。
+        """
+        if not self._diagnostics:
+            QMessageBox.information(
+                self, "导出诊断 CSV",
+                "本次运行还没有诊断记录。诊断默认关闭，请先点「开始诊断」，"
+                "再让 OCR 跑一会儿。")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 OCR 诊断日志", self._default_export_path("LiveLens-OCR诊断"),
+            "CSV 文件 (*.csv)")
+
+        if not path:
+            logger.info("[DIAG] 用户取消导出诊断")
+            return
+
+        if not path.lower().endswith(".csv"):
+            # 手输文件名时不一定自动补后缀，缺了后缀 Excel 双击认不出来
+            path += ".csv"
+
+        try:
+            count = self._diagnostics.export_csv(path)
+        except OSError as exc:
+            logger.error("[DIAG] 导出失败: %s", exc)
+            QMessageBox.warning(self, "导出诊断 CSV", f"导出失败：{exc}")
+            return
+
+        logger.info("[DIAG] 导出成功: %d 条 -> %s", count, path)
+        # 记录有上限（默认 30000 条），溢出时丢的是【最早】的记录。
+        # 这里如实告知丢了多少 —— 不能让用户以为 CSV 就是完整的一段。
+        dropped = self._diagnostics.dropped
+        if dropped:
+            self.statusBar().showMessage(
+                f"已导出 {count} 条诊断记录（因内存上限已丢弃最早的 {dropped} 条）：{path}")
+        else:
+            self.statusBar().showMessage(f"已导出 {count} 条诊断记录：{path}")
 
 
     # ------------------------------------------------------------------
@@ -2249,12 +2557,17 @@ class MainWindow(QMainWindow):
 
         logger.info("[OCR] Starting OCR recognition")
 
-        # 创建 OCR 工作线程（带上当前选择的游戏档）
+        # 创建 OCR 工作线程（带上当前选择的游戏档）。
+        # 观测开关每次都从复选框现读：每轮识别都是新建 worker + 新建识别器，
+        # 因此「停止 → 取消勾选 → 重新开始」不会残留上一轮的观测状态。
         self._ocr_worker = OCRWorker(
             frame_buffer_getter=lambda: self._frame_buffer,
             roi_manager=self._roi_manager,
             interval_ms=300,
             profile=self._ocr_profile_id,
+            diagnostics=self._diagnostics,
+            observe_all_psm=self._diag_obs_check.isChecked(),
+            sample_capture=self._sample_capture,
         )
 
         # 连接信号
@@ -2279,6 +2592,9 @@ class MainWindow(QMainWindow):
         self._ocr_btn.setText("开始OCR")
         self._set_ocr_state(False)
         self._sync_ocr_button_variant()
+        # 单独再解锁一次：即便 finished 信号没到（停止路径异常），
+        # 「全 PSM 观测」也必须恢复可编辑，不能永久留在锁定态。
+        self._update_diag_controls()
         self.statusBar().showMessage("OCR 识别已停止")
 
     def _on_ocr_started(self):
@@ -2287,6 +2603,7 @@ class MainWindow(QMainWindow):
         self._ocr_btn.setText("识别中")
         self._set_ocr_state(True)
         self._sync_ocr_button_variant()
+        self._update_diag_controls()          # 运行期间锁定「全 PSM 观测」
         self.statusBar().showMessage("OCR 识别已启动")
 
         # 第四步聚光灯：用户真的把 OCR 跑起来了，引导随之完成。
@@ -2301,6 +2618,7 @@ class MainWindow(QMainWindow):
         self._ocr_btn.setText("开始OCR")
         self._set_ocr_state(False)
         self._sync_ocr_button_variant()
+        self._update_diag_controls()          # 停止后恢复可编辑
 
     def _on_ocr_text_updated(self, text: str):
         """OCR 文本更新回调。
@@ -2353,11 +2671,25 @@ class MainWindow(QMainWindow):
             self._clipboard_chip_timer.start(2000)
             # 只有真正写进剪贴板的房间号才算"本次会话拿到过"，记入右栏历史
             self._add_session_code(text)
+            # 同一次事件也记进导出用的流水。这里是**唯一**的写入点：
+            # 复制失败、未确认的读数都走不到这一行，所以 CSV 必然只反映
+            # 实际发生的复制。两个记录刻意分开 —— 右栏历史会去重、有上限，
+            # 用它当导出源会丢事件。
+            self._copy_log.record(text)
+            # 诊断：把"真的写进剪贴板了"回填给请求它的那次 OCR 执行。
+            self._diagnostics.note_copy_success(text)
         else:
             logger.error("[CLIPBOARD] copy failed reason: %s", self._clipboard_manager.last_error or "unknown")
             self._set_chip(self._lbl_clipboard, "剪贴板 ✕", "error", dot=True)
             self._clipboard_chip_timer.start(2000)
             self.statusBar().showMessage(f"复制失败: {self._clipboard_manager.last_error or '未知错误'}")
+            # 诊断：区分「写入失败」（有错误信息）与「被剪贴板去重过滤」
+            # （没有错误信息）—— 后者并没有写进剪贴板，不能算成功。
+            if self._clipboard_manager.last_error:
+                self._diagnostics.note_copy_failure(
+                    text, self._clipboard_manager.last_error)
+            else:
+                self._diagnostics.note_copy_skipped(text)
 
     def _show_copy_feedback(self, text: str):
         """显示复制成功反馈"""

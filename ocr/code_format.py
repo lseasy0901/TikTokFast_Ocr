@@ -133,6 +133,22 @@ class CodeFormat:
         return len(self._positions)
 
     @property
+    def letter_prefix_length(self) -> int:
+        """开头连续字母位的个数：'LLLDDDD' -> 3，'LLLLDDDD' -> 4。
+
+        纠正层用它决定"最多允许纠正几位"：实测的失败模式是 Tesseract 把整段
+        字母前缀读成数字形字符（'IOI1000' -> '1011000'），前缀有多长就必须
+        允许纠正多少位。由格式自己回答这个问题，纠正层就不必再假设"前缀
+        一定是 3 位"。
+        """
+        count = 0
+        for pos in self._positions:
+            if pos is not CharClass.LETTER:
+                break
+            count += 1
+        return count
+
+    @property
     def regex(self) -> str:
         """派生正则（只读视图，校验不使用它）。"""
         return self._regex.pattern

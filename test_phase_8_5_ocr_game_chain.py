@@ -14,7 +14,7 @@ Phase 8.5: 游戏选择 -> OCR 全链路 回归测试
         -> copy_requested（GUI 侧据此写剪贴板）
 
 覆盖：
-    [1] 界面只提供两款具体游戏，各自落到不同的真实档位（无 auto）
+    [1] 界面只提供具体游戏，各自落到不同的真实档位（无 auto）
     [2] 选“三角洲行动”：7 位码经时序确认后成立并触发一次复制
     [3] 选“无畏契约”：6 位码走自己的格式/纠正规则后成立
     [4] 规则隔离：另一款游戏的房间号在本次选择下【永不成立】
@@ -46,7 +46,14 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import gui.main_window as mw  # noqa: E402
 import ocr.worker as worker_mod  # noqa: E402
-from ocr.profiles import AUTO, DELTA_FORCE, PROFILES, VALORANT, get_profile  # noqa: E402
+from ocr.profiles import (  # noqa: E402
+    AUTO,
+    DELTA_FORCE,
+    PROFILES,
+    VALORANT,
+    game_profiles,
+    get_profile,
+)
 from ocr.roi_manager import ROI, ROIManager  # noqa: E402
 from ocr.room_code import RoomCodeRecognizer, SingleFrameResolver  # noqa: E402
 from ocr.temporal import TemporalResolver  # noqa: E402
@@ -179,13 +186,13 @@ def run_worker(script, profile, timeout=8.0, **kwargs):
 # 1. 界面选择项
 # ======================================================================
 def test_ui_choices_are_concrete_games():
-    section("[1] 界面只提供两款具体游戏，各自落到不同的真实档位")
+    section("[1] 界面只提供具体游戏，各自落到不同的真实档位")
 
     choices = mw.OCR_GAME_CHOICES
     ids = [pid for pid, _label in choices]
-    check(len(choices) == 2, f"只有两个可选项: {ids}")
-    check(set(ids) == {DELTA_FORCE.profile_id, VALORANT.profile_id},
-          f"两项就是两款具体游戏: {ids}")
+    check(len(choices) == len(game_profiles()), f"选项数与注册表一致: {ids}")
+    check(ids == [p.profile_id for p in game_profiles()],
+          f"每一项就是一款具体游戏: {ids}")
     check(AUTO.profile_id not in ids, "auto 不出现在界面上")
     check(all(get_profile(pid).profile_id == pid for pid in ids),
           "每一项都能解析到它自己那个档位（不会被换成别的档）")
@@ -197,7 +204,7 @@ def test_ui_choices_are_concrete_games():
     check(valorant.primary_format.length == 6,
           f"无畏契约档只认 6 位: {valorant.primary_format.describe()}")
     check(len(delta.formats) == 1 and len(valorant.formats) == 1,
-          "两款游戏各只有一种格式（选择即确定格式，无需猜测）")
+          "每款具体游戏各只有一种格式（选择即确定格式，无需猜测）")
 
     check(mw.DEFAULT_OCR_GAME_PROFILE_ID == DELTA_FORCE.profile_id,
           f"默认选项是具体游戏而不是 auto: {mw.DEFAULT_OCR_GAME_PROFILE_ID}")
@@ -386,8 +393,8 @@ def test_worker_refuses_guess():
     section("[5c] 底层仍然保留内部默认档（8.0/8.1/8.3 的断言不变）")
     check(get_profile(None) is PROFILES[AUTO.profile_id],
           "底层 get_profile(None) 仍是 auto")
-    check(len(PROFILES[AUTO.profile_id].formats) == 2,
-          "auto 档仍然登记着两款游戏的格式（内部能力保留，只是 worker 不再走它）")
+    check(len(PROFILES[AUTO.profile_id].formats) == 3,
+          "auto 档仍然登记着三款格式（内部能力保留，只是 worker 不再走它）")
     auto_rec = RoomCodeRecognizer(_ScriptedEngine(["ABC1234"]))
     check(auto_rec.profile.profile_id == AUTO.profile_id,
           "底层识别器仍可在显式不指定档位时使用 auto")

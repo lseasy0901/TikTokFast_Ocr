@@ -146,7 +146,7 @@ def test_formats_and_profiles():
     check(delta_fmt.positions[3] is CharClass.DIGIT and delta_fmt.positions[2] is CharClass.LETTER,
           "逐位字符类：第 2 位字母、第 3 位数字")
 
-    check(set(profile_ids()) == {"auto", "delta_force", "valorant"},
+    check(set(profile_ids()) == {"auto", "delta_force", "delta_force_1v1", "valorant"},
           f"注册了游戏档: {profile_ids()}")
     check(DEFAULT_PROFILE_ID == "auto",
           "默认档是 auto（本迭代还没有游戏选择 UI）")
@@ -155,8 +155,11 @@ def test_formats_and_profiles():
 
     section("[1b] 默认档：同时覆盖两种格式，长度恰好匹配的整段优先")
     auto_rec, _ = recognizer_for(None)
-    check([f.name for f in auto_rec.profile.formats] == ["delta_force_7", "valorant_6"],
-          "默认档持有 7 位与 6 位两个格式")
+    check(
+        [f.name for f in auto_rec.profile.formats]
+        == ["delta_force_7", "delta_force_1v1_8", "valorant_6"],
+        "默认档覆盖 7 位 / 8 位 / 6 位三个格式",
+    )
 
     # 这是「GUI 不传 profile」时的真实行为：两种长度的码都要能认出来，
     # 且 7 位码不能被 6 位格式截断成 6 位

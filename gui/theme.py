@@ -443,6 +443,56 @@ QLineEdit:disabled {
     border-color: {BORDER_SOFT};
 }
 
+/* ==================== 复选框 ====================
+   勾选态用 ACCENT 实心方块表示（与主操作按钮同一套强调色），
+   不引图片资源：Studio Minimal 的选中一直是「填色 + 无图标」这套语汇。 */
+QCheckBox {
+    color: {TEXT_DIM};
+    spacing: 7px;
+    background: transparent;
+}
+
+QCheckBox:hover {
+    color: {TEXT};
+}
+
+QCheckBox:disabled {
+    color: {TEXT_DISABLED};
+}
+
+QCheckBox::indicator {
+    width: 13px;
+    height: 13px;
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    background-color: {INPUT_BG};
+}
+
+QCheckBox::indicator:hover {
+    border-color: {BORDER_STRONG};
+    background-color: {HOVER};
+}
+
+QCheckBox::indicator:checked {
+    background-color: {ACCENT};
+    border-color: {ACCENT};
+}
+
+QCheckBox::indicator:checked:hover {
+    background-color: {ACCENT_HOVER};
+    border-color: {ACCENT_HOVER};
+}
+
+QCheckBox::indicator:disabled {
+    background-color: {DISABLED_BG};
+    border-color: {BORDER_SOFT};
+}
+
+QCheckBox::indicator:checked:disabled {
+    background-color: {BORDER};
+    border-color: {BORDER_SOFT};
+}
+
 /* ==================== 下拉框 ==================== */
 QComboBox {
     background-color: {ELEVATED};

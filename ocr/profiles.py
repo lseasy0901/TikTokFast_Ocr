@@ -31,6 +31,7 @@ __all__ = [
     "GAME_PROFILE_IDS",
     "game_profiles",
     "DELTA_FORCE",
+    "DELTA_FORCE_1V1",
     "VALORANT",
     "AUTO",
 ]
@@ -47,7 +48,9 @@ class GameProfile:
         description: 说明文字
     """
 
-    __slots__ = ("_profile_id", "_display_name", "_formats", "_description")
+    __slots__ = (
+        "_profile_id", "_display_name", "_short_name", "_formats", "_description",
+    )
 
     def __init__(
         self,
@@ -55,6 +58,7 @@ class GameProfile:
         display_name: str,
         formats: Tuple[CodeFormat, ...],
         description: str = "",
+        short_name: str = "",
     ):
         if not profile_id:
             raise ValueError("GameProfile 需要非空的 profile_id")
@@ -66,6 +70,9 @@ class GameProfile:
 
         self._profile_id = profile_id
         self._display_name = display_name or profile_id
+        # 界面短名与游戏配置同处一地：新增一款游戏只要在这里注册，GUI 的游戏
+        # 选择列表会自己跟上，不会再出现「注册了档位却忘了加进下拉框」。
+        self._short_name = short_name or self._display_name
         self._formats = tuple(formats)
         self._description = description
 
@@ -76,6 +83,11 @@ class GameProfile:
     @property
     def display_name(self) -> str:
         return self._display_name
+
+    @property
+    def short_name(self) -> str:
+        """界面短名（左栏场景列表与右栏下拉框共用）。"""
+        return self._short_name
 
     @property
     def description(self) -> str:
@@ -109,6 +121,18 @@ DELTA_FORCE = GameProfile(
     display_name="三角洲行动 (Delta Force)",
     formats=(CodeFormat.from_spec("delta_force_7", "LLLDDDD"),),
     description="7 位：3 位大写字母 + 4 位数字",
+    short_name="三角洲行动",
+)
+
+# 三角洲行动 1v1 组队码：8 位，前 4 位字母 + 后 4 位数字（^[A-Z]{4}[0-9]{4}$）
+# 与上面的 7 位队内码是【同一款游戏的不同模式】，长度不同因此互不干扰：
+# 7 位码在 8 位格式下取不到长度匹配的整段，反之亦然。
+DELTA_FORCE_1V1 = GameProfile(
+    profile_id="delta_force_1v1",
+    display_name="三角洲-1v1组队码 (Delta Force 1v1)",
+    formats=(CodeFormat.from_spec("delta_force_1v1_8", "LLLLDDDD"),),
+    description="8 位：4 位大写字母 + 4 位数字",
+    short_name="三角洲-1v1组队码",
 )
 
 # 无畏契约 / VALORANT：6 位，前 3 位字母 + 后 3 位数字（^[A-Z]{3}[0-9]{3}$）
@@ -117,6 +141,7 @@ VALORANT = GameProfile(
     display_name="无畏契约 (VALORANT)",
     formats=(CodeFormat.from_spec("valorant_6", "LLLDDD"),),
     description="6 位：3 位大写字母 + 3 位数字",
+    short_name="无畏契约",
 )
 
 # 默认档：本迭代还没有游戏选择 UI，而「选错档」的代价是彻底识别不出
@@ -126,13 +151,19 @@ VALORANT = GameProfile(
 # 等 UI 提供选择后，显式指定某一款游戏可以得到更严格的唯一解。
 AUTO = GameProfile(
     profile_id="auto",
-    display_name="自动（三角洲行动 + 无畏契约）",
-    formats=(DELTA_FORCE.primary_format, VALORANT.primary_format),
-    description="同时尝试 7 位与 6 位格式，长度恰好匹配的整段优先",
+    display_name="自动（三款格式）",
+    formats=(
+        DELTA_FORCE.primary_format,
+        DELTA_FORCE_1V1.primary_format,
+        VALORANT.primary_format,
+    ),
+    description="同时尝试 7/8/6 位格式，长度恰好匹配的整段优先",
+    short_name="自动",
 )
 
 PROFILES: Dict[str, GameProfile] = {
-    profile.profile_id: profile for profile in (AUTO, DELTA_FORCE, VALORANT)
+    profile.profile_id: profile
+    for profile in (AUTO, DELTA_FORCE, DELTA_FORCE_1V1, VALORANT)
 }
 
 #: 用户能显式选择的【具体游戏】档（不含自动档）。
@@ -141,6 +172,7 @@ PROFILES: Dict[str, GameProfile] = {
 #: 它不代表用户选了某一款，因此谈不上选错。
 GAME_PROFILE_IDS: Tuple[str, ...] = (
     DELTA_FORCE.profile_id,
+    DELTA_FORCE_1V1.profile_id,
     VALORANT.profile_id,
 )
 

@@ -106,9 +106,13 @@ class _StubOCRWorker:
     instances = []
 
     def __init__(self, frame_buffer_getter=None, roi_manager=None, interval_ms=300,
-                 profile=None, scale=1.0, recognizer=None):
+                 profile=None, scale=1.0, recognizer=None, diagnostics=None,
+                 observe_all_psm=False, sample_capture=None):
         self.interval_ms = interval_ms
         self.profile = profile
+        self.diagnostics = diagnostics   # 诊断记录器（默认关闭），替身不实现记录行为
+        self.observe_all_psm = observe_all_psm   # 全 PSM 观测（默认关闭），替身不实现补跑
+        self.sample_capture = sample_capture     # ROI 样本采集（默认 None），替身不实现采集
         self.started_flag = False
         self.stopped = False
         self.text_updated = _Sig()

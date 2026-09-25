@@ -38,7 +38,12 @@ import cv2
 import numpy as np
 
 from .code_format import CodeFormat
-from .correction import MAX_CORRECTIONS, ResolvedCandidate, resolve_candidate
+from .correction import (
+    MAX_CORRECTIONS,
+    ResolvedCandidate,
+    max_corrections_for,
+    resolve_candidate,
+)
 from .profiles import GameProfile, game_profiles, get_profile
 
 logger = logging.getLogger("DouyinLowLatencyViewer.ocr.room_code")
@@ -68,6 +73,25 @@ DEFAULT_SCALE = 1.0
 #: 因此结果还必须满足 _escalate() 的逐位一致约束。
 _ESCALATION_SCALE = 2.0
 
+#: 长度异常复看的倍率（见 RoomCodeRecognizer(length_escalation=...)）。
+#: 与上面的 _ESCALATION_SCALE 分开：那一档是「看清小写字形」，这一档是
+#: 「让引擎重新分割字形、别再读出一个长度对不上任何格式的段」。
+#:
+#: 为什么是 1.5x 而不是 2.0x —— 实测依据（第四轮 384 帧真实 ROI）：
+#:   10 个长度异常帧在 1.0x 全部无解；1.5x 修好其中 9 个；
+#:   而 2.0x 会把 UJMI8506 读成 UIMI8506（仍未解），把 QAZW4602 读成
+#:   OAZW4602（变成另一个错误码），净收益反而更差。
+#: 选 1.5x 是**实测选出来的**，不是拍脑袋定的档位。
+_LENGTH_ESCALATION_SCALE = 1.5
+
+#: 诊断里标记「放大复看」那一轮读法的前缀（只影响诊断 CSV 的标签，不参与判定）。
+_PHASE_ESCALATED = "放大"
+
+#: 诊断里标记「仅供观测」的读法前缀（见 RoomCodeRecognizer(observe_all_psm=...)）。
+#: 带这个前缀的读法是在提前停止点【之后】补跑的，只写诊断、不进仲裁、
+#: 不进「选错游戏」判定，也不进时序裁决——它只影响诊断 CSV 的标签。
+_PHASE_OBSERVED = "观测"
+
 #: 连续的可疑字符段：字母、数字，以及 '|'（'I' 的常见误读形态）。
 #: 其它字符（空白、标点、中文）一律作为分隔符，起到分词作用。
 _RUN_RE = re.compile(r"[A-Za-z0-9|]+")
@@ -79,8 +103,23 @@ _MAX_JOIN_PARTS = 3
 #: 先比质量再比纠正次数——「长度恰好合适的整段」永远优先于
 #: 「从一个更长的段里滑窗截出来的子串」。
 _QUALITY_EXACT = 0     # 单个连续段，长度恰好等于格式长度
-_QUALITY_WINDOW = 1    # 从过长的连续段里滑窗取出
+_QUALITY_WINDOW = 1    # 从过长的连续段里滑窗取出（见 _MIN_WINDOW_RESIDUE）
 _QUALITY_JOINED = 2    # 由多个被分隔符切开的段拼回
+
+#: 滑窗可接受的最小「残差」：窗口之外剩下的字符数（= 段长 - 格式长度，
+#: 与窗口偏移无关）。
+#:
+#: 段长只比格式长度多 1 个字符时，多出来的那一个字符有两种同样合理的解释：
+#: 它是被 ROI 一起框进来的相邻文本，还是 OCR 在房间号内部多读/漏读造成的
+#: 错位。单字符本身无法区分这两种情况，而错位会让滑窗取到一个「零纠正」
+#: 的错误房间号，并因为零纠正而显得最可信——实测 100 码回归里
+#: 'UJMI8506' 被读成 'UJIMI8506'，滑窗取到零纠正的 'JIMI8506' 并最终错误
+#: 复制（真码根本不在原文里，任何仲裁都救不回来）。
+#:
+#: 因此残差 < 2 一律不滑窗：宁可这一帧没有结果，也不把这个错窗口当成
+#: 可靠结果。残差 >= 2 时残留字符才更像是真正的相邻文本，滑窗的原始用途
+#: （'ABC1234other' -> 'ABC1234'）仍然成立。
+_MIN_WINDOW_RESIDUE = 2
 
 
 @dataclass(frozen=True)
@@ -218,6 +257,36 @@ class RoomCodeRecognizer:
         scale: 预处理缩放，只能是 SUPPORTED_SCALES 之一
         max_corrections: 允许的最大纠正位数
         resolver: 候选裁决器（预留的时序扩展点）
+        diagnostics: 可选的诊断记录器（ocr/diagnostics.py）。为 None（默认）
+                     时本类完全不诊断，热路径上只剩一次 None 判断。
+                     它只**旁观**：读法、候选、仲裁结论都是本类已经算出来的
+                     东西，诊断不参与、也不可能改变任何判定。
+        observe_all_psm: **仅供排查用的观测开关**，默认关闭。
+                     关闭（默认）时行为与从前逐字相同：某个读法算出
+                     「零纠正零折叠」的候选就提前停止，后面的 PSM 不再跑。
+                     开启时，同一个提前停止点仍然会继续跑完其余 PSM，但把
+                     它们的读法与候选【只写进诊断记录】（标签带 "观测" 前缀），
+                     既不进 _best_of 仲裁，也不进「选错游戏」判定，更不进
+                     时序裁决——本类返回值与关闭时完全一致，因此
+                     TemporalResolver、复制请求与剪贴板结果都不变。
+                     代价：每个提前停止的帧多跑 1~2 次 OCR（实测每次约 20ms）。
+                     它不新增 OCR 模型、不保存图像。
+                     放大复看那一轮（phase="放大"）不观测，避免成本翻倍。
+        length_escalation: **长度异常复看开关**，默认关闭。
+                     开启后，**只在**「本帧没有任何候选，且有读法的长度不属于
+                     本档任何一个格式」时（典型是 9 位插入型误读，如
+                     UJMI8506 读成 UJIMI8506），把 ROI 放大到
+                     _LENGTH_ESCALATION_SCALE 重读一次。
+                     复看结果不特殊对待：它走的是同一条 _decide 严格校验与
+                     逐位纠正，出来之后同样交给 self._resolver（时序裁决器），
+                     本方法不直接返回、更不触发任何复制。
+                     它**只做长度判断与重读**：不删除/不猜测任何字符，
+                     不做任何 J/I、Q/O 之类的字符替换，不引入字形切分、
+                     白名单识别或新的依赖。
+                     关闭（默认）时热路径上只多一次布尔判断，行为与从前逐字
+                     相同：不重读、不额外调用 OCR。
+                     另外，只有记录器存在【且已开启】时才真的补跑——观测的
+                     唯一产物就是诊断记录，没有记录器时补跑没有意义。
     """
 
     def __init__(
@@ -227,6 +296,9 @@ class RoomCodeRecognizer:
         scale: float = DEFAULT_SCALE,
         max_corrections: int = MAX_CORRECTIONS,
         resolver: Optional[CandidateResolver] = None,
+        diagnostics=None,
+        observe_all_psm: bool = False,
+        length_escalation: bool = False,
     ):
         if float(scale) not in SUPPORTED_SCALES:
             raise ValueError(
@@ -240,6 +312,13 @@ class RoomCodeRecognizer:
         self._scale = float(scale)
         self._max_corrections = int(max_corrections)
         self._resolver = resolver or SingleFrameResolver()
+        #: 诊断记录器（None = 不诊断）。只写不读，不参与任何判定。
+        self._diag = diagnostics
+        #: 全 PSM 观测开关（默认关闭）。只改变「提前停止后还跑不跑其余 PSM」，
+        #: 而补跑出来的读法一律只进诊断，因此判定结果与关闭时逐字相同。
+        self._observe_all_psm = bool(observe_all_psm)
+        #: 长度异常复看（默认关闭）。构造时固定，不随运行状态变化。
+        self._length_escalation = bool(length_escalation)
         #: 最近一次 recognize_frame() 的选错游戏判定结果（None = 没冲突）
         self._last_conflict: Optional[GameSelectionConflict] = None
 
@@ -269,6 +348,16 @@ class RoomCodeRecognizer:
     @property
     def resolver(self) -> CandidateResolver:
         return self._resolver
+
+    @property
+    def observe_all_psm(self) -> bool:
+        """全 PSM 观测开关是否开启（默认 False）。只影响诊断，不影响判定。"""
+        return self._observe_all_psm
+
+    @property
+    def length_escalation(self) -> bool:
+        """长度异常复看是否开启（默认 False）。关闭时行为与从前逐字相同。"""
+        return self._length_escalation
 
     @property
     def last_conflict(self) -> Optional["GameSelectionConflict"]:
@@ -320,7 +409,21 @@ class RoomCodeRecognizer:
         if best is not None and best.case_fold_count:
             escalated = self._escalate(prepared, best)
             if escalated is not None:
+                # 诊断：放大复看确实改写了本帧结果，说明是哪一串变成了哪一串
+                self._note(f"放大复看:{best.code}->{escalated.code}")
+                self._note_decided(f"选定:{escalated.code}(放大复看)")
                 best = escalated
+            else:
+                self._note("放大复看:未采纳")
+
+        # 长度异常复看（默认关闭）：本帧一个候选都没算出来，且读法里存在
+        # 「长度对不上本档任何格式」的段（典型是 9 位插入型误读）。这属于
+        # 管线**自己知道没结果**的情形，放大重读不会覆盖任何已有结论。
+        #
+        # 刻意与上面的 case_fold 复看分开：那一档要求 best 非空，本档只在
+        # best 为空时才有意义，两者互斥，同一帧不会连做两次复看。
+        if best is None and self._length_escalation and self._has_length_anomaly(seen):
+            best = self._escalate_length(prepared, seen)
 
         # 所选游戏与识别内容明显冲突时【不放行】这一帧：
         # 结果不可信，既不进时序裁决（避免污染窗口/成立错误房间号），
@@ -329,6 +432,8 @@ class RoomCodeRecognizer:
         if self._last_conflict is not None:
             # debug 级：识别间隔 300ms，冲突会持续到用户重新选择为止，
             # 用 warning 会把日志刷爆。面向用户的提醒由上层去重后发一次。
+            self._note_decided("放弃:游戏冲突")
+            self._note(f"冲突证据: {self._last_conflict.describe()}")
             logger.debug(
                 "[ROOMCODE] 所选游戏与识别内容冲突，本帧结果不予采用: %s",
                 self._last_conflict.describe(),
@@ -339,7 +444,8 @@ class RoomCodeRecognizer:
 
     def _decide(self,
                 image: np.ndarray,
-                seen: Optional[List[str]] = None) -> Optional[RoomCodeCandidate]:
+                seen: Optional[List[str]] = None,
+                phase: str = "") -> Optional[RoomCodeCandidate]:
         """
         一帧图像 -> 候选或 None：逐个读法算候选，够好就停。
 
@@ -352,18 +458,68 @@ class RoomCodeRecognizer:
         参数：
             seen: 传入一个列表时，把本帧消费过的读法文本追加进去，
                   供「选错游戏」判定复用（因此判定不需要再跑一次 OCR）。
+            phase: 仅供诊断标记这一轮读法的来源（"" = 主读，"放大" = 放大复看）。
+                   **不参与任何判定**：它只影响诊断 CSV 里那一列的标签。
+
+        观测开关（observe_all_psm）：
+            关闭时（默认）遇到「零纠正零折叠」的读法就 break，后面的 PSM 不跑。
+            开启时同一个点不 break，继续跑完其余 PSM，但补跑的读法只写诊断
+            （标签带 "观测" 前缀），不进 seen/candidates —— 因此本方法返回值
+            与关闭时逐字相同。
         """
         candidates: List[RoomCodeCandidate] = []
-        for text in self._iter_reading_texts(image):
+        stopped_at = None
+        # 观测只在主读那一轮生效：放大复看本身已经是一次额外的读，
+        # 再观测会让成本翻倍，而且它要解的是「可疑位」不是「窗口起点」。
+        # 再要求记录器存在且已开启：观测的唯一产物就是诊断记录，没有记录器
+        # （或用户已经点了「停止诊断」）时补跑只是白花两次 OCR，什么也换不到。
+        observe = (
+            self._observe_all_psm
+            and self._diag is not None
+            and self._diag.enabled
+            and not phase
+        )
+        observing = False
+        readings = self._iter_reading_texts(image)
+        while True:
+            # 显式 next()：好把「引擎在读法中途失败」与「循环体自身出错」
+            # 分开——前者在观测期间必须降级为一条诊断备注，后者照旧上抛。
+            try:
+                psm, text = next(readings)
+            except StopIteration:
+                break
+            except Exception as exc:
+                if observing:
+                    # 观测是「额外补看」：它失败不能把这一帧已经得到的结论
+                    # 变成失败（那会让开关开/关的结果不一致）。如实记录。
+                    self._note(f"观测读取失败:{type(exc).__name__}: {exc}")
+                    break
+                raise
+            if observing:
+                # 提前停止点【之后】补跑的读法：只写诊断。刻意不追加到 seen
+                # （那会改变「选错游戏」判定），也不追加到 candidates
+                # （那会改变 _best_of 仲裁）——两者都会破坏「开关开/关结果一致」。
+                self._note_reading(psm, text, self._resolve_text(text),
+                                   _PHASE_OBSERVED)
+                continue
             if seen is not None:
                 seen.append(text)
             candidate = self._resolve_text(text)
+            # 诊断旁路：记下这个读法的原文与它算出的候选（两者分列记录，
+            # 不混为一谈）。这里用的都是上面已经算好的值，不再多跑一次 OCR。
+            self._note_reading(psm, text, candidate, phase)
             if candidate is None:
                 continue
             candidates.append(candidate)
             if not candidate.correction_count and not candidate.case_fold_count:
-                break
-        return self._best_of(candidates)
+                stopped_at = psm
+                if not observe:
+                    break
+                # 观测模式：不 break，继续跑完其余 PSM（只记录，不参与）
+                observing = True
+        best = self._best_of(candidates)
+        self._note_decision(best, candidates, stopped_at, phase, observing)
+        return best
 
     # ------------------------------------------------------------------
     # 选错游戏判定（只判定、不建议、不切换）
@@ -398,6 +554,14 @@ class RoomCodeRecognizer:
             return None
         return GameSelectionConflict(self._profile.profile_id, other)
 
+    def _correction_cap(self, fmt: CodeFormat) -> int:
+        """本格式这次读取允许纠正几位。
+
+        由格式自己决定（字母前缀有多长就允许纠正多少位），而不是让识别器
+        统一套一个常量——那个常量隐含了「前缀一定是 3 位」的假设。
+        """
+        return max_corrections_for(fmt, self._max_corrections)
+
     def _has_exact_code(
         self, text: str, formats: Sequence[CodeFormat]
     ) -> bool:
@@ -407,7 +571,9 @@ class RoomCodeRecognizer:
             for run in runs:
                 if len(run) != fmt.length:
                     continue
-                if resolve_candidate(run, fmt, self._max_corrections) is not None:
+                if resolve_candidate(
+                    run, fmt, self._correction_cap(fmt)
+                ) is not None:
                     return True
         return False
 
@@ -421,17 +587,76 @@ class RoomCodeRecognizer:
         return None
 
     def _iter_reading_texts(self, image: np.ndarray):
-        """按 PSM 顺序产出该帧的 OCR 读法文本（引擎不支持时退回单读法）。"""
+        """按 PSM 顺序产出该帧的 OCR 读法 ``(psm, 文本)``（引擎不支持时退回单读法）。
+
+        产出 PSM 编号只是为了让诊断能说清「哪一档读法给出了什么」；
+        识别逻辑本身不用它（原先这里把编号丢掉了，诊断需要，故一并带出）。
+        """
         iter_readings = getattr(self._engine, "iter_readings", None)
         if iter_readings is not None:
-            for _, text in iter_readings(image, preprocess=True):
-                yield text
+            for psm, text in iter_readings(image, preprocess=True):
+                yield psm, text
             return
 
         # 引擎没有多读法入口（例如测试桩）时保持既有单读法行为
         text = self._engine.recognize(image, preprocess=True)
         if text:
-            yield text
+            # 单读法路径拿不到 PSM 编号：留 None，不编造一个编号出来
+            yield None, text
+
+    # ------------------------------------------------------------------
+    # 诊断旁路（不诊断时全部是廉价空操作，且不改变任何返回值）
+    # ------------------------------------------------------------------
+    def _note_reading(self, psm, text, candidate, phase: str = "") -> None:
+        """把「这个读法 + 它算出的候选」交给诊断记录器。"""
+        if self._diag is not None:
+            self._diag.note_reading(psm, text, candidate, phase)
+
+    def _note_decision(self, best, candidates, stopped_at, phase: str = "",
+                       observing: bool = False) -> None:
+        """记录本帧的仲裁结论（只描述 _best_of 已经给出的结果）。
+
+        「无候选」与「读法歧义」都表现为 best is None，但成因不同，分析时
+        必须能分开——前者是读法里根本没有合法码，后者是有多个同等可信、
+        内容却不同的候选（既有策略是宁可不返回）。
+
+        observing: 本帧是否开启了观测模式（即提前停止点之后又补跑了 PSM）。
+                   只影响备注的措辞：要说清「原本会在哪个 PSM 提前停止」，
+                   而不是谎称真的停了。
+        """
+        if self._diag is None:
+            return
+        if phase:
+            # 放大复看那一轮不改写「本帧仲裁结论」：它是一次复看而不是第二次
+            # 仲裁，效果由 recognize_frame 用「放大复看」备注说明。
+            if stopped_at is not None:
+                self._diag.add_note(f"放大复看提前停止于 PSM {stopped_at}")
+            return
+        if not candidates:
+            self._diag.note_decided("无候选")
+        elif best is None:
+            self._diag.note_decided("读法歧义")
+        else:
+            self._diag.note_decided(f"选定:{best.code}")
+        if stopped_at is not None:
+            if observing:
+                self._diag.add_note(
+                    f"原本会在 PSM {stopped_at} 提前停止"
+                    f"（观测模式已继续跑完其余 PSM；标「{_PHASE_OBSERVED}」的"
+                    f"读法仅供观测，不参与判定）"
+                )
+            else:
+                self._diag.add_note(
+                    f"提前停止于 PSM {stopped_at}（该读法零纠正零折叠）"
+                )
+
+    def _note(self, text: str) -> None:
+        if self._diag is not None:
+            self._diag.add_note(text)
+
+    def _note_decided(self, text: str) -> None:
+        if self._diag is not None:
+            self._diag.note_decided(text)
 
     def _best_of(
         self, candidates: Sequence[RoomCodeCandidate]
@@ -463,6 +688,68 @@ class RoomCodeRecognizer:
 
         return best
 
+    def _has_length_anomaly(self, readings: Sequence[str]) -> bool:
+        """读法里是否存在「比本档最长格式还长」的段（插入型误读信号）。
+
+        这是长度异常复看的唯一触发条件。只认**偏长**，不认偏短：
+            - 偏长（9 位 vs 8 位格式）= OCR 在房间号内部多读了一个字形，
+              这是本机制要救的那一类；
+            - 偏短（例如标题卡「HE8FPoe」这类和房间号无关的文字）根本不是
+              插入型误读，重读也只是白花一次 OCR。
+        用 profile 自己的格式长度判断，不硬编码 9 —— 同一档支持多种长度时
+        （auto 档 7/8/6），只有超过其中最长者的段才算异常。
+
+        它只回答「这一帧值不值得重读一次」，不参与任何校验或纠正。
+        """
+        longest = max(fmt.length for fmt in self._profile.formats)
+        return any(text and len(text) > longest for text in readings)
+
+    def _escalate_length(
+        self, image: np.ndarray, readings: Sequence[str]
+    ) -> Optional[RoomCodeCandidate]:
+        """长度异常时放大 _LENGTH_ESCALATION_SCALE 重读一次。
+
+        采纳条件（两条都必须满足，都是「复看确实读清楚了」的证据）：
+            - 复看自己算出严格校验通过的候选（_decide 的既有契约，不额外放松）
+            - 复看的 source_text 长度落在本档格式长度内（真的读成了合法长度，
+              而不是再从错位段里滑窗取子串）
+
+        **本方法不做任何字符级猜测**：不删除多余字符、不做 J/I 或 Q/O 之类的
+        替换、不切分字形、不用白名单。它只是换一个倍率让 Tesseract 重新分割
+        字形，读到什么就是什么；读不出来就返回 None，宁可不给结果。
+
+        返回值会由调用方（recognize_frame）交给裁决器，本方法不直接对外输出。
+        """
+        if image is None or image.size == 0:
+            return None
+
+        height, width = image.shape[:2]
+        bigger = cv2.resize(
+            image,
+            (max(1, int(round(width * _LENGTH_ESCALATION_SCALE))),
+             max(1, int(round(height * _LENGTH_ESCALATION_SCALE)))),
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+        escalated = self._decide(bigger, phase=_PHASE_ESCALATED)
+        if escalated is None:
+            self._note("长度异常复看:未采纳")
+            return None
+        if len(escalated.source_text) not in {fmt.length
+                                              for fmt in self._profile.formats}:
+            self._note("长度异常复看:未采纳(复看长度仍异常)")
+            return None
+
+        logger.info(
+            "[ROOMCODE] 长度异常复看 %.1fx: %s -> %s",
+            _LENGTH_ESCALATION_SCALE, "|".join(readings), escalated.code,
+        )
+        self._note("长度异常复看:采纳 %s" % escalated.code)
+        self._note_decided("选定:%s(长度异常复看)" % escalated.code)
+        # 记录真实读法倍率，避免调试时误以为它来自 1.0x 的那次读取
+        return replace(escalated,
+                       scale=self._scale * _LENGTH_ESCALATION_SCALE)
+
     def _escalate(
         self, image: np.ndarray, base: RoomCodeCandidate
     ) -> Optional[RoomCodeCandidate]:
@@ -486,7 +773,7 @@ class RoomCodeRecognizer:
             interpolation=cv2.INTER_CUBIC,
         )
 
-        escalated = self._decide(bigger)
+        escalated = self._decide(bigger, phase=_PHASE_ESCALATED)
         if escalated is None or escalated.case_fold_count:
             return None
         if len(escalated.code) != len(base.code):
@@ -576,10 +863,23 @@ class RoomCodeRecognizer:
         for run_index, run in enumerate(runs):
             if len(run) < fmt.length:
                 continue
-            quality = _QUALITY_EXACT if len(run) == fmt.length else _QUALITY_WINDOW
+            if len(run) == fmt.length:
+                quality = _QUALITY_EXACT
+            else:
+                # 只有过长的段才谈得上「残差」。残差不足时不滑窗：
+                # 多出来的那一个字符无法判定是相邻文本还是码内错位，
+                # 而猜错会得到一个零纠正、看起来很可信的错误房间号。
+                if len(run) - fmt.length < _MIN_WINDOW_RESIDUE:
+                    logger.debug(
+                        "[ROOMCODE] 段比格式只多 %d 位，无法判定是相邻文本"
+                        "还是错位读法，不滑窗 (格式=%s, 文本=%r)",
+                        len(run) - fmt.length, fmt.name, run,
+                    )
+                    continue
+                quality = _QUALITY_WINDOW
             for offset in _window_offsets(len(run), fmt.length):
                 resolved = resolve_candidate(
-                    run[offset:offset + fmt.length], fmt, self._max_corrections
+                    run[offset:offset + fmt.length], fmt, self._correction_cap(fmt)
                 )
                 if resolved is not None:
                     singles.append((resolved, quality, run_index, offset))
@@ -596,7 +896,7 @@ class RoomCodeRecognizer:
                     merged = "".join(group)
                     if len(merged) != fmt.length:
                         continue
-                    resolved = resolve_candidate(merged, fmt, self._max_corrections)
+                    resolved = resolve_candidate(merged, fmt, self._correction_cap(fmt))
                     if resolved is not None:
                         joins.append((resolved, _QUALITY_JOINED, start, 0))
 

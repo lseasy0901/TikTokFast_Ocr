@@ -4,7 +4,7 @@
 Phase 8.1: OCR 游戏档选择器回归测试
 
 覆盖：
-    - UI 只暴露两款具体游戏，不暴露 "auto"
+    - UI 只暴露具体游戏（数量由注册表决定），不暴露 "auto"
     - 选择结果真的传到了 OCRWorker(profile=...)
     - 运行中切换只换档：不重启 OCR 线程、不碰视频流、不阻塞 GUI
     - 300ms 识别间隔、ROI、剪贴板、受保护入口语义不变
@@ -33,7 +33,13 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import gui.main_window as mw  # noqa: E402
 import ocr.worker as worker_mod  # noqa: E402
-from ocr.profiles import DELTA_FORCE, PROFILES, VALORANT, get_profile  # noqa: E402
+from ocr.profiles import (  # noqa: E402
+    DELTA_FORCE,
+    PROFILES,
+    VALORANT,
+    game_profiles,
+    get_profile,
+)
 from ocr.roi_manager import ROI, ROIManager  # noqa: E402
 from ocr.room_code import RoomCodeRecognizer, SingleFrameResolver  # noqa: E402
 from utils.license_manager import LicenseResult, LicenseStatus  # noqa: E402
@@ -79,12 +85,19 @@ class _StubOCRWorker:
     instances = []
 
     def __init__(self, frame_buffer_getter=None, roi_manager=None, interval_ms=300,
-                 profile=None, scale=1.0, recognizer=None):
+                 profile=None, scale=1.0, recognizer=None, diagnostics=None,
+                 observe_all_psm=False, sample_capture=None):
         self.frame_buffer_getter = frame_buffer_getter
         self.roi_manager = roi_manager
         self.interval_ms = interval_ms
         self.profile = profile
         self.scale = scale
+        # 诊断记录器（默认关闭）：替身只记下它，不实现记录行为
+        self.diagnostics = diagnostics
+        # 全 PSM 观测（默认关闭）：替身只记下它，不实现补跑行为
+        self.observe_all_psm = observe_all_psm
+        # ROI 样本采集（默认 None）：替身只记下它，不实现采集行为
+        self.sample_capture = sample_capture
         self.profile_changes = []
         self.started_count = 0
         self.stopped = False
@@ -221,22 +234,27 @@ def select_game(window, profile_id: str) -> None:
 # 1. UI 只暴露具体游戏
 # ======================================================================
 def test_selector_options():
-    section("[1] 选择器：只暴露两款具体游戏，不暴露 auto")
+    section("[1] 选择器：只暴露具体游戏，不暴露 auto")
     window = build_window()
     combo = window._ocr_game_combo
 
     ids = [combo.itemData(i) for i in range(combo.count())]
     labels = [combo.itemText(i) for i in range(combo.count())]
 
-    check(combo.count() == 2, f"下拉框只有 2 个选项 (实际 {combo.count()})")
-    check(ids == [DELTA_FORCE.profile_id, VALORANT.profile_id],
-          f"选项对应注册表里的两个档: {ids}")
-    check("三角洲行动" in labels and "无畏契约" in labels, f"选项文案: {labels}")
+    check(combo.count() == 3, f"下拉框有 3 个选项 (实际 {combo.count()})")
+    check(
+        ids == [p.profile_id for p in game_profiles()],
+        f"选项顺序与注册表一致: {ids}",
+    )
+    check("三角洲行动" in labels and "无畏契约" in labels
+          and "三角洲-1v1组队码" in labels, f"选项文案: {labels}")
     check(not any("auto" in str(value).lower() for value in ids + labels),
           "UI 上没有 auto 选项")
-    check(len(mw.OCR_GAME_CHOICES) == 2
-          and all(pid in PROFILES for pid, _ in mw.OCR_GAME_CHOICES),
-          "UI 选项全部来自既有 profile 注册表")
+    check(
+        mw.OCR_GAME_CHOICES
+        == tuple((p.profile_id, p.short_name) for p in game_profiles()),
+        "UI 选项直接派生自既有 profile 注册表",
+    )
 
     section("[1b] auto 仍然只作为内部兼容档存在")
     check("auto" in PROFILES and get_profile("auto").profile_id == "auto",

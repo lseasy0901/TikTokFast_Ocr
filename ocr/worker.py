@@ -95,7 +95,11 @@ class OCRWorker(QThread):
                  scale: float = DEFAULT_SCALE,
                  recognizer: Optional[RoomCodeRecognizer] = None,
                  resolver=None,
-                 pending_interval_ms: int = 100):
+                 pending_interval_ms: int = 100,
+                 diagnostics=None,
+                 observe_all_psm: bool = False,
+                 length_escalation: bool = False,
+                 sample_capture=None):
         """
         初始化 OCR 工作线程
 
@@ -121,6 +125,30 @@ class OCRWorker(QThread):
                         一旦成立/没有待确认候选，立刻回到 interval_ms。
                         它**只改采样节奏**，不改任何判定规则（见 _interval_for_wait）。
                         设为 >= interval_ms 即等价于关闭该行为。
+            diagnostics: 可选的诊断记录器（ocr/diagnostics.py）。None（默认）
+                        表示不诊断——识别路径上只多一次 None 判断，其余行为
+                        逐字不变。诊断只记录**已经发生**的事实（执行序号、
+                        耗时、各读法原文与候选、仲裁结论、连续确认结论、
+                        已请求/已成功复制的房间码），不参与任何判定。
+            observe_all_psm: **全 PSM 观测**（默认 False）。开启后，本来会提前
+                        停止的那一帧会继续跑完其余 PSM，但补跑的读法只写诊断
+                        记录（标签带「观测」），不参与候选仲裁、选错游戏判定、
+                        时序裁决，因此复制结果与关闭时完全一致。
+                        它只在诊断记录器存在且已开启时才产生额外 OCR 调用；
+                        记录器不存在或已关闭时，本开关不产生任何额外开销。
+                        参数在构造时固定，构造识别器的两条路径（首次创建与
+                        换档重建）都从这里取值，所以停机重启不会残留旧状态。
+            length_escalation: **长度异常复看**（默认 False）。开启后，只有
+                        「本帧无候选且读法长度不属于本档任何格式」的帧才会
+                        多跑一次 1.5x 复看，因此不影响正常帧的 PSM 调度与
+                        采样节奏。复看结果同样经过格式校验与时序裁决，
+                        不直接输出、不直接复制。关闭时行为与从前逐字相同。
+                        参数在构造时固定，两条识别器构造路径都从这里取值。
+            sample_capture: 可选的 ROI 样本采集器（ocr/sample_capture.py）。
+                        None（默认）或关闭时，识别路径上只多一次布尔判断，
+                        不写盘、不占内存。它采的是识别器**真正看到的**那一帧
+                        ROI 像素，只落盘、不参与任何判定，写盘失败也不会
+                        影响识别（见该模块说明）。
         """
         super().__init__()
 
@@ -143,6 +171,17 @@ class OCRWorker(QThread):
         # 候选裁决器：默认启用时序一致性（OCR V2.3），构造它是纯内存操作，
         # 不触碰 Tesseract，因此放在这里（GUI 线程）是安全的。
         self._resolver = TemporalResolver() if resolver is None else resolver
+        # 诊断记录器（None = 不诊断）。同一实例也交给识别器，用于记录各读法。
+        self._diagnostics = diagnostics
+        # 全 PSM 观测（默认关闭）。构造时固定，两条识别器构造路径都从它取值，
+        # 因此不会出现「上一次运行开过、重启后还开着」的残留状态。
+        self._observe_all_psm = bool(observe_all_psm)
+        # 长度异常复看（默认关闭）。同样在构造时固定，两条识别器构造路径都
+        # 从这里取值，因此不存在「上一次开过、重启后还开着」的残留状态。
+        self._length_escalation = bool(length_escalation)
+        # ROI 样本采集（默认 None = 不采集）。纯旁路：只把识别器看到的那一帧
+        # 落盘，不参与任何判定，采集器内部自带开关与上限。
+        self._sample_capture = sample_capture
 
         # 注释掉剪切板管理器，改为由GUI线程处理
         # self._clipboard_manager = ClipboardManager()
@@ -245,6 +284,9 @@ class OCRWorker(QThread):
                 profile=self._profile,
                 scale=self._scale,
                 resolver=self._resolver,
+                diagnostics=self._diagnostics,
+                observe_all_psm=self._observe_all_psm,
+                length_escalation=self._length_escalation,
             )
             logger.info("房间号识别器已在工作线程内创建")
         return self._recognizer
@@ -348,11 +390,36 @@ class OCRWorker(QThread):
 
         # 5. 房间号识别管线：OCR 引擎 -> 清洗 -> 候选提取 -> 逐位纠正 -> 严格校验
         #    对外契约：只有严格校验通过的房间号才会被传出，其余一律为空字符串。
+        #
+        #    诊断（默认关闭）在这一层只做三件事：给这次执行起序号/计时、
+        #    记下连续确认结论、记下"已请求复制"。识别本身完全不受影响：
+        #    begin() 关闭时返回 None，下面的 note_* 在 trace 为 None 时全是空操作。
+        trace = self._begin_diagnostics()
+        started = time.perf_counter()
+        elapsed_ms: Optional[float] = None
+        diag_note = ""
         try:
             candidate = self._recognizer.recognize_frame(roi_image)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
             text = candidate.code if candidate is not None else ""
 
+            # 5a. ROI 样本采集（默认关闭）：采的正是上面这一步喂给识别器的
+            #     那一帧像素，离线基准重跑引擎时与线上完全一致。
+            #     纯旁路：采集器自己消化所有异常，绝不冒泡到这里。
+            if self._sample_capture is not None:
+                self._sample_capture.capture(
+                    roi_image,
+                    profile_id=getattr(self._profile, "profile_id", None)
+                    or str(self._profile),
+                    readings=(None if trace is None else
+                              [(n.psm, n.raw_text) for n in trace.readings]),
+                    candidate=text,
+                    note=("游戏冲突"
+                          if self._recognizer.last_conflict is not None else ""),
+                )
+
             self._recognition_count += 1
+            self._note_confirmation(trace, candidate)
 
             # 8. 选错游戏：识别器已经拦下这一帧（返回 None），因此 text 必为空，
             #    下面的剪贴板分支不可能走到。这里只负责提醒用户重新选择——
@@ -375,6 +442,10 @@ class OCRWorker(QThread):
                     logger.debug("[CLIPBOARD] 跳过重复结果: %s", text)
                 elif text:
                     logger.info("[CLIPBOARD] copy request")
+                    # 诊断：只记"请求了复制"，是否真的写进剪贴板由 GUI 线程
+                    # 回填（见 MainWindow._on_copy_requested）。
+                    if self._diagnostics is not None:
+                        self._diagnostics.note_copy_requested(trace, text)
                     self.copy_requested.emit(text)
 
                 # 记录识别结果
@@ -402,10 +473,71 @@ class OCRWorker(QThread):
                     )
 
         except OCREngineError as e:
+            diag_note = f"异常:{e}"
             self._error_count += 1
             self._last_error = str(e)
             logger.warning("OCR 识别失败: %s", e)
             self.error_occurred.emit(str(e))
+
+        finally:
+            # 无论成功、异常还是提前返回，这次执行都要收尾入库；
+            # 关闭诊断时 trace 为 None，finish 直接返回。
+            if self._diagnostics is not None:
+                if elapsed_ms is None:
+                    # 上面没走到计时那一步（异常）：用整段墙钟时间兜底，
+                    # 标注为异常的同时给出"这次卡了多久"。
+                    elapsed_ms = (time.perf_counter() - started) * 1000.0
+                self._diagnostics.finish(trace, elapsed_ms=elapsed_ms, note=diag_note)
+
+    def _begin_diagnostics(self):
+        """开始一次诊断记录；诊断未接线或未开启时返回 None。
+
+        游戏配置取自识别器已经解析好的 GameProfile（worker 里存的 _profile
+        可能是 GameProfile 也可能是 id，识别器那边已经统一了）。
+        """
+        diagnostics = self._diagnostics
+        if diagnostics is None:
+            return None
+        profile = None
+        recognizer = self._recognizer
+        if recognizer is not None:
+            profile = getattr(recognizer, "profile", None)
+        if profile is None:
+            # 识别器还没建好（run() 会在进主循环前建好，理论上不会走到）：
+            # 记不下游戏配置，但这次执行仍然照记，缺的字段留空。
+            return diagnostics.begin()
+        return diagnostics.begin(
+            profile_id=profile.profile_id,
+            formats=", ".join(
+                f"{fmt.name}({fmt.describe()})" for fmt in profile.formats
+            ),
+        )
+
+    def _note_confirmation(self, trace, candidate) -> None:
+        """把这次执行的「连续确认结论 + 观测窗口快照」交给诊断。
+
+        结论全部来自裁决器**已有的公开状态**，这里不重新推导一遍判定规则
+        （否则就有了第二份"是否成立"的逻辑，迟早与裁决器不一致）：
+            - 裁决器交出了候选  -> 成立；candidate.repeated 表示是已成立过的同一个码
+            - 没有候选但有 pending_code -> 正在确认，连续一致次数还不够
+            - 其余              -> 本帧没有合法候选可确认
+        """
+        diagnostics = self._diagnostics
+        if diagnostics is None or trace is None:
+            return
+
+        resolver = self._resolver
+        if candidate is not None:
+            verdict = "重复成立" if candidate.repeated else "成立"
+        elif getattr(resolver, "pending_code", None):
+            verdict = "确认中"
+        else:
+            verdict = "未成立"
+
+        # observations 是裁决器（TemporalResolver）的可选只读属性；
+        # 无状态裁决器没有它就留空，不编造窗口。
+        diagnostics.note_confirmation(
+            trace, verdict, getattr(resolver, "observations", None))
 
     def _notify_game_mismatch(self) -> None:
         """提醒用户「游戏选错了」。
@@ -463,6 +595,24 @@ class OCRWorker(QThread):
         # 正常裁剪
         return frame[roi.y:roi.y + roi.height, roi.x:roi.x + roi.width]
 
+    @property
+    def observe_all_psm(self) -> bool:
+        """全 PSM 观测是否开启（默认 False）。只影响诊断，不影响任何判定。
+
+        构造时固定、不提供运行期 setter：GUI 在识别运行期间会锁住该开关，
+        改动一律通过「停止 → 改 → 重新开始」生效，避免识别器与界面状态不一致。
+        """
+        return self._observe_all_psm
+
+    @property
+    def length_escalation(self) -> bool:
+        """长度异常复看是否开启（默认 False）。关闭时行为与从前逐字相同。
+
+        与 observe_all_psm 一样构造时固定、不提供运行期 setter：改动一律通过
+        「停止 → 改 → 重新开始」生效，避免识别器与界面状态不一致。
+        """
+        return self._length_escalation
+
     def set_interval(self, interval_ms: int) -> None:
         """
         设置识别间隔
@@ -508,7 +658,9 @@ class OCRWorker(QThread):
             # 先构造再赋值：工作线程最坏只会多识别一帧旧档
             self._recognizer = RoomCodeRecognizer(
                 self._engine, profile=profile, scale=self._scale,
-                resolver=self._resolver,
+                resolver=self._resolver, diagnostics=self._diagnostics,
+                observe_all_psm=self._observe_all_psm,
+                length_escalation=self._length_escalation,
             )
             logger.info("OCR 游戏档已切换（识别器已更新，未重启线程）")
         else:

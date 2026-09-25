@@ -6,6 +6,8 @@ from .preprocess import preprocess_for_ocr, preprocess_for_ocr_adaptive
 from .roi_manager import ROI, ROIManager
 from .worker import OCRWorker
 from .clipboard import ClipboardManager
+from .copy_log import CopyLog, CopyRecord
+from .diagnostics import OCRDiagnostics
 
 # OCR V2.1：格式感知的房间号识别
 from .code_format import CharClass, CodeFormat
@@ -39,6 +41,13 @@ __all__ = [
 
     # 剪切板管理
     "ClipboardManager",
+
+    # 成功复制的房间码流水 / CSV 导出
+    "CopyLog",
+    "CopyRecord",
+
+    # OCR 诊断日志（默认关闭）/ CSV 导出
+    "OCRDiagnostics",
 
     # 房间号格式 / 游戏档 (OCR V2.1)
     "CharClass",
