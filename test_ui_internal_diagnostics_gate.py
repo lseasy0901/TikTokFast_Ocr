@@ -25,27 +25,66 @@
 
 约定与仓库其它 test_*.py 一致：扁平脚本、check()/section() 自行统计，
 直接 ``python test_ui_internal_diagnostics_gate.py`` 运行，不依赖 pytest。
-APPDATA / LOCALAPPDATA 指向临时目录，不写用户真实配置；不联网、不起识别线程。
+APPDATA / LOCALAPPDATA 都指向独立临时目录（G 节自证），退出时精确还原；
+不读不写用户真实配置；不联网、不起识别线程。
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
-os.environ["APPDATA"] = tempfile.mkdtemp(prefix="dlv-diaggate-appdata-")
-os.environ.setdefault("LOCALAPPDATA", tempfile.mkdtemp(prefix="dlv-diaggate-local-"))
+# ----------------------------------------------------------------------
+# 测试环境隔离 —— 必须在导入任何项目模块之前完成
+#
+# 本文件会构造真实 MainWindow，而它会创建 LicenseManager / FirstRunStore /
+# StreamHistory：三者分别读写 %APPDATA%（授权）与 %LOCALAPPDATA%（偏好、
+# 历史、更新状态）。不隔离就会读写本机真实的用户数据。
+#
+# 两个变量都**直接赋值**，刻意不用 os.environ.setdefault()：Windows 上
+# LOCALAPPDATA 本来就已经存在，setdefault 是空操作，隔离会静默失效 ——
+# 这正是本文件上一版的缺陷。
+# ----------------------------------------------------------------------
+_TEMP_ROOT = tempfile.mkdtemp(prefix="dlv-diaggate-")
+_TEMP_APPDATA = os.path.join(_TEMP_ROOT, "appdata")
+_TEMP_LOCALAPPDATA = os.path.join(_TEMP_ROOT, "localappdata")
+os.makedirs(_TEMP_APPDATA, exist_ok=True)
+os.makedirs(_TEMP_LOCALAPPDATA, exist_ok=True)
+
+#: 覆盖前的原值；进程退出时精确还原（原先不存在就删掉，不留空壳变量）
+_SAVED_ENV = {key: os.environ.get(key) for key in ("APPDATA", "LOCALAPPDATA")}
+os.environ["APPDATA"] = _TEMP_APPDATA
+os.environ["LOCALAPPDATA"] = _TEMP_LOCALAPPDATA
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QCheckBox, QWidget  # noqa: E402
 
 import gui.main_window as mw  # noqa: E402
+import utils.first_run as first_run  # noqa: E402
+import utils.license_store as license_store  # noqa: E402
+import utils.stream_history as stream_history  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
+
+#: 授权目录名（与 utils.license_store.APP_DIR_NAME 一致）
+_LICENSE_DIR_NAME = "DouyinLowLatencyViewer"
+
+
+def under(path, parent) -> bool:
+    """path 是否位于 parent 之内（都用绝对规范路径比较）。"""
+    if not parent:
+        return False
+    try:
+        Path(os.path.abspath(str(path))).relative_to(os.path.abspath(str(parent)))
+        return True
+    except ValueError:
+        return False
 
 WIN_W, WIN_H = 1280, 800
 
@@ -349,6 +388,74 @@ for module_name in ("ocr.diagnostics", "ocr.sample_capture", "ocr.worker",
 for window in (window_off, window_on, window_default):
     window.close()
 pump(10)
+
+
+# ======================================================================
+section("G. 环境隔离自证：确实只用临时目录")
+# ======================================================================
+# 要证明的不是「环境变量被改过」，而是「真的按临时目录在跑」—— 光改环境变量
+# 是不够的：若某个对象在 import 期就把真实路径缓存了下来，环境变量改了也
+# 会被绕过。因此下面既查解析函数，也查**已经构造出来的对象**。
+_REAL_APPDATA = _SAVED_ENV.get("APPDATA") or ""
+_REAL_LOCALAPPDATA = _SAVED_ENV.get("LOCALAPPDATA") or ""
+print(f"  （临时根: {_TEMP_ROOT}）")
+
+# G1. 解析函数指向临时目录
+check(stream_history.default_data_dir()
+      == os.path.join(_TEMP_LOCALAPPDATA, stream_history.APP_DIR_NAME),
+      f"历史目录解析到临时 LOCALAPPDATA（实际 {stream_history.default_data_dir()}）")
+check(under(first_run.default_prefs_path(),
+            os.path.join(_TEMP_LOCALAPPDATA, stream_history.APP_DIR_NAME)),
+      f"偏好路径解析到临时 LOCALAPPDATA（实际 {first_run.default_prefs_path()}）")
+check(license_store.default_data_dir()
+      == os.path.join(_TEMP_APPDATA, _LICENSE_DIR_NAME),
+      f"授权目录解析到临时 APPDATA（实际 {license_store.default_data_dir()}）")
+
+# G2. 已经构造出来的对象指向临时目录（这才是不被缓存绕过的证明）
+check(under(window_off._stream_history._file_path, _TEMP_LOCALAPPDATA),
+      f"窗口里已构造的 StreamHistory 落在临时目录"
+      f"（实际 {window_off._stream_history._file_path}）")
+check(under(window_off._first_run_store.path, _TEMP_LOCALAPPDATA),
+      f"窗口里已构造的 FirstRunStore 落在临时目录"
+      f"（实际 {window_off._first_run_store.path}）")
+check(under(window_off._license_manager.store.path, _TEMP_APPDATA),
+      f"窗口里已构造的 LicenseStore 落在临时目录"
+      f"（实际 {window_off._license_manager.store.path}）")
+
+# G3. 上面每一个都不在真实用户目录下
+for label, path, real in (
+        ("授权 store", window_off._license_manager.store.path, _REAL_APPDATA),
+        ("历史 store", window_off._stream_history._file_path, _REAL_LOCALAPPDATA),
+        ("偏好 store", window_off._first_run_store.path, _REAL_LOCALAPPDATA)):
+    if real:
+        check(not under(path, real),
+              f"{label} 不在真实用户目录 {real} 下")
+    else:
+        check(True, f"{label}：本机未设置对应环境变量，无需回避")
+
+# G4. 实际写盘只发生在临时目录里
+window_off._stream_history.add_or_update("https://live.douyin.com/999", "隔离自证")
+window_off._first_run_store.set_should_show_guide(False)
+written = [str(p) for p in Path(_TEMP_ROOT).rglob("*") if p.is_file()]
+check(any(os.path.basename(p) == "stream_history.json" for p in written),
+      f"运行时写出的 stream_history.json 落在临时目录（临时目录内共 {len(written)} 个文件）")
+check(all(under(p, _TEMP_ROOT) for p in written),
+      "临时目录内的文件全部在临时根之下（无越界写入）")
+
+
+# ======================================================================
+# 还原环境变量并清掉临时目录（本进程内其它测试可能接着跑）
+# ======================================================================
+for key, value in _SAVED_ENV.items():
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
+shutil.rmtree(_TEMP_ROOT, ignore_errors=True)
+check(os.environ.get("LOCALAPPDATA") == _SAVED_ENV.get("LOCALAPPDATA"),
+      "退出前 LOCALAPPDATA 已还原为原值")
+check(os.environ.get("APPDATA") == _SAVED_ENV.get("APPDATA"),
+      "退出前 APPDATA 已还原为原值")
 
 print(f"\n{'=' * 74}")
 print(f"通过 {_PASSED} 项，失败 {_FAILED} 项")

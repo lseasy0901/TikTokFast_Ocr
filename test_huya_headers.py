@@ -22,9 +22,33 @@
 import json
 import logging
 import os
+import shutil
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ----------------------------------------------------------------------
+# 测试环境隔离 —— 必须在导入任何项目模块之前完成
+#
+# [8] 会构造真实的 MainWindow，而它会创建 LicenseManager / FirstRunStore /
+# StreamHistory：三者分别读写 %APPDATA%（授权）与 %LOCALAPPDATA%（偏好、
+# 历史、更新状态）。不隔离就会读本机真实的授权与偏好状态；在干净机器上
+# 还会把源码树根的 legacy stream_history.json 迁移进真实数据目录。
+#
+# 两个变量都**直接赋值**，刻意不用 os.environ.setdefault()：Windows 上
+# LOCALAPPDATA 本来就已经存在，setdefault 是空操作，隔离会静默失效。
+# ----------------------------------------------------------------------
+_TEMP_ROOT = tempfile.mkdtemp(prefix="dlv-huyaheaders-")
+_TEMP_APPDATA = os.path.join(_TEMP_ROOT, "appdata")
+_TEMP_LOCALAPPDATA = os.path.join(_TEMP_ROOT, "localappdata")
+os.makedirs(_TEMP_APPDATA, exist_ok=True)
+os.makedirs(_TEMP_LOCALAPPDATA, exist_ok=True)
+
+#: 覆盖前的原值；进程退出时精确还原（原先不存在就删掉，不留空壳变量）
+_SAVED_ENV = {key: os.environ.get(key) for key in ("APPDATA", "LOCALAPPDATA")}
+os.environ["APPDATA"] = _TEMP_APPDATA
+os.environ["LOCALAPPDATA"] = _TEMP_LOCALAPPDATA
 
 logging.disable(logging.CRITICAL)
 
@@ -50,6 +74,27 @@ def check(name, cond, detail=""):
     _results.append((name, bool(cond), detail))
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}"
           + (f"   {detail}" if detail and not cond else ""))
+
+
+def under(path, parent) -> bool:
+    """path 是否位于 parent 之内（绝对路径比较；不同盘符视为不包含）。"""
+    if not parent:
+        return False
+    try:
+        return os.path.commonpath([os.path.abspath(str(path)),
+                                   os.path.abspath(str(parent))]) \
+            == os.path.abspath(str(parent))
+    except ValueError:
+        return False
+
+
+def _walk_files(root):
+    """递归列出 root 下的全部文件路径。"""
+    found = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            found.append(os.path.join(dirpath, name))
+    return found
 
 
 # ----------------------------------------------------------------------
@@ -254,6 +299,53 @@ def t_mainwindow_wiring():
     mw.FFmpegReader = _SpyReader
     try:
         win = mw.MainWindow()
+
+        # --- 隔离自证：这个真实 MainWindow 只能落在临时目录里 -------------
+        # 只改环境变量是不够的 —— 若某个对象在 import 期就把真实路径缓存了
+        # 下来，环境变量改了也会被绕过。所以这里查的是**已经构造出来的对象**。
+        import utils.first_run as first_run
+        import utils.license_store as license_store
+        import utils.stream_history as stream_history
+
+        print("   （临时根: %s）" % _TEMP_ROOT)
+        for label, path, tmproot in (
+                ("StreamHistory", win._stream_history._file_path,
+                 _TEMP_LOCALAPPDATA),
+                ("FirstRunStore", win._first_run_store.path, _TEMP_LOCALAPPDATA),
+                ("LicenseStore", win._license_manager.store.path,
+                 _TEMP_APPDATA)):
+            check(f"[隔离] 已构造的 {label} 落在临时目录",
+                  under(path, tmproot), str(path))
+        for label, path, real_root in (
+                ("StreamHistory", win._stream_history._file_path,
+                 _SAVED_ENV.get("LOCALAPPDATA")),
+                ("FirstRunStore", win._first_run_store.path,
+                 _SAVED_ENV.get("LOCALAPPDATA")),
+                ("LicenseStore", win._license_manager.store.path,
+                 _SAVED_ENV.get("APPDATA"))):
+            if real_root:
+                check(f"[隔离] {label} 不在真实用户目录下",
+                      not under(path, real_root), str(path))
+        check("[隔离] 历史目录解析指向临时 LOCALAPPDATA",
+              stream_history.default_data_dir()
+              == os.path.join(_TEMP_LOCALAPPDATA, stream_history.APP_DIR_NAME),
+              stream_history.default_data_dir())
+        check("[隔离] 偏好路径解析指向临时 LOCALAPPDATA",
+              under(first_run.default_prefs_path(), _TEMP_LOCALAPPDATA),
+              first_run.default_prefs_path())
+        check("[隔离] 授权目录解析指向临时 APPDATA",
+              license_store.default_data_dir()
+              == os.path.join(_TEMP_APPDATA, license_store.APP_DIR_NAME),
+              license_store.default_data_dir())
+
+        # 会话中真实写盘一次，确认落点也只在临时目录里
+        win._stream_history.add_or_update("https://www.huya.com/隔离自证", "")
+        moved = [p for p in _walk_files(_TEMP_ROOT)
+                 if os.path.basename(p) == "stream_history.json"]
+        check("[隔离] 运行时写出的 stream_history.json 在临时目录内",
+              bool(moved) and all(under(p, _TEMP_ROOT) for p in moved),
+              str(moved))
+
         cand = huya_candidates()[0]
         info = StreamInfo(platform="huya", room_id="dank1ng",
                           candidates=[cand], selected=cand,
@@ -365,4 +457,13 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        # 还原环境变量并清掉临时目录（本进程内其它测试可能接着跑）
+        for _key, _value in _SAVED_ENV.items():
+            if _value is None:
+                os.environ.pop(_key, None)
+            else:
+                os.environ[_key] = _value
+        shutil.rmtree(_TEMP_ROOT, ignore_errors=True)
