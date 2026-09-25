@@ -323,6 +323,27 @@ DEFAULT_OCR_GAME_PROFILE_ID = OCR_GAME_CHOICES[0][0]
 #: 不暗示程序认为应该是哪款游戏），也不附加任何操作入口。
 OCR_GAME_MISMATCH_MESSAGE = "检测到选择错误，请重新选择游戏类型后再进行识别。"
 
+# ======================================================================
+# 内部诊断入口的可见性开关（生产 UI 收口）
+# ======================================================================
+#: 生产 UI 是否显示内部诊断入口。默认 False = 不显示。
+#:
+#: 只管**看得见 / 看不见**，不删除任何实现：被它隐藏的四个入口
+#: （「开始诊断」「导出诊断 CSV」「全 PSM 观测」「采集 ROI 样本」）对应的
+#: 按钮 / 复选框对象、信号连接、OCRDiagnostics、SampleCapture、
+#: observe_all_psm 全链路一律原样保留。置为 True 即完整恢复原样，
+#: 不需要改其它任何一行代码。
+#:
+#: 为什么用隐藏而不是不创建：`_diag_obs_check.isChecked()` 在开始识别时被
+#: 读取（见 _start_ocr），控件必须继续存在才能保持行为不变；而"隐藏"同时
+#: 天然阻止误触。Qt 的 QBoxLayout 会把隐藏控件当作空项，不占高度、不产生
+#: 间距，因此关闭后不会留下空白带（由 test_ui_internal_diagnostics_gate.py
+#: 用几何断言钉住）。
+#:
+#: 隐藏的是内部诊断/采样入口，**不**包括正式产品功能：「导出 CSV」（本次
+#: 会话房间码流水）、历史记录、备注、导出路径等都照常显示。
+SHOW_INTERNAL_DIAGNOSTICS = False
+
 #: 房间码还没有结果时的占位文案。刻意用文字而不是 "--"：后者在等宽大字下
 #: 和真实房间码难以区分，用户会把占位当成识别结果。
 OCR_RESULT_PLACEHOLDER = "尚未识别"
@@ -1072,6 +1093,14 @@ class MainWindow(QMainWindow):
         cap_row_layout.addWidget(self._diag_capture_check)
         cap_row_layout.addStretch(1)
         col.addWidget(cap_row)
+
+        # 内部诊断入口的可见性：由模块顶部的单一开关决定，默认不显示。
+        # 三个行控件已经 addWidget 进 col 并被 col 持有，这里只改可见性 ——
+        # 控件对象、信号、实现全部保留（开关置 True 即完整恢复）。
+        # 隐藏控件在 QBoxLayout 里是空项：不占高度、不产生行间距，所以关闭后
+        # 不会留下空白带，也不会出现"不可见但仍占位"的控件。
+        for row in (diag_row, obs_row, cap_row):
+            row.setVisible(SHOW_INTERNAL_DIAGNOSTICS)
 
         # 初始状态：诊断默认关闭 -> 观测不可勾选
         self._update_diag_controls()

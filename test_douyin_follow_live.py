@@ -6,8 +6,13 @@
 问题链接（真实用户上报）：
     https://www.douyin.com/follow/live/242240793655?anchor_id=111122930648
 
+房间号由**结构**决定，不是由最长数字或 URL 形态决定：
+    房间号 = 路径里「直播语义段」后面紧跟的那个数字段。
+因此 /live/{id}、/follow/live/{id}、/root/live/{id} 走同一条规则；
+anchor_id / r_id / r_player 等与房间号无关的参数一律忽略。
+
 覆盖：
-    A. URL → 适配器匹配 & room_id 候选提取（纯字符串，不发请求）
+    A. URL → 适配器匹配 & room_id 提取（纯结构，不发请求）
     B. 关注页链接的解析流程（网络全部打桩）
     C. 标准直播链接的行为没有改变
     D. 真实网络验证（默认跳过，需显式开启）
@@ -32,7 +37,11 @@ sys.path.insert(0, PROJECT_ROOT)
 
 logging.disable(logging.CRITICAL)
 
-from stream.adapters.douyin import DouyinAdapter, DouyinStream  # noqa: E402
+from stream.adapters.douyin import (  # noqa: E402
+    DouyinAdapter,
+    DouyinStream,
+    DouyinStreamError,
+)
 from stream.models import StreamResolveError  # noqa: E402
 from stream.registry import build_default_registry  # noqa: E402
 
@@ -155,8 +164,8 @@ def test_url_parsing() -> None:
         "注册表能匹配关注页链接（回归：此前报『没有可处理该地址的直播平台』）",
     )
     check(
-        DouyinStream._parse_room_id_candidates(FOLLOW_URL) == [FOLLOW_ID, ANCHOR_ID],
-        "关注页链接给出两个候选：路径 id 在前、anchor_id 在后",
+        DouyinStream._parse_room_id_candidates(FOLLOW_URL) == [FOLLOW_ID],
+        "只认路径里 live 后面的 id；anchor_id 不再作为候选",
     )
 
     # A3. 缺少 anchor_id
@@ -172,20 +181,38 @@ def test_url_parsing() -> None:
         "anchor_id 非数字时忽略它，不会当成候选",
     )
 
-    # A4. 无效链接：不能因为放宽了域名就把整站认领进来
+    # A4. 非直播链接：不能因为放宽了域名就把整站认领进来
     invalid = (
         "https://www.douyin.com/video/123456",
         "https://www.douyin.com/user/abc",
-        "https://www.douyin.com/follow/live/abc",
+        "https://www.douyin.com/search/123456",
+        "https://www.douyin.com/discover",
         "https://www.douyin.com/",
+        "https://www.douyin.com/video/999?anchor_id=123",
         "https://example.com/follow/live/123",
+        "https://www.bilibili.com/live/123",
         "",
     )
     for url in invalid:
         check(
             not adapter.can_handle(url) and not registry.get_adapter(url),
-            f"无效/无关链接仍被拒绝：{url or '(空)'}",
+            f"非直播/无关链接仍被拒绝：{url or '(空)'}",
         )
+
+    # A5. 直播语义成立但房间号非法：**要**被接住，报"URL格式错误"而不是
+    #     "没有可处理该地址的直播平台" —— 后者对用户是误导
+    for url in ("https://www.douyin.com/follow/live/abc",
+                "https://www.douyin.com/live/",
+                "https://live.douyin.com/"):
+        check(adapter.can_handle(url),
+              f"直播语义成立就该被接住（房间号的合法性留给 resolve 报错）：{url}")
+        check(DouyinStream._parse_room_id_candidates(url) == [],
+              f"取不到合法房间号时返回空（不猜）：{url}")
+        try:
+            DouyinStream(url).get_room_id()
+            check(False, f"非法房间号应当报错：{url}")
+        except StreamResolveError as e:
+            check("URL格式错误" in str(e), f"报错为 URL 格式错误：{e}")
 
 
 # ======================================================================
@@ -202,34 +229,43 @@ def test_follow_resolution() -> None:
           f"主候选成功时只请求一次（实际 {ds._session.requested_room_ids}）")
     check(len(info.candidates) >= 1, "仍然走既有的候选流/选流逻辑")
 
-    # B2. 关键回归：路径 id 换不出房间、anchor_id 可以 → 应当成功
+    # B2. 关键：路径 id 换不出房间时，**不允许**拿 anchor_id 当房间号去试
     ds = new_stream(FOLLOW_URL, streams={ANCHOR_ID: "http://x/b.flv"})
-    info = ds.get_stream_info()
-    check(info.room_id == ANCHOR_ID, "回退到 anchor_id 并成功")
-    check(ds._session.requested_room_ids == [FOLLOW_ID, ANCHOR_ID],
-          f"两个候选都被尝试过（实际 {ds._session.requested_room_ids}）")
+    try:
+        ds.get_stream_info()
+        check(False, "路径 id 取不到流时应当报错，而不是拿 anchor_id 顶替")
+    except StreamResolveError:
+        check(True, "路径 id 取不到流时如实报错")
+    check(ds._session.requested_room_ids == [FOLLOW_ID],
+          f"anchor_id 绝不被当作房间号请求（实际 {ds._session.requested_room_ids}）")
 
-    # B3. 两个候选都换不出流 → 报错，且错误描述的是主候选
+    # B3. 取不到流 → 报错，错误里的 room_id 就是路径 id
     ds = new_stream(FOLLOW_URL, streams={})
     try:
         ds.get_stream_info()
-        check(False, "两个候选都失败时应当抛错")
+        check(False, "取不到流时应当抛错")
     except StreamResolveError as e:
         check(bool(str(e)), f"报错信息可读：{e}")
-        check(ds.room_id == FOLLOW_ID, "失败后 room_id 回到主候选（便于排查）")
-    check(ds._session.requested_room_ids == [FOLLOW_ID, ANCHOR_ID],
-          "两个候选都试过了才报错")
+        check(ds.room_id == FOLLOW_ID, "失败后 room_id 仍是路径 id（便于排查）")
+    check(ds._session.requested_room_ids == [FOLLOW_ID], "只请求了路径 id")
 
-    # B4. 主候选抛"未开播"之类的明确错误 → 仍然去试 anchor_id
+    # B4. 路径 id 抛"未开播"之类的明确错误 → 如实抛出，不拿 anchor_id 顶替
     ds = new_stream(
         FOLLOW_URL,
         streams={ANCHOR_ID: "http://x/c.flv"},
-        errors={FOLLOW_ID: StreamResolveError("房间未开播")},
+        # 用生产代码真正会抛的那个类型：直播信息链对明确的 DouyinStreamError
+        # 是"原样上抛"，对其它异常才会吞掉并落到"所有解析方式均失败"
+        errors={FOLLOW_ID: DouyinStreamError("房间未开播")},
     )
-    info = ds.get_stream_info()
-    check(info.room_id == ANCHOR_ID, "主候选抛明确错误时仍回退到 anchor_id")
+    try:
+        ds.get_stream_info()
+        check(False, "明确错误应当抛出")
+    except StreamResolveError as e:
+        check("未开播" in str(e), f"原样抛出路径 id 的错误：{e}")
+    check(ds._session.requested_room_ids == [FOLLOW_ID],
+          "明确错误后也不再尝试 anchor_id")
 
-    # B5. 两个候选都抛错 → 抛第一个候选的错误（信息量最大）
+    # B5. 抛出的错误里带的就是路径 id（用户给的那个 id）
     ds = new_stream(
         FOLLOW_URL,
         errors={FOLLOW_ID: StreamResolveError("房间未开播"),
@@ -237,11 +273,11 @@ def test_follow_resolution() -> None:
     )
     try:
         ds.get_stream_info()
-        check(False, "两个候选都抛错时应当抛出异常")
+        check(False, "抛错时应当抛出异常")
     except StreamResolveError as e:
-        # 报错里带的 room_id 必须是**主候选**：它才是用户给的那个 id，
-        # 拿它去排查才有意义
-        check(FOLLOW_ID in str(e), f"抛出的是主候选的失败信息：{e}")
+        check(FOLLOW_ID in str(e), f"抛出的是路径 id 的失败信息：{e}")
+    check(ANCHOR_ID not in ds._session.requested_room_ids,
+          "anchor_id 从未被请求过")
 
     # B6. 请求失败（网络层异常）不被吞掉
     ds = new_stream(FOLLOW_URL, errors={

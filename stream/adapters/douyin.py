@@ -49,13 +49,27 @@ class DouyinStreamError(StreamResolveError):
 class DouyinStream:
     """抖音直播流地址解析器"""
 
-    # 直播间URL匹配模式：https://live.douyin.com/{room_id}
-    _ROOM_URL_PATTERN = re.compile(r"^https?://live\.douyin\.com/(\d+)")
+    # ------------------------------------------------------------------
+    # 直播间 URL 的结构识别（不使用整串正则）
+    #
+    # 规则一句话：**房间号 = 路径里「直播语义段」后面紧跟的那个数字段**。
+    # 位置本身就是语义，所以 /live/{id}、/follow/live/{id}、/root/live/{id}
+    # 走的是同一条规则，不需要为每种形态各写一条正则。
+    # ------------------------------------------------------------------
 
-    # 关注页里的直播入口：www.douyin.com/follow/live/{id}?anchor_id={aid}
-    # 只认领这一条路径，**不**整站认领 www.douyin.com —— 那个域名下还有
-    # 大量视频页、用户页等与直播无关的地址。
-    _FOLLOW_LIVE_PATH = re.compile(r"^/follow/live/(\d+)$")
+    #: 抖音域名（www 与不带 www 等价）。只认这几个，绝不整站认领。
+    _DOUYIN_HOSTS = frozenset({"douyin.com", "www.douyin.com", "live.douyin.com"})
+
+    #: 路径里表示「这里是一个直播间」的语义段。
+    _LIVE_PATH_SEGMENTS = frozenset({"live"})
+
+    #: 域名本身即直播语义：路径第一段就是房间号（live.douyin.com/96670111738）。
+    _LIVE_HOSTS = frozenset({"live.douyin.com"})
+
+    #: 查询串里**明确命名**为直播间资源的参数（仅在没有路径解时回退使用）。
+    #: 只认这两个：anchor_id / r_id / r_player / is_paidlive 等分别是主播、
+    #: 推荐位、播放器与状态参数，与房间号无关，**绝不可以**拿来当 room_id。
+    _ROOM_ID_QUERY_KEYS = ("room_id", "webcast_id")
 
     # 旧版页面 RENDER_DATA 提取模式
     _RENDER_DATA_PATTERN = re.compile(
@@ -163,35 +177,120 @@ class DouyinStream:
         logger.info("解析 room_id 候选 = %s", candidates)
         return self.room_id
 
+    @staticmethod
+    def _split(url: str):
+        """安全地 urlsplit；不是可处理的 http(s) URL 时返回 None（不抛）。
+
+        三道门槛，缺一不可：
+            - 必须是字符串且非空；
+            - 必须是 http/https（协议相对、ftp、纯文本一律不认）；
+            - 端口必须能解析（``parts.port`` 对非法端口抛 ValueError）。
+        不满足就当作"不是直播地址"，绝不猜。
+        """
+        if not url or not isinstance(url, str):
+            return None
+        try:
+            parts = urlsplit(url.strip())
+            parts.port          # 非法端口在这里抛 ValueError
+        except ValueError:
+            return None
+        if parts.scheme.lower() not in ("http", "https"):
+            return None
+        return parts
+
+    @classmethod
+    def _path_segments(cls, parts) -> list:
+        """路径里的非空段：``/follow/live/123`` -> ``['follow', 'live', '123']``"""
+        return [seg for seg in parts.path.split("/") if seg]
+
+    @staticmethod
+    def _is_room_id(text: str) -> bool:
+        """房间号段是否合法：**只认 ASCII 0-9**。
+
+        不能用 str.isdigit()：它对全角「１２３」、上标「²」、阿拉伯-印度数字
+        「٣」同样返回 True，而那些字符不可能是抖音的房间号。位置对了但字符
+        不是 ASCII 数字时，按"取不到"处理——宁可报无法识别，也不把非 ASCII
+        字符串当 id 拿去拼请求。
+        """
+        return bool(text) and text.isascii() and text.isdigit()
+
+    @classmethod
+    def _room_id_from_path(cls, parts) -> "str | None":
+        """按结构取房间号：直播语义段之后紧跟的那一个数字段。
+
+        语义段之后不是数字（例如 /live/abc）就**不算**——位置对了但资源
+        id 不合法，宁可不给结果，也不去路径其它地方找一个数字来凑。
+        """
+        segments = cls._path_segments(parts)
+        for index, segment in enumerate(segments):
+            if (segment.lower() in cls._LIVE_PATH_SEGMENTS
+                    and index + 1 < len(segments)
+                    and cls._is_room_id(segments[index + 1])):
+                return segments[index + 1]
+
+        # live.douyin.com/{id}：域名本身已经说明这是直播间，第一段就是房间号
+        if (parts.hostname or "").lower() in cls._LIVE_HOSTS:
+            if segments and cls._is_room_id(segments[0]):
+                return segments[0]
+        return None
+
+    @classmethod
+    def _room_id_from_query(cls, parts) -> "str | None":
+        """query 回退：只认明确命名为直播间资源的参数。"""
+        params = parse_qs(parts.query)
+        for key in cls._ROOM_ID_QUERY_KEYS:
+            for value in params.get(key, ()):
+                if cls._is_room_id(value):
+                    return value
+        return None
+
+    @classmethod
+    def is_live_url(cls, url: str) -> bool:
+        """URL 是否**是**抖音直播间地址（纯结构判断，不发请求）。
+
+        只看「有没有直播语义」，**不要求**房间号一定是数字：房间号合不合法
+        留给 get_room_id() 报 "URL格式错误：无法解析room_id"，提示更有指向性，
+        也与改动前的行为一致。
+
+        普通视频页 / 用户主页 / 搜索页都不含直播语义段，因此不会被接住。
+        """
+        parts = cls._split(url)
+        if parts is None:
+            return False
+        host = (parts.hostname or "").lower()
+        if host not in cls._DOUYIN_HOSTS:
+            return False
+        # 直播专用域名：整站都是直播间
+        if host in cls._LIVE_HOSTS:
+            return True
+        # 路径里有直播语义段
+        if any(seg.lower() in cls._LIVE_PATH_SEGMENTS
+               for seg in cls._path_segments(parts)):
+            return True
+        # 明确命名的房间/直播资源参数
+        params = parse_qs(parts.query)
+        return any(key in params for key in cls._ROOM_ID_QUERY_KEYS)
+
     @classmethod
     def _parse_room_id_candidates(cls, url: str) -> list[str]:
-        """从 URL 提取 room_id 候选，顺序即尝试顺序。
+        """从 URL 提取 room_id 候选（当前结构下最多一个）。
 
-        两种受支持的形态：
-            https://live.douyin.com/{id}                     → [id]
-            https://www.douyin.com/follow/live/{id}?anchor_id={aid}
-                                                             → [id, aid]
+        规则：**房间号 = 路径里「直播语义段」后面紧跟的那个数字段**。
+        例如 /live/{id}、/follow/live/{id}、/root/live/{id} 都落到同一条规则。
+        路径里没有直播语义时，才回退到明确命名的 query 参数（room_id /
+        webcast_id）。
 
-        关注页那条**刻意返回两个候选**：路径里的 id 与 anchor_id 谁都不假定
-        就是内部 room_id，由调用方拿它们各自去问直播信息接口，以响应为准。
+        明确不做的事：不取最长数字、不拿 anchor_id 当房间号、不按 URL 长度猜、
+        不因为路径里另有一个数字就认一个。
         """
-        match = cls._ROOM_URL_PATTERN.match(url)
-        if match:
-            return [match.group(1)]
-
-        parts = urlsplit(url)
-        if (parts.hostname or "").lower() not in ("www.douyin.com", "douyin.com"):
+        parts = cls._split(url)
+        if parts is None:
             return []
-        path_match = cls._FOLLOW_LIVE_PATH.match(parts.path.rstrip("/"))
-        if not path_match:
+        if (parts.hostname or "").lower() not in cls._DOUYIN_HOSTS:
             return []
 
-        candidates = [path_match.group(1)]
-        # anchor_id 也可能带在查询串里；拿不到就只试路径 id
-        anchor = (parse_qs(parts.query).get("anchor_id") or [""])[0]
-        if anchor.isdigit() and anchor not in candidates:
-            candidates.append(anchor)
-        return candidates
+        room_id = cls._room_id_from_path(parts) or cls._room_id_from_query(parts)
+        return [room_id] if room_id else []
 
     # ------------------------------------------------------------------
     # 第2步：获取 Cookie（ttwid 等必要 Cookie）
@@ -932,15 +1031,11 @@ class DouyinStream:
     def _get_live_info_with_candidates(self):
         """按 room_id 候选依次尝试直播信息请求。
 
-        标准直播间链接只有一个候选，因此这里**只请求一次**，行为与改动前
-        完全一致（错误与异常原样抛出）。
+        房间号由结构解析给出（见 _parse_room_id_candidates），当前每种 URL
+        形态都只有一个候选，因此这里**只请求一次**，错误与异常原样抛出。
 
-        关注页链接有两个候选（路径 id 与 anchor_id）。谁都不是"内部 room_id"
-        的既定答案，所以拿它们各自去问同一个接口：先问到可用播放地址的那个
-        胜出，对外报告的 room_id 始终来自响应本身。
-
-        全部失败时抛**第一个**候选的异常 —— 它是最主要的那个 id 的真实答复，
-        用它报错比用后备 id 的答复更有信息量。
+        保留"遍历候选"这层结构是为了不改变既有的错误语义（全部失败时抛
+        第一个候选的异常）；不要再往候选里塞 anchor_id 之类与房间无关的 id。
         """
         candidates = self._room_id_candidates or (
             [self.room_id] if self.room_id else [])
@@ -1047,21 +1142,16 @@ class DouyinAdapter(PlatformAdapter):
 
     name = "douyin"
 
-    # 只按主机名判断归属：URL 里的房间号是否合法留给 resolve() 报错，
-    # 这样非法房间号仍然得到原来的 "URL格式错误：无法解析room_id" 提示。
-    _HOST_PATTERN = re.compile(r"^https?://live\.douyin\.com/", re.IGNORECASE)
-    #: 关注页里的直播入口。只认领这一条路径，不整站认领 www.douyin.com。
-    _FOLLOW_LIVE_PATTERN = re.compile(
-        r"^https?://(?:www\.)?douyin\.com/follow/live/\d+(?:[/?#]|$)",
-        re.IGNORECASE)
-
     def can_handle(self, url: str) -> bool:
-        """URL 是否属于抖音直播间（纯 URL 判断，不发请求）"""
-        if not url or not isinstance(url, str):
-            return False
-        stripped = url.strip()
-        return bool(self._HOST_PATTERN.match(stripped)
-                    or self._FOLLOW_LIVE_PATTERN.match(stripped))
+        """URL 是否属于抖音直播间（纯结构判断，不发请求）。
+
+        判断规则与房间号提取共用同一份实现（``DouyinStream.is_live_url``），
+        因此不存在"能接住却解析不出"或"解析得出却接不住"的分叉。
+
+        只按结构判断归属，**不要求**房间号是数字：非法房间号仍然走到
+        resolve() 并报原来的 "URL格式错误：无法解析room_id"。
+        """
+        return DouyinStream.is_live_url(url)
 
     def resolve(self, url: str) -> StreamInfo:
         """:raises DouyinStreamError: 解析失败"""
