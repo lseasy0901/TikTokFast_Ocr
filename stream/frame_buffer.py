@@ -43,6 +43,11 @@ class LatestFrameBuffer:
         self._frame: np.ndarray | None = None
         self._frame_id: int = 0
         self._update_count: int = 0  # [DEBUG]
+        #: 单槽覆盖导致被丢掉的帧数：update() 覆盖掉了一帧**从未被 get() 读过**
+        #: 的帧时 +1。只统计，不改变覆盖行为。
+        self._dropped_count: int = 0
+        #: 当前格子里这一帧是否已经被 get() 读过（用于判定下一次覆盖是否丢帧）
+        self._consumed: bool = False
 
     # ------------------------------------------------------------------
     # 对外接口
@@ -54,9 +59,14 @@ class LatestFrameBuffer:
         :param frame: numpy.ndarray (H, W, 3) BGR
         """
         with self._lock:
+            # 旧帧还没被读走就被这次写入覆盖 => 记一次丢帧。
+            # 这是**计数**，覆盖行为本身与从前逐字相同。
+            if self._frame is not None and not self._consumed:
+                self._dropped_count += 1
             self._frame = frame
             self._frame_id += 1
             self._update_count += 1
+            self._consumed = False
         if self._update_count <= 3 or self._update_count % 100 == 0:
             logger.info(
                 "[BUFFER] frame received: %dx%d update_count=%d",
@@ -70,13 +80,20 @@ class LatestFrameBuffer:
         :return: numpy.ndarray (H, W, 3) BGR；无帧时返回 None
         """
         with self._lock:
+            if self._frame is not None:
+                self._consumed = True
             return self._frame
 
     def clear(self) -> None:
-        """清空缓冲，重置帧计数"""
+        """清空缓冲，重置帧计数。
+
+        与既有行为一致：只重置 ``frame_id``（``update_count`` 本来就不重置），
+        统计用的 ``dropped_count`` 同样**不**重置——它是整个会话的累计值。
+        """
         with self._lock:
             self._frame = None
             self._frame_id = 0
+            self._consumed = False
 
     # ------------------------------------------------------------------
     # 状态属性
@@ -92,3 +109,21 @@ class LatestFrameBuffer:
         """缓冲中是否有帧"""
         with self._lock:
             return self._frame is not None
+
+    @property
+    def dropped_count(self) -> int:
+        """本会话因单槽覆盖而被丢掉的帧数（从未被读取就遭覆盖）。
+
+        设计上「只留最新帧」本就会丢掉大量帧，所以**绝对值大是正常的**；
+        要看的是它与 :attr:`update_count` 的比值随时间的**变化**——
+        卡顿时比值会升高，这正是真实直播验收里区分「视频侧卡」与
+        「OCR 侧慢」需要的信号。
+        """
+        with self._lock:
+            return self._dropped_count
+
+    @property
+    def update_count(self) -> int:
+        """本会话累计写入的帧数（丢帧率的分母）。"""
+        with self._lock:
+            return self._update_count

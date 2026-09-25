@@ -304,6 +304,7 @@ class OCRWorker(QThread):
             self._last_error = str(e)
             logger.error("OCR 引擎初始化失败: %s", e, exc_info=True)
             self.error_occurred.emit(str(e))
+            self._note_worker_error(f"引擎初始化失败: {e}")
             logger.info("OCRWorker 主循环结束")
             self._shutdown_engine()      # 引擎可能已建好而识别器构造失败：一并回收
             return
@@ -318,12 +319,49 @@ class OCRWorker(QThread):
                 logger.error(error_msg, exc_info=True)
                 self._last_error = error_msg
                 self.error_occurred.emit(error_msg)
+                self._note_worker_error(error_msg)
 
             # 等待间隔：稳态用 interval_ms；有新候选待确认时用更短的间隔
             self._stopped_event.wait(self._interval_for_wait() / 1000.0)
 
         logger.info("OCRWorker 主循环结束")
+        # 会话结束：把最终的丢帧统计写进诊断（只读计数，纯旁路）
+        self._note_frame_drops()
         self._shutdown_engine()
+
+    def _note_worker_error(self, text: str) -> None:
+        """把 worker 级异常写进诊断记录（未接线/未开启时是空操作）。
+
+        纯旁路：调用方的 logger 与 error_occurred 信号、以及异常处理流程
+        都保持不变，这里只是在既有处理之外多写一条诊断。
+        """
+        diagnostics = self._diagnostics
+        if diagnostics is None:
+            return
+        try:
+            diagnostics.note_worker_error(text)
+        except Exception:  # noqa: BLE001 - 诊断绝不冒泡进识别/退出路径
+            logger.debug("worker 异常写诊断失败", exc_info=True)
+
+    def _note_frame_drops(self) -> None:
+        """把 frame_buffer 的最终丢帧统计写进诊断（只读，纯旁路）。
+
+        丢帧数是 frame_buffer 单槽覆盖的累计计数（见 LatestFrameBuffer
+        .dropped_count）。拿不到缓冲区、或缓冲区没有该计数时静默跳过——
+        诊断缺一条记录，绝不影响识别与退出。
+        """
+        diagnostics = self._diagnostics
+        if diagnostics is None:
+            return
+        try:
+            buffer = self._frame_buffer_getter()
+            dropped = getattr(buffer, "dropped_count", None)
+            total = getattr(buffer, "update_count", None)
+            if dropped is None or total is None:
+                return
+            diagnostics.note_frame_drops(dropped, total)
+        except Exception:  # noqa: BLE001 - 诊断绝不冒泡进识别/退出路径
+            logger.debug("丢帧统计写诊断失败", exc_info=True)
 
     def _shutdown_engine(self) -> None:
         """释放本线程持有的 OCR 引擎资源（OCR-3：常驻引擎句柄随 worker 退出释放）。

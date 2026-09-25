@@ -95,6 +95,14 @@ COPY_SUCCESS = "成功"
 COPY_SKIPPED = "跳过:与上次相同"
 COPY_FAILED_PREFIX = "失败:"
 
+#: 「不属于任何一次识别」的事件写在备注列时的前缀。
+#:
+#: 这类事件（worker 级异常、会话结束时的丢帧统计）发生时本线程没有正在写的
+#: ExecutionTrace，因此单独成一条只带时间与备注的记录行——好让诊断 CSV 自带
+#: 完整时间线，又**不改变既有 13 列结构**（列结构一动，既有解析方与测试全要改）。
+WORKER_ERROR_PREFIX = "worker异常:"
+FRAME_DROP_PREFIX = "丢帧:"
+
 
 def format_execution_time(moment: datetime) -> str:
     """执行时间：``HH:MM:SS.mmm``（毫秒，与复制记录 CSV 的写法一致）。"""
@@ -302,6 +310,49 @@ class OCRDiagnostics:
         trace = self.current()
         if trace is not None:
             trace.add_note(text)
+
+    # ------------------------------------------------------------------
+    # 会话级事件（不属于任何一次识别）
+    # ------------------------------------------------------------------
+    def note_worker_error(self, text: str) -> None:
+        """记录一条 worker 级异常，写进诊断 CSV 的备注列。
+
+        引擎初始化失败、主循环兜底异常都属于这一类。它们**只增加记录**：
+        调用方原本的 logger 与 error_occurred 信号保持不变，异常处理流程不变。
+        """
+        self._record_event(f"{WORKER_ERROR_PREFIX}{text}")
+
+    def note_frame_drops(self, dropped: int, total: int) -> None:
+        """记录本会话最终的丢帧统计（frame_buffer 单槽覆盖导致）。
+
+        写进备注列，形如 ``丢帧:1234/5678（21.7%）``。``total`` 为 0 时比值写作
+        0.0%，不产生除零。
+        """
+        dropped = int(dropped)
+        total = int(total)
+        rate = (100.0 * dropped / total) if total > 0 else 0.0
+        self._record_event(
+            f"{FRAME_DROP_PREFIX}{dropped}/{total}（{rate:.1f}%）"
+        )
+
+    def _record_event(self, text: str) -> None:
+        """把一条「会话级事件」落成记录行。
+
+        有正在写的执行时挂到它的备注上；没有时就地为这条事件建一条
+        只带时间与备注的记录——既不改列结构，也不丢事件。
+        诊断关闭（或本线程没有记录器）时是廉价空操作。
+        """
+        if not self._enabled:
+            return
+        trace = self.current()
+        if trace is not None:
+            trace.add_note(text)
+            return
+        trace = self.begin()
+        if trace is None:
+            return
+        trace.add_note(text)
+        self.finish(trace)
 
     # ------------------------------------------------------------------
     # 识别线程：收尾与阶段结论
