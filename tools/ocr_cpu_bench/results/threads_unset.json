@@ -1,0 +1,681 @@
+{
+  "schema": "livelens.ocr_cpu_bench.device_run/1",
+  "device": "cpu",
+  "generated_at": "2026-09-27T05:17:37",
+  "model": {
+    "dir": "D:\\TIikTok_Ocr\\DouyinLowLatencyViewer\\runtime\\ppocr\\PP-OCRv6_medium_rec_infer",
+    "params_path": "D:\\TIikTok_Ocr\\DouyinLowLatencyViewer\\runtime\\ppocr\\PP-OCRv6_medium_rec_infer\\inference.pdiparams",
+    "params_bytes": 76465087,
+    "params_sha256": "1b01c79a914587933f615569e75de54f2e638ebb5d3f3b3c1b38c24ede8c7319",
+    "inference_yml_bytes": 150580,
+    "inference_json_bytes": 221814
+  },
+  "environment": {
+    "python": "3.11.9",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "cpu_logical": 20,
+    "paddle_version": "3.3.0",
+    "paddle_compiled_with_cuda": true,
+    "paddle_device_count": 0,
+    "cuda_visible_devices_env": "-1",
+    "executable": "C:\\Users\\ZhuanZ（无密码）\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+    "paddle_num_threads": null,
+    "paddle_device_place": "cpu",
+    "paddlex_version": "3.7.2",
+    "omp_num_threads": "1",
+    "mkl_num_threads": "<unset>"
+  },
+  "isolation": {
+    "isolated": true,
+    "visible_cuda_devices": 0,
+    "cuda_visible_devices_env": "-1",
+    "paddle_compiled_with_cuda": true,
+    "paddle_device_place": "cpu"
+  },
+  "process_env": {
+    "omp_num_threads_at_process_start": null,
+    "omp_num_threads_forced": null,
+    "cuda_visible_devices_at_start": "-1",
+    "parent_had_imported_paddle": false
+  },
+  "engine_patch": {
+    "patched_symbols": [
+      "ocr.ppocr_engine._DEVICE",
+      "PPOCREngine._assert_gpu_available"
+    ],
+    "production_device_constant": "gpu",
+    "effective_device": "cpu",
+    "assert_mode": "cpu-only (零可见 GPU 才放行)"
+  },
+  "backend_status": {
+    "model_name": "PP-OCRv6_medium_rec",
+    "model_dir": "D:\\TIikTok_Ocr\\DouyinLowLatencyViewer\\runtime\\ppocr\\PP-OCRv6_medium_rec_infer",
+    "device": "cpu",
+    "batch_size": 1,
+    "init_ms": 525.0802000518888,
+    "closed": false
+  },
+  "dataset": {
+    "dir": "C:\\Users\\ZhuanZ（无密码）\\Documents\\LiveLens-OCR-Dataset-20260927-043111",
+    "name": "LiveLens-OCR-Dataset-20260927-043111",
+    "samples": 30,
+    "usable_images": 30,
+    "missing_images": [],
+    "gt_length_histogram": {
+      "6": 30
+    },
+    "profiles": [
+      "valorant"
+    ],
+    "labeling": {
+      "ground_truth": "PP-OCRv6 原始读法（本测试阶段不做人工标注）",
+      "raw_text": "PP-OCRv6 原始读法，未经任何纠正/美化",
+      "confidence": "现有链路未把逐帧置信度传到 worker，本列为空",
+      "filter": "只接受 aaa123, bbbb123, aaaa1234"
+    },
+    "sampling": {
+      "sample_interval_ms": 300
+    }
+  },
+  "config": {
+    "warmup": 3,
+    "rounds": 1,
+    "limit": 30,
+    "omp_threads": null
+  },
+  "timing": {
+    "load_ms": 525.1,
+    "process_to_ready_ms": 34300.3,
+    "decode_ms_total": 27.5,
+    "warmup_calls_ms": [
+      620.857,
+      509.378,
+      520.775
+    ],
+    "warmup_total_ms": 1651.0,
+    "infer": {
+      "count": 30,
+      "mean_ms": 494.21,
+      "min_ms": 425.671,
+      "p50_ms": 498.6,
+      "p95_ms": 527.159,
+      "p99_ms": 527.465,
+      "max_ms": 527.483,
+      "stdev_ms": 27.732
+    },
+    "per_call": [
+      {
+        "round": 0,
+        "index": 0,
+        "ms": 514.234,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 1,
+        "ms": 476.471,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 2,
+        "ms": 488.913,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 3,
+        "ms": 513.979,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 4,
+        "ms": 493.567,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 5,
+        "ms": 483.416,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 6,
+        "ms": 425.671,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 7,
+        "ms": 493.129,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 8,
+        "ms": 479.96,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 9,
+        "ms": 470.549,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 10,
+        "ms": 452.622,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 11,
+        "ms": 527.42,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 12,
+        "ms": 464.84,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 13,
+        "ms": 459.949,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 14,
+        "ms": 519.569,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 15,
+        "ms": 526.841,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 16,
+        "ms": 527.483,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 17,
+        "ms": 504.368,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 18,
+        "ms": 517.458,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 19,
+        "ms": 467.699,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 20,
+        "ms": 507.384,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 21,
+        "ms": 515.336,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 22,
+        "ms": 438.781,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 23,
+        "ms": 525.766,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 24,
+        "ms": 485.062,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 25,
+        "ms": 511.193,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 26,
+        "ms": 490.305,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 27,
+        "ms": 524.119,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 28,
+        "ms": 516.592,
+        "error": null
+      },
+      {
+        "round": 0,
+        "index": 29,
+        "ms": 503.633,
+        "error": null
+      }
+    ]
+  },
+  "frames": [
+    {
+      "sample_id": "000001",
+      "image": "000001.png",
+      "ground_truth": "BST501",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "BST501",
+      "code": "BST501",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000002",
+      "image": "000002.png",
+      "ground_truth": "CEJ526",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CEJ526",
+      "code": "CEJ526",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000003",
+      "image": "000003.png",
+      "ground_truth": "CEJ526",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CEJ526",
+      "code": "CEJ526",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000004",
+      "image": "000004.png",
+      "ground_truth": "CIR820",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CIR820",
+      "code": "CIR820",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000005",
+      "image": "000005.png",
+      "ground_truth": "CIR820",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CIR820",
+      "code": "CIR820",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000006",
+      "image": "000006.png",
+      "ground_truth": "CIR820",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CIR820",
+      "code": "CIR820",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000008",
+      "image": "000008.png",
+      "ground_truth": "CMK591",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CMK591",
+      "code": "CMK591",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000011",
+      "image": "000011.png",
+      "ground_truth": "CSW957",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CSW957",
+      "code": "CSW957",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000012",
+      "image": "000012.png",
+      "ground_truth": "CSW957",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CSW957",
+      "code": "CSW957",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000013",
+      "image": "000013.png",
+      "ground_truth": "CSW957",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CSW957",
+      "code": "CSW957",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000014",
+      "image": "000014.png",
+      "ground_truth": "CXI870",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CXI870",
+      "code": "CXI870",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000015",
+      "image": "000015.png",
+      "ground_truth": "CXI870",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CXI870",
+      "code": "CXI870",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000016",
+      "image": "000016.png",
+      "ground_truth": "CXI870",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "CXI870",
+      "code": "CXI870",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000017",
+      "image": "000017.png",
+      "ground_truth": "DIX389",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "DIX389",
+      "code": "DIX389",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000018",
+      "image": "000018.png",
+      "ground_truth": "DIX389",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "DIX389",
+      "code": "DIX389",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000020",
+      "image": "000020.png",
+      "ground_truth": "DZU516",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "DZU516",
+      "code": "DZU516",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000021",
+      "image": "000021.png",
+      "ground_truth": "DZU516",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "DZU516",
+      "code": "DZU516",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000022",
+      "image": "000022.png",
+      "ground_truth": "DZU516",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "DZU516",
+      "code": "DZU516",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000023",
+      "image": "000023.png",
+      "ground_truth": "DZU516",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "DZU516",
+      "code": "DZU516",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000024",
+      "image": "000024.png",
+      "ground_truth": "EYE128",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "EYE128",
+      "code": "EYE128",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000025",
+      "image": "000025.png",
+      "ground_truth": "EYE128",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "EYE128",
+      "code": "EYE128",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000027",
+      "image": "000027.png",
+      "ground_truth": "FJE309",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "FJE309",
+      "code": "FJE309",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000028",
+      "image": "000028.png",
+      "ground_truth": "FJE309",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "FJE309",
+      "code": "FJE309",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000030",
+      "image": "000030.png",
+      "ground_truth": "FMK605",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "FMK605",
+      "code": "FMK605",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000031",
+      "image": "000031.png",
+      "ground_truth": "FMK605",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "FMK605",
+      "code": "FMK605",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000032",
+      "image": "000032.png",
+      "ground_truth": "FMK605",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "FMK605",
+      "code": "FMK605",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000033",
+      "image": "000033.png",
+      "ground_truth": "GNJ480",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "GNJ480",
+      "code": "GNJ480",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000035",
+      "image": "000035.png",
+      "ground_truth": "GNJ480",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "GNJ480",
+      "code": "GNJ480",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000036",
+      "image": "000036.png",
+      "ground_truth": "HGG117",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "HGG117",
+      "code": "HGG117",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    },
+    {
+      "sample_id": "000037",
+      "image": "000037.png",
+      "ground_truth": "HGG117",
+      "profile_id": "valorant",
+      "format_id": "aaa123",
+      "raw_text": "HGG117",
+      "code": "HGG117",
+      "corrections": 0,
+      "case_fold": 0,
+      "conflict": false,
+      "error": null
+    }
+  ]
+}

@@ -1,5 +1,18 @@
 PySide6
-opencv-python
+
+# OpenCV 只装 contrib 这一个，且钉死版本。
+#
+# 为什么不是 opencv-python：两个发行包都往同一个 site-packages/cv2/ 目录里写，
+# 同时安装就是一个混合树 —— 实测 venv 里 cv2.pyd/version.py 来自 contrib 4.10，
+# 而 mat_wrapper/、utils/、misc/ 等 18 个文件来自 opencv-python 5.0，
+# 解出来的 cv2.__version__ 是 4.10（contrib 赢了），但 5.0 的
+# opencv_videoio_ffmpeg500_64.dll（29.4 MiB）仍留在目录里，并且会一起进冻结包。
+# 单独 pip uninstall opencv-python 也不行：pip 会按 5.0 的 RECORD 删文件，
+# 而那 18 个路径 contrib 4.10 同样声明拥有。
+#
+# 版本必须是 4.10.0.84：paddlex 的 ocr / base / cv 等 extra 明确要求
+# opencv-contrib-python==4.10.0.84，换版本会把 OCR 后端推向未验证状态。
+opencv-contrib-python==4.10.0.84
 numpy
 pyyaml
 requests

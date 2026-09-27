@@ -32,6 +32,42 @@ class AuthorizationState(str, enum.Enum):
     REVOKED = "REVOKED"
 
 
+class UpdateRelease(Base):
+    """一次已发布的自动更新（Phase 2）。
+
+    只保存**永久**的小飞机分享链接；临时直链（direct_url）绝不入库 —— 它每次
+    下载时由 resolver 实时换取，用完即弃。
+
+    ``(channel, version)`` 唯一：同一渠道同一版本不允许存在多个 release。
+
+    ``package_sha1`` / ``package_sha256`` / ``package_size`` 是**必须**的，
+    因为 Velopack 的 ``releases.<channel>.json`` 本身就要带这些字段，客户端下载
+    后会用它校验包的完整性。它们的权威来源只有一个：打包工具 ``vpk pack`` 的输出
+    （见 scripts/velopack_release.py 生成的 feed）。服务端不下载 .nupkg，因此无法
+    自行计算 —— 这也是发布接口要求调用方提供它们的原因。
+    """
+
+    __tablename__ = "update_releases"
+    __table_args__ = (
+        UniqueConstraint("channel", "version", name="uq_update_release_channel_version"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    #: MAJOR.MINOR.PATCH，与 utils/version.py 的约定一致（纯数字三段式，可数值比较）。
+    version = Column(String(32), nullable=False, index=True)
+    #: 渠道。本阶段只支持 stable。
+    channel = Column(String(16), nullable=False, index=True, default="stable")
+    #: Velopack 包文件名，同时就是客户端会请求的那个文件名。
+    package_filename = Column(String(255), nullable=False)
+    #: 永久分享链接（唯一被保存的 URL）。禁止保存 direct_url / CDN URL / 临时 token。
+    package_share_url = Column(String(512), nullable=False)
+    package_sha1 = Column(String(40), nullable=False)
+    package_sha256 = Column(String(64), nullable=False)
+    package_size = Column(Integer, nullable=False)
+    release_notes = Column(Text, nullable=True)
+    published_at = Column(DateTime, default=func.now(), nullable=False)
+
+
 class Authorization(Base):
     """Device's current authorization"""
     __tablename__ = "authorizations"

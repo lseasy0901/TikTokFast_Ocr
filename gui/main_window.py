@@ -127,6 +127,10 @@ from ocr.clipboard import ClipboardManager
 from ocr.copy_log import CopyLog
 from ocr.diagnostics import OCRDiagnostics
 from ocr.sample_capture import SampleCapture
+# 数据集采集总开关。这里只 import 一个布尔量；真正的 Recorder / 队列 / writer
+# 线程都在开关为 True 时才（惰性）导入并构造，见 __init__ 里那一段。
+# 开关本体定义在 ocr/dataset_capture.py，全项目只有那一处。
+from ocr.dataset_capture import DATASET_CAPTURE_ENABLED, TARGET_FORMATS
 from ocr.profiles import game_profiles, get_profile
 from utils.stream_history import StreamHistory
 from utils.first_run import FirstRunStore
@@ -544,6 +548,23 @@ class MainWindow(QMainWindow):
         # 避免多次运行互相覆盖；目录在第一个样本落盘时才真正创建。
         self._sample_capture: SampleCapture = SampleCapture(
             self._default_sample_dir())
+
+        # ---- 数据集采集旁路（见 ocr/dataset_capture.py）----
+        # 关闭（DATASET_CAPTURE_ENABLED = False）时：连 CaptureFanout 都不构造，
+        # `_capture_sink` 就是上面那个原封不动的 SampleCapture —— 队列、writer
+        # 线程、目录、文件一律不存在，worker 侧也完全不知道有这么个功能。
+        # 打开时用一层转发对象顶上 worker 的同一个 sample_capture 槽位，
+        # 因此 ocr/worker.py 不需要任何改动。
+        self._dataset_recorder = None
+        self._dataset_timer = None
+        self._diag_enabled_before_dataset = False
+        self._capture_sink = self._sample_capture
+        if DATASET_CAPTURE_ENABLED:
+            from ocr.dataset_capture import CaptureFanout, DatasetRecorder
+            self._dataset_recorder = DatasetRecorder()
+            self._capture_sink = CaptureFanout(self._sample_capture,
+                                               self._dataset_recorder)
+
         self._stream_history: StreamHistory = StreamHistory()
 
         # 首次启动状态。构造只读一个本地文件（容错，失败按默认值处理），
@@ -1102,6 +1123,36 @@ class MainWindow(QMainWindow):
         for row in (diag_row, obs_row, cap_row):
             row.setVisible(SHOW_INTERNAL_DIAGNOSTICS)
 
+        # ---- 数据集采集入口（测试用，可一键关闭）----
+        # 与上面那三个"内部诊断"入口分开受控：它由 ocr/dataset_capture.py 的
+        # 总开关 DATASET_CAPTURE_ENABLED 决定，**不受** SHOW_INTERNAL_DIAGNOSTICS
+        # 影响（后者是生产 UI 收口，默认关；本入口按需求默认开）。
+        # 关闭时这个 QWidget 连创建都不创建，界面上不留任何痕迹。
+        if DATASET_CAPTURE_ENABLED:
+            ds_row = QWidget()
+            ds_row_layout = QHBoxLayout(ds_row)
+            ds_row_layout.setContentsMargins(0, 0, 0, 0)
+            ds_row_layout.setSpacing(6)
+
+            self._dataset_btn = QPushButton("数据集采集", ds_row)
+            self._dataset_btn.setObjectName("sectionAction")
+            self._dataset_btn.setCursor(Qt.PointingHandCursor)
+            self._dataset_btn.setFocusPolicy(Qt.NoFocus)
+            self._dataset_btn.setToolTip(
+                "把识别器看到的那一帧 ROI 原图 + PP-OCRv6 原始读法存成数据集。\n"
+                "复用当前直播流与当前 OCR 结果：不重开流、不重跑识别、不改识别与复制。\n"
+                "只收集符合 AAA123 / BBB123 / AAAA1234 三种格式的读法，\n"
+                "其余（空结果/普通文本/长度或字符不符）进 rejected.csv，不做任何纠正。")
+            self._dataset_btn.clicked.connect(self._on_dataset_capture_toggled)
+            ds_row_layout.addWidget(self._dataset_btn)
+            ds_row_layout.addStretch(1)
+            col.addWidget(ds_row)
+
+            self._dataset_status = QLabel("", ds_row)
+            self._dataset_status.setObjectName("captionLabel")
+            self._dataset_status.setWordWrap(True)
+            col.addWidget(self._dataset_status)
+
         # 初始状态：诊断默认关闭 -> 观测不可勾选
         self._update_diag_controls()
 
@@ -1532,6 +1583,80 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # OCR 诊断日志（默认关闭）
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 数据集采集（测试旁路；总开关见 ocr/dataset_capture.py）
+    # ------------------------------------------------------------------
+    def _on_dataset_capture_toggled(self) -> None:
+        """开始 / 停止数据集采集。
+
+        只做两件事：起停 Recorder、必要时打开诊断记录。识别规则、识别线程、
+        调度间隔、ROI、剪贴板一律不碰 —— 采集全程是旁路。
+        """
+        recorder = self._dataset_recorder
+        if recorder is None:
+            return
+
+        if recorder.running:
+            root = recorder.stop()
+            if self._dataset_timer is not None:
+                self._dataset_timer.stop()
+            # 恢复采集前的诊断状态：我们可能为了拿到原始读法把诊断打开过。
+            if not self._diag_enabled_before_dataset:
+                self._diagnostics.set_enabled(False)
+                self._update_diag_controls()
+            self._dataset_btn.setText("数据集采集")
+            self._refresh_dataset_status()
+            if root:
+                self.statusBar().showMessage(
+                    "数据集已保存到 %s（有效 %d 张）"
+                    % (root, recorder.stats.total))
+            logger.info("[DATASET] 采集已停止 root=%s valid=%d",
+                        root, recorder.stats.total)
+            return
+
+        # 开始前先记下诊断状态。原始读法只有在诊断开启时才由 worker 传出
+        # （readings 在 trace 为 None 时是 None）；而本阶段要求 ground_truth
+        # 取"PP-OCRv6 原始读法"，不是"纠正后的候选"，所以这里必须保证诊断是开的。
+        # 诊断只做内存记录、不增加任何 OCR 调用，不会拖慢识别。
+        self._diag_enabled_before_dataset = self._diagnostics.enabled
+        if not self._diagnostics.enabled:
+            self._diagnostics.set_enabled(True)
+            self._update_diag_controls()
+
+        root = recorder.start()
+        self._dataset_btn.setText("停止采集")
+        if self._dataset_timer is None:
+            self._dataset_timer = QTimer(self)
+            self._dataset_timer.setInterval(500)
+            self._dataset_timer.timeout.connect(self._refresh_dataset_status)
+        self._dataset_timer.start()
+        self._refresh_dataset_status()
+        self.statusBar().showMessage("数据集采集已开启：%s" % root)
+        logger.info("[DATASET] 采集已开始 root=%s", root)
+
+    def _refresh_dataset_status(self) -> None:
+        """刷新三种格式的实时计数（§9）。只读计数，不改变任何行为。"""
+        recorder = self._dataset_recorder
+        if recorder is None or not hasattr(self, "_dataset_status"):
+            return
+        snap = recorder.stats.snapshot(recorder.targets)
+        if not recorder.running and snap["total"] == 0 and snap["rejected"] == 0:
+            self._dataset_status.setText("")
+            return
+        rows = []
+        for fmt_id, _pattern in TARGET_FORMATS:
+            n = snap["per_format"].get(fmt_id, 0)
+            target = snap["targets"].get(fmt_id)
+            rows.append("%-9s %6d%s" % (fmt_id.upper(), n,
+                                        " / %d" % target if target else ""))
+        rows.append("")
+        rows.append("Total     %6d" % snap["total"])
+        rows.append("valid %d    rejected %d    duplicate %d"
+                    % (snap["total"], snap["rejected"], snap["duplicate"]))
+        if snap["complete"]:
+            rows.append("数据集目标已完成")
+        self._dataset_status.setText("\n".join(rows))
+
     def _on_diag_toggled(self) -> None:
         """开启 / 关闭诊断记录。
 
@@ -2596,7 +2721,10 @@ class MainWindow(QMainWindow):
             profile=self._ocr_profile_id,
             diagnostics=self._diagnostics,
             observe_all_psm=self._diag_obs_check.isChecked(),
-            sample_capture=self._sample_capture,
+            # 数据集采集接在**同一个**旁路出口上：关闭时它就是原来那个
+            # SampleCapture，打开时是一层转发（SampleCapture + DatasetRecorder）。
+            # worker 侧看到的始终是"一个带 capture() 的对象"，实现无需改变。
+            sample_capture=self._capture_sink,
         )
 
         # 连接信号
@@ -3793,5 +3921,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         """窗口关闭时确保资源释放"""
+        # 数据集采集还在跑就先收尾：把队列排空、写好 dataset.json / manifest，
+        # 否则最后一帧和 manifest 会丢。关闭时（未在采集）是空操作。
+        if self._dataset_recorder is not None and self._dataset_recorder.running:
+            try:
+                self._dataset_recorder.stop()
+            except Exception:  # noqa: BLE001 - 收尾失败也不能挡住关窗
+                logger.debug("数据集收尾失败", exc_info=True)
         self._disconnect()
         super().closeEvent(event)

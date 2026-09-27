@@ -2,6 +2,7 @@
 """OCR 模块（Phase 2 + OCR V2.1 Format-Aware + V2.3 时序裁决）"""
 
 from .engine import OCREngine, OCREngineError
+from .ppocr_engine import PPOCREngine, PPOCREngineError
 from .preprocess import preprocess_for_ocr, preprocess_for_ocr_adaptive
 from .roi_manager import ROI, ROIManager
 from .worker import OCRWorker
@@ -24,9 +25,13 @@ from .room_code import (
 from .temporal import DEFAULT_MIN_AGREEMENT, DEFAULT_WINDOW_SIZE, TemporalResolver
 
 __all__ = [
-    # OCR 引擎
+    # OCR 引擎（Tesseract —— 保留用于对照 / 诊断 / 人工回退）
     "OCREngine",
     "OCREngineError",
+
+    # OCR 引擎（PP-OCRv6 —— 当前生产后端）
+    "PPOCREngine",
+    "PPOCREngineError",
 
     # 预处理
     "preprocess_for_ocr",

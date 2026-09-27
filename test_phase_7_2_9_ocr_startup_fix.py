@@ -67,8 +67,18 @@ def section(title: str) -> None:
 # ----------------------------------------------------------------------
 # 脚手架
 # ----------------------------------------------------------------------
+#: worker 当前实际构造的后端符号。
+#:
+#: 本测试关心的是「引擎被延迟到【工作线程】里构造」这条不变量，
+#: 与具体后端无关。OCR 后端从 Tesseract 换成 PP-OCRv6 之后，
+#: worker 构造的符号也跟着变了，因此这里跟随 worker 的实际符号，
+#: 而不是把它写死成某一个后端的类名——否则测的就是「用了哪个类」，
+#: 而不是「在哪个线程构造」。
+BACKEND_SYMBOL = "PPOCREngine"
+
+
 class _EngineRecorder:
-    """记录 OCREngine 是在哪个线程里被构造的。"""
+    """记录 OCR 后端引擎是在哪个线程里被构造的。"""
 
     instances = []
     threads = []
@@ -180,13 +190,13 @@ def test_engine_construction_has_no_version_probe():
 # 2. 构造 OCRWorker 不构造 OCREngine
 # ======================================================================
 def test_worker_construction_does_not_build_engine():
-    section("[2] OCRWorker(...) construction does not construct OCREngine")
+    section("[2] OCRWorker(...) construction does not construct the backend engine")
     reset_recorder()
 
     roi_manager = ROIManager()
     roi_manager.set_roi(ROI(0, 0, 100, 50, 100, 50))
 
-    with mock.patch.object(worker_mod, "OCREngine", _EngineRecorder):
+    with mock.patch.object(worker_mod, BACKEND_SYMBOL, _EngineRecorder):
         worker = worker_mod.OCRWorker(
             frame_buffer_getter=lambda: None,
             roi_manager=roi_manager,
@@ -195,7 +205,7 @@ def test_worker_construction_does_not_build_engine():
         )
 
     check(len(_EngineRecorder.instances) == 0,
-          "no OCREngine created while constructing OCRWorker")
+          "no backend engine created while constructing OCRWorker")
     check(worker._engine is None,
           "worker holds no engine until the worker thread starts")
 
@@ -204,7 +214,7 @@ def test_worker_construction_does_not_build_engine():
 # 3. 引擎在【工作线程】内创建
 # ======================================================================
 def test_engine_is_built_inside_worker_thread():
-    section("[3] OCREngine is constructed inside the OCR worker thread")
+    section("[3] backend engine is constructed inside the OCR worker thread")
     reset_recorder()
 
     roi_manager = ROIManager()
@@ -212,7 +222,7 @@ def test_engine_is_built_inside_worker_thread():
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)
     frame_buffer = _FakeBuffer(frame)
 
-    with mock.patch.object(worker_mod, "OCREngine", _EngineRecorder):
+    with mock.patch.object(worker_mod, BACKEND_SYMBOL, _EngineRecorder):
         worker = worker_mod.OCRWorker(
             frame_buffer_getter=lambda: frame_buffer,
             roi_manager=roi_manager,
@@ -246,7 +256,7 @@ def test_click_path_does_not_block_gui():
     window = build_licensed_window()
     reset_recorder()
 
-    with mock.patch.object(worker_mod, "OCREngine", _EngineRecorder):
+    with mock.patch.object(worker_mod, BACKEND_SYMBOL, _EngineRecorder):
         started = time.perf_counter()
         window._on_ocr_clicked()          # 真实点击路径
         elapsed = time.perf_counter() - started
@@ -255,7 +265,7 @@ def test_click_path_does_not_block_gui():
               f"click returns immediately (elapsed {elapsed * 1000:.0f}ms)")
 
         check(threading.main_thread() not in _EngineRecorder.threads,
-              "OCREngine was never constructed on the GUI thread")
+              "backend engine was never constructed on the GUI thread")
 
         # 等 worker 线程把引擎建起来（证明只是被移到了工作线程，而不是被删掉）
         for _ in range(300):

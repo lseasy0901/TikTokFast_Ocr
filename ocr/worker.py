@@ -25,6 +25,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from .engine import OCREngine, OCREngineError
+from .ppocr_engine import PPOCREngine
 from .profiles import AUTO, get_profile
 from .roi_manager import ROI, ROIManager
 from .room_code import DEFAULT_SCALE, RoomCodeRecognizer
@@ -157,9 +158,10 @@ class OCRWorker(QThread):
 
         self._frame_buffer_getter = frame_buffer_getter
         self._roi_manager = roi_manager
-        # 构造 OCRWorker 绝不构造 OCREngine：OCREngine() 会定位并探测
-        # Tesseract 可执行文件，打包环境下首次启动需冷加载大量 DLL，
-        # 放在 GUI 线程会让点击「识别」后界面卡死。延迟到 run() 内构造。
+        # 构造 OCRWorker 绝不构造引擎：无论当前后端是 PP-OCRv6（要加载
+        # paddle/CUDA 运行库与模型）还是 Tesseract（要定位可执行文件并冷加载
+        # DLL），初始化都很重，放在 GUI 线程会让点击「识别」后界面卡死。
+        # 一律延迟到 run() 内、在工作线程里构造。
         self._engine = engine
         self._interval_ms = interval_ms
         # 确认窗口内的采样间隔（只影响"隔多久再采一次"，不影响任何判定）
@@ -260,16 +262,24 @@ class OCRWorker(QThread):
         """累计错误次数"""
         return self._error_count
 
-    def _ensure_engine(self) -> OCREngine:
+    def _ensure_engine(self) -> "PPOCREngine | OCREngine":
         """在工作线程内延迟构造 OCR 引擎。
 
-        引擎构造会定位 Tesseract（打包环境下首次启动需冷加载上百 MB 的 DLL，
-        还可能触发杀软扫描），因此【必须】发生在工作线程，
-        而不是点击「识别」的 GUI 线程调用链上。
+        引擎构造会加载 OCR 运行时（PP-OCRv6 要加载 paddle + CUDA 运行库 + 模型，
+        实测约 2.2s；Tesseract 要定位可执行文件并冷加载 DLL），因此【必须】
+        发生在工作线程，而不是点击「识别」的 GUI 线程调用链上。
+
+        默认后端是 PP-OCRv6_medium_rec（GPU）。构造失败会抛 PPOCREngineError
+        ——它是 OCREngineError 的子类，因此 run() 既有的初始化失败路径
+        （报错一次 + error_occurred + 回收 + 结束线程）原样生效：
+        既不回退 CPU，也不回退 Tesseract。
+
+        Tesseract 引擎仍然可以显式注入（engine= 参数）用于对照、诊断与人工
+        回退，但那是一条**显式**路径，不存在任何运行期自动回落。
         """
         if self._engine is None:
-            self._engine = OCREngine()
-            logger.info("OCR 引擎已在工作线程内创建")
+            self._engine = PPOCREngine()
+            logger.info("OCR 引擎（PP-OCRv6）已在工作线程内创建")
         return self._engine
 
     def _ensure_recognizer(self) -> RoomCodeRecognizer:

@@ -352,10 +352,23 @@ class LicenseManager:
     def load_stored(self) -> LicenseResult:
         """启动时加载并本地验证已保存的许可证。
 
-        临时离线灾备：本机存在未过期的离线授权时优先采用它（离线激活按设计
-        覆盖既有授权）。离线授权过期或不存在时，继续走原有的签名凭据验证，
-        在线授权完全不受影响。
+        优先级固定为：**有效在线授权 > 有效离线灾备授权 > 未激活**。
+
+        先走原有的签名凭据验证（结构 / 验签 / 机器绑定 / 到期）；在线凭据
+        不存在或未通过时，才回退到临时离线灾备授权（见 utils/offline_activation.py）。
+
+        在线凭据存在但未通过时，返回 _verify_artifact 的具体结论
+        （INVALID / EXPIRED / WRONG_MACHINE 等），而不是笼统的未激活 ——
+        上层据此才能给出可诊断的提示。
         """
+        record = self.store.load()
+        online: Optional[LicenseResult] = None
+        if record:
+            online = self._verify_artifact(record["signed_license"])
+            if online.is_activated:
+                self.last_result = online
+                return online
+
         offline_expires = self.offline.load_license()
         if offline_expires is not None:
             result = LicenseResult(
@@ -366,13 +379,11 @@ class LicenseManager:
             self.last_result = result
             return result
 
-        record = self.store.load()
-        if not record:
-            result = LicenseResult(LicenseStatus.NOT_ACTIVATED, "尚未激活许可证")
-            self.last_result = result
-            return result
+        if online is not None:
+            self.last_result = online
+            return online
 
-        result = self._verify_artifact(record["signed_license"])
+        result = LicenseResult(LicenseStatus.NOT_ACTIVATED, "尚未激活许可证")
         self.last_result = result
         return result
 

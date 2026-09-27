@@ -39,12 +39,12 @@ license_public_key.pem
 # ffmpeg.exe stays tracked; the DLLs do not.
 runtime/ffmpeg/*.dll
 
-# Tesseract companion DLL set - provisioned per machine, not versioned.
-# runtime/tesseract/tesseract.exe is a stock UB-Mannheim build that needs ~26
-# sibling DLLs (libtesseract-5.dll and friends) to start at all. Without them it
-# only ran because C:\Program Files\Tesseract-OCR happened to be on PATH.
-# tesseract.exe and tessdata/eng.traineddata stay tracked; the DLLs do not.
-runtime/tesseract/*.dll
+# PP-OCRv6 production OCR model - supplied per machine, never versioned.
+# runtime/ppocr/PP-OCRv6_medium_rec_infer/ is ~73 MB of weights (inference.pdiparams)
+# and is provisioned by the PP-OCRv6 packaging phase, not committed. The workspace
+# is checked-out-and-built, so `git add .` must not be able to sweep it in.
+# douyin_viewer.spec gates the build on this directory being present.
+runtime/ppocr/
 
 # Runtime/generated files
 # Release build directories carry a version suffix (build_v1.0.1/, build_v1.0.2/,

@@ -66,6 +66,13 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# 冻结产物完整性校验。它补的是构建闸门补不上的那一半：闸门只回答「构建机上
+# 有没有」，这里回答「有没有真的进包」—— 1.1.1 的内部包正是在这一步漏掉了
+# 整个 PP-OCRv6 模型和 CUDA 闭包，而构建链一路绿灯。
+# 追加而不是插到最前：scripts/ 下的模块名不该盖住标准库。
+sys.path.append(str(Path(__file__).resolve().parent))
+from verify_frozen_bundle import verify_bundle  # noqa: E402
+
 # ----------------------------------------------------------------------
 # 发布配置（唯一的第二份？不是 —— packId / channel 是构建期概念，
 # 运行时只认 utils.update_source.py 里的源地址，两者不重复）
@@ -92,9 +99,12 @@ PACK_AUTHORS = "LiveLens"
 #: 默认发布根目录：源码目录的**同级**目录，不污染工作区。
 DEFAULT_RELEASE_ROOT = PROJECT_ROOT.parent / "_velopack_release"
 
-#: 构建期从 PATH 里剔除的目录关键字。本机装了 ACLOS 版 FFmpeg 与 Tesseract，
-#: 若留在 PATH 里，PyInstaller 会把开发者本机的运行库一并打进包。
-PATH_STRIP_KEYWORDS = ("ACLOS", "Tesseract-OCR")
+#: 构建期从 PATH 里剔除的目录关键字。本机装了 ACLOS 版 FFmpeg，若留在 PATH 里，
+#: PyInstaller 会把开发者本机的运行库一并打进包。
+#: 这里曾经还有 "Tesseract-OCR"：那是随包 Tesseract 运行时（runtime/tesseract/）
+#: 还在的时候加的。该运行时已随 PP-OCRv6_medium_rec 上位而删除，PyInstaller
+#: 没有任何 datas 条目会去 PATH 上找 Tesseract，因此这个关键字失去了实际作用。
+PATH_STRIP_KEYWORDS = ("ACLOS",)
 
 
 # ----------------------------------------------------------------------
@@ -259,6 +269,15 @@ def main() -> int:
         log(f"复用现有构建 {onedir}")
     else:
         onedir = build_onedir(dist_dir, work_dir)
+
+    # 打包之前先证明产物完整。缺模型的包在客户机上表现为「OCR 组件缺失」，
+    # 而 PyInstaller 对漏写的 datas 只警告不报错，所以这一步必须在 vpk 之前。
+    log("校验冻结产物完整性…")
+    failures = verify_bundle(str(onedir))
+    if failures:
+        raise SystemExit(
+            "发布中止：冻结产物不完整（%d 项缺失或损坏），已在上方逐条列出。"
+            % len(failures))
 
     notes = Path(args.notes).resolve() if args.notes else None
     pack(onedir, feed_dir, version, notes)

@@ -5,22 +5,25 @@ Phase 7.2-8G: the release build must fail loudly, not silently.
 
 douyin_viewer.spec bundles artifacts that are NOT in Git:
 
-    license_public_key.pem                       (.gitignore:22)
-    susi_helper/target/release/susi_helper.exe   (gitignored Rust target tree)
-    runtime/ffmpeg/ffmpeg.exe                    (third-party binary)
-    runtime/ffmpeg/*.dll                         (their required companion DLLs)
-    runtime/tesseract/tesseract.exe              (third-party binary)
-    runtime/tesseract/tessdata/eng.traineddata   (third-party data)
-    runtime/tesseract/*.dll                      (its required companion DLLs)
+    license_public_key.pem                                  (.gitignore:22)
+    susi_helper/target/release/susi_helper.exe              (gitignored Rust target)
+    runtime/ffmpeg/ffmpeg.exe                               (third-party binary)
+    runtime/ffmpeg/*.dll                                    (its companion DLLs)
+    runtime/ppocr/PP-OCRv6_medium_rec_infer/                (production OCR model)
 
 runtime/ffmpeg/ffprobe.exe itself is tracked, but its av*/sw* companion closure is
 not -- and a lone ffprobe.exe cannot start. Both the exe and the closure are guarded.
 
+The Tesseract set (runtime/tesseract/) used to be on this list. It is retired:
+PP-OCRv6_medium_rec is the production OCR backend, and those assets were deleted
+from the repository. Its gate and its cases are gone with it.
+
 PyInstaller only *warns* when a `datas` source is missing and then builds anyway.
-The resulting EXE cannot compute a machine code or verify a SignedLicense, and
-cannot spawn FFmpeg, ffprobe or Tesseract, so a missing input surfaced as
-"activation doesn't work", "no video", or a silently wrong frame size on a
-customer's machine rather than as a build error.
+The resulting EXE cannot compute a machine code or verify a SignedLicense, cannot
+spawn FFmpeg or ffprobe, and cannot load its production OCR model, so a missing
+input surfaced as "activation doesn't work", "no video", a silently wrong frame
+size, or an OCR that never starts on a customer's machine rather than as a build
+error.
 
 The spec now verifies all of them up front and raises FileNotFoundError, before
 PyInstaller does any work.
@@ -30,21 +33,27 @@ the real spec file with the working directory pointed at a throwaway tree that
 mimics the repository layout. Nothing here builds a real EXE -- except the last
 check, which runs PyInstaller for real and expects it to abort immediately.
 
+The throwaway trees must mirror every module-level read the spec performs before
+its guards run -- including utils/version.py, which the spec exec's to learn the
+client version. A tree missing it aborted on that file instead of on the guard,
+which is what made this script silently useless before.
+
 Covers:
   [1] all inputs missing   -> abort, naming the exact key and helper paths
   [2] helper missing       -> abort, naming only the helper
   [3] public key missing   -> abort, naming only the key
   [4] all inputs present   -> accepted, datas destinations unchanged, ffprobe.exe
                               bundled beside ffmpeg.exe with its own av*/sw*
-                              closure, and the full FFmpeg and Tesseract
-                              companion DLL sets bundled
+                              closure, and the full FFmpeg companion DLL set
+                              bundled
   [5] FFmpeg core lib missing    -> abort, naming it
   [6] FFmpeg set incomplete      -> abort, saying the runtime is incomplete
   [6a] ffprobe core lib missing  -> abort, naming it
   [6b] ffprobe set incomplete    -> abort, saying the runtime is incomplete
-  [7] Tesseract core lib missing -> abort, naming it
-  [8] Tesseract set incomplete   -> abort, saying the runtime is incomplete
-  [9] the real repository  -> accepted
+  [7] PP-OCRv6 model missing     -> abort, naming the model path
+  [8] PP-OCRv6 model empty       -> abort, saying the model is empty
+  [9] the real repository  -> accepted once the model is provisioned; aborts
+                              naming the model until then
   [10] real PyInstaller    -> exits non-zero on a tree missing the inputs
 """
 
@@ -61,6 +70,11 @@ SPEC = ROOT / "douyin_viewer.spec"
 PUBLIC_KEY_NAME = "license_public_key.pem"
 HELPER_RELPATH = ("susi_helper", "target", "release", "susi_helper.exe")
 HELPER_DEST = os.path.join("susi_helper", "target", "release")
+
+# The spec exec's this to read APP_VERSION, before any guard runs. Every fixture
+# tree must carry it or the spec aborts on it rather than on the guard under test.
+VERSION_RELPATH = ("utils", "version.py")
+VERSION_SOURCE = '__version__ = "0.0.0"\n'
 
 # runtime/ assets bundled so the release build never needs PATH.
 FFMPEG_RELPATH = ("runtime", "ffmpeg", "ffmpeg.exe")
@@ -92,19 +106,19 @@ FFPROBE_DLL_NAMES = (
 FFPROBE_DLL_REQUIRED = FFPROBE_DLL_NAMES[0]
 FFPROBE_DLL_COUNT = len(FFPROBE_DLL_NAMES)
 
-TESSERACT_RELPATH = ("runtime", "tesseract", "tesseract.exe")
-TESSDATA_RELPATH = ("runtime", "tesseract", "tessdata", "eng.traineddata")
-TESSERACT_DEST = os.path.join("runtime", "tesseract")
-TESSDATA_DEST = os.path.join("runtime", "tesseract", "tessdata")
+# PP-OCRv6 is the production OCR backend, so the build has to ship the model. The
+# spec requires inference.pdiparams by name (it mirrors
+# PPOCRModelLocator.is_usable_model_dir(), which rejects a 0-byte placeholder) and
+# the destination must match the locator's probe path:
+#   <base>/runtime/ppocr/PP-OCRv6_medium_rec_infer
+PPOCR_SUBDIR = "ppocr"
+PPOCR_MODEL_DIR_NAME = "PP-OCRv6_medium_rec_infer"
+PPOCR_MODEL_PARAMS = "inference.pdiparams"
+PPOCR_RELPATH = ("runtime", PPOCR_SUBDIR, PPOCR_MODEL_DIR_NAME)
+PPOCR_PARAMS_RELPATH = PPOCR_RELPATH + (PPOCR_MODEL_PARAMS,)
+PPOCR_DEST = os.path.join("runtime", PPOCR_SUBDIR)
 
-RUNTIME_RELPATHS = (FFMPEG_RELPATH, FFPROBE_RELPATH, TESSERACT_RELPATH,
-                   TESSDATA_RELPATH)
-
-# tesseract.exe is not self-contained: the spec requires its core library by name
-# and the whole companion set to be present, so the fixture must provision both.
-TESSERACT_DIR_RELPATH = ("runtime", "tesseract")
-TESSERACT_DLL_REQUIRED = "libtesseract-5.dll"
-TESSERACT_DLL_MIN = 26
+RUNTIME_RELPATHS = (FFMPEG_RELPATH, FFPROBE_RELPATH)
 
 PASSED = 0
 FAILED = 0
@@ -128,12 +142,17 @@ def skip(msg):
 
 
 def make_tree(root, with_key, with_helper, with_runtime=True,
-              tess_dll_count=TESSERACT_DLL_MIN, ffmpeg_dll_count=FFMPEG_DLL_MIN,
-              ffprobe_dll_count=FFPROBE_DLL_COUNT):
+              ffmpeg_dll_count=FFMPEG_DLL_MIN,
+              ffprobe_dll_count=FFPROBE_DLL_COUNT,
+              with_ppocr_model=True, ppocr_params=b"stub model weights"):
     """Build a throwaway repository root containing the requested inputs."""
     root = pathlib.Path(root)
     root.mkdir(parents=True, exist_ok=True)
     (root / "config.yaml").write_text("ocr: {}\n", encoding="utf-8")
+    # APP_VERSION is exec'd at spec import time, before any guard.
+    target = root.joinpath(*VERSION_RELPATH).parent
+    target.mkdir(parents=True, exist_ok=True)
+    (target / VERSION_RELPATH[-1]).write_text(VERSION_SOURCE, encoding="utf-8")
     if with_key:
         (root / PUBLIC_KEY_NAME).write_text(
             "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n",
@@ -159,12 +178,10 @@ def make_tree(root, with_key, with_helper, with_runtime=True,
         dll_dir.mkdir(parents=True, exist_ok=True)
         for name in FFPROBE_DLL_NAMES[:ffprobe_dll_count]:
             (dll_dir / name).write_bytes(b"stub dll")
-    if tess_dll_count:
-        dll_dir = root.joinpath(*TESSERACT_DIR_RELPATH)
-        dll_dir.mkdir(parents=True, exist_ok=True)
-        (dll_dir / TESSERACT_DLL_REQUIRED).write_bytes(b"stub dll")
-        for i in range(tess_dll_count - 1):
-            (dll_dir / ("stub_companion_%02d.dll" % i)).write_bytes(b"stub dll")
+    if with_ppocr_model:
+        model_dir = root.joinpath(*PPOCR_RELPATH)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        (model_dir / PPOCR_MODEL_PARAMS).write_bytes(ppocr_params)
     return root
 
 
@@ -320,8 +337,6 @@ if __name__ == "__main__":
 
         for relpath, dest, label in (
             (FFMPEG_RELPATH, FFMPEG_DEST, "ffmpeg.exe"),
-            (TESSERACT_RELPATH, TESSERACT_DEST, "tesseract.exe"),
-            (TESSDATA_RELPATH, TESSDATA_DEST, "eng.traineddata"),
         ):
             src = os.path.normpath(runtime_path(root, relpath))
             check(src in entries, "%s is bundled from %s"
@@ -370,19 +385,17 @@ if __name__ == "__main__":
                   for p in ff_dlls),
               "every FFmpeg companion DLL lands beside ffmpeg.exe (%s)" % FFMPEG_DEST)
 
-        # tesseract.exe is not self-contained; its companion DLLs must ride along.
-        tess_dir = os.path.normpath(runtime_path(root, TESSERACT_DIR_RELPATH))
-        dll_srcs = [p for p in entries
-                    if os.path.normpath(p).startswith(tess_dir + os.sep)
-                    and p.lower().endswith(".dll")]
-        check(os.path.normpath(runtime_path(
-                  root, TESSERACT_DIR_RELPATH + (TESSERACT_DLL_REQUIRED,))) in entries,
-              "the Tesseract core library (libtesseract-5.dll) is bundled")
-        check(len(dll_srcs) >= TESSERACT_DLL_MIN,
-              "the full companion DLL set is bundled (%d)" % len(dll_srcs))
-        check(all(entries[os.path.normpath(p)] == os.path.normpath(TESSERACT_DEST)
-                  for p in dll_srcs),
-              "every companion DLL lands beside tesseract.exe (%s)" % TESSERACT_DEST)
+        # The PP-OCRv6 model is *gated* as a required build input, but its datas
+        # entry is deliberately not written yet: shipping the model directory and
+        # the Paddle/PaddleX runtime is the PP-OCRv6 packaging phase's job. Record
+        # which of the two states the spec is in, so the flip is visible.
+        ppocr_src = os.path.normpath(runtime_path(root, PPOCR_PARAMS_RELPATH))
+        if ppocr_src in entries:
+            check(entries[ppocr_src] == os.path.normpath(PPOCR_DEST),
+                  "the PP-OCRv6 model is bundled to %s" % PPOCR_DEST)
+        else:
+            skip("PP-OCRv6 model datas entry not written yet "
+                 "(PP-OCRv6 packaging phase)")
 
         # --------------------------------------------------------------
         print("\n[5] FFmpeg runtime library missing")
@@ -447,40 +460,52 @@ if __name__ == "__main__":
         check(calls["analysis"] == 0, "analysis never ran")
 
         # --------------------------------------------------------------
-        print("\n[7] Tesseract core library missing")
-        root = make_tree(temp / "nocore", with_key=True, with_helper=True,
-                         tess_dll_count=0)
+        print("\n[7] PP-OCRv6 model missing")
+        root = make_tree(temp / "noppocr", with_key=True, with_helper=True,
+                         with_ppocr_model=False)
         error, _, calls = exec_spec(root)
         check(isinstance(error, FileNotFoundError),
               "the spec raises FileNotFoundError")
         if isinstance(error, FileNotFoundError):
             report = missing_section(str(error))
-            check("Tesseract core library" in report,
-                  "it names the missing core library")
+            check("PP-OCRv6 model" in report,
+                  "it names the missing PP-OCRv6 model")
+            check(PPOCR_MODEL_DIR_NAME in report,
+                  "it names the model directory (%s)" % PPOCR_MODEL_DIR_NAME)
         check(calls["analysis"] == 0, "analysis never ran")
 
         # --------------------------------------------------------------
-        print("\n[8] Tesseract runtime present but incomplete")
-        root = make_tree(temp / "partialtess", with_key=True, with_helper=True,
-                         tess_dll_count=1)
+        print("\n[8] PP-OCRv6 model present but empty")
+        root = make_tree(temp / "emptyppocr", with_key=True, with_helper=True,
+                         ppocr_params=b"")
         error, _, calls = exec_spec(root)
         check(isinstance(error, FileNotFoundError),
               "the spec raises FileNotFoundError")
         if isinstance(error, FileNotFoundError):
             message = str(error)
-            check("Tesseract runtime is incomplete" in message,
-                  "it says the Tesseract runtime is incomplete")
-            check(str(TESSERACT_DLL_MIN) in message,
-                  "it states how many DLLs are expected")
+            check("PP-OCRv6 model is empty" in message,
+                  "it says the PP-OCRv6 model is empty")
+            check("0-byte" in message,
+                  "it explains that a 0-byte placeholder is not provisioned")
         check(calls["analysis"] == 0, "analysis never ran")
 
         # --------------------------------------------------------------
-        print("\n[9] the real repository is accepted")
-        _, namespace, calls = exec_spec(ROOT)
-        # exec_spec against the real repo root would build nothing; this only
-        # proves the guard passes where both artifacts really exist.
-        check(calls["analysis"] == 1,
-              "the real repository passes the guard and reaches analysis")
+        print("\n[9] the real repository")
+        error, namespace, calls = exec_spec(ROOT)
+        # The model is gated but not shipped yet, so the real repository is
+        # expected to abort *until* the PP-OCRv6 packaging phase provisions it.
+        # This case flips to "accepted" on its own once it does.
+        if os.path.isfile(runtime_path(ROOT, PPOCR_PARAMS_RELPATH)):
+            check(error is None,
+                  "the real repository is accepted (model provisioned)")
+            check(calls["analysis"] == 1, "analysis ran exactly once")
+        else:
+            check(isinstance(error, FileNotFoundError),
+                  "the real repository aborts until the PP-OCRv6 model is "
+                  "provisioned (%s)" % type(error).__name__)
+            check(PPOCR_MODEL_DIR_NAME in str(error),
+                  "the abort names the PP-OCRv6 model that is still missing")
+            check(calls["analysis"] == 0, "analysis never ran")
         check(SPEC.is_file(), "the spec file exists")
 
         # --------------------------------------------------------------

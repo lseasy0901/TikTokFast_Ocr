@@ -38,23 +38,23 @@ def main():
         print("Error: Failed to prepare FFmpeg")
         return 1
 
-    # Download and prepare Tesseract
-    print("3. Preparing Tesseract...")
-    if not prepare_tesseract(project_root):
-        print("Error: Failed to prepare Tesseract")
-        return 1
+    # NOTE: this script used to run prepare_tesseract() here. Tesseract is no
+    # longer the production OCR runtime (PP-OCRv6_medium_rec is), and its assets
+    # were deleted from the repository, so that step is retired. It is NOT
+    # replaced by another provisioning mechanism: the PP-OCRv6 model is supplied
+    # by the packaging phase and gated in douyin_viewer.spec.
 
     # Create icon (if needed)
     # create_icon(project_root)
 
     # Build with PyInstaller
-    print("4. Building with PyInstaller...")
+    print("3. Building with PyInstaller...")
     if not build_with_pyinstaller(spec_file, dist_dir):
         print("Error: PyInstaller build failed")
         return 1
 
     # Post-process build
-    print("5. Post-processing build...")
+    print("4. Post-processing build...")
     post_process_build(dist_dir, project_root)
 
     # Display results
@@ -128,57 +128,6 @@ def prepare_ffmpeg(project_root):
 
     return True
 
-def prepare_tesseract(project_root):
-    """Download and prepare Tesseract OCR"""
-    runtime_tesseract_dir = project_root / "runtime" / "tesseract"
-
-    # Check if Tesseract already exists
-    tesseract_exe = runtime_tesseract_dir / "tesseract.exe"
-    tessdata_dir = runtime_tesseract_dir / "tessdata"
-    eng_data = tessdata_dir / "eng.traineddata"
-
-    if tesseract_exe.exists() and eng_data.exists():
-        print("  Tesseract already prepared")
-        return True
-
-    # Create directories
-    runtime_tesseract_dir.mkdir(parents=True, exist_ok=True)
-    tessdata_dir.mkdir(parents=True, exist_ok=True)
-
-    # Check for existing Tesseract installation
-    tesseract_paths = [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-    ]
-
-    tesseract_found = False
-    for tesseract_path in tesseract_paths:
-        if os.path.exists(tesseract_path):
-            print(f"  Found Tesseract at: {tesseract_path}")
-
-            # Copy tesseract.exe
-            shutil.copy2(tesseract_path, runtime_tesseract_dir)
-            tesseract_found = True
-
-            # Copy tessdata
-            system_tessdata = os.path.dirname(tesseract_path)
-            if os.path.exists(os.path.join(system_tessdata, "tessdata", "eng.traineddata")):
-                system_eng_data = os.path.join(system_tessdata, "tessdata", "eng.traineddata")
-                shutil.copy2(system_eng_data, tessdata_dir)
-                print("  Copied: eng.traineddata")
-
-            break
-
-    if not tesseract_found:
-        print("  Warning: Tesseract not found in standard locations")
-        print("  You will need to manually place tesseract.exe and eng.traineddata")
-        # Create placeholder files
-        tesseract_exe.touch()
-        eng_data.touch()
-        return True
-
-    return True
-
 def build_with_pyinstaller(spec_file, dist_dir):
     """Build the application using PyInstaller"""
     try:
@@ -247,7 +196,7 @@ This is a standalone Windows application for viewing Douyin streams with OCR cap
 
 ## Files
 - DouyinLowLatencyViewer.exe - Main application
-- runtime/ - Runtime dependencies (FFmpeg, Tesseract)
+- runtime/ - Runtime dependencies (FFmpeg; PP-OCRv6 model under runtime/ppocr/)
 """
 
     readme_path = dist_dir / "README.txt"

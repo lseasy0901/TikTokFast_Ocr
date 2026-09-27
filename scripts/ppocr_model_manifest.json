@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "PP-OCRv6 production OCR model integrity manifest.",
+    "The model itself is NOT in Git (see .gitignore: runtime/ppocr/). This file is,",
+    "so any machine or rebuild can prove it was given the same weights.",
+    "Recorded by: scripts/verify_ppocr_model.py --record",
+    "Verified by: scripts/verify_ppocr_model.py",
+    "Do not hand-edit: regenerate with --record after provisioning a new model."
+  ],
+  "model_name": "PP-OCRv6_medium_rec",
+  "dir_name": "PP-OCRv6_medium_rec_infer",
+  "relpath": "runtime/ppocr/PP-OCRv6_medium_rec_infer",
+  "provisioned_from": "D:\\new_model\\PP-OCRv6_medium_rec_infer",
+  "recorded_at": "2026-09-26",
+  "total_bytes": 76837481,
+  "files": {
+    "inference.json": {
+      "bytes": 221814,
+      "sha256": "0b2e25e990bd072f1bf77d59d67d508bce6c4bd44af6624e0fb27d6da2cd00e8"
+    },
+    "inference.pdiparams": {
+      "bytes": 76465087,
+      "sha256": "1b01c79a914587933f615569e75de54f2e638ebb5d3f3b3c1b38c24ede8c7319"
+    },
+    "inference.yml": {
+      "bytes": 150580,
+      "sha256": "991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129"
+    }
+  }
+}
