@@ -13,3 +13,21 @@ python-multipart>=0.0.6
 wtforms>=3.1,<3.3
 jinja2>=3.1
 itsdangerous>=2.1
+
+# feijipan share-link resolver (app/services/feijipan_resolver.py).
+# Needed by services/feijipan_resolver.py, which wraps the verified standalone
+# tool verbatim: aiohttp for the async request chain, pycryptodome for the
+# AES/ECB the upstream API requires. Neither was previously declared here, so a
+# server provisioned strictly from this file would fail at import. Versions match
+# the ones the verified tool was tested with (requirements-feijipan-direct.txt).
+aiohttp==3.9.1
+pycryptodome==3.19.0
+
+# IANA time zone database for zoneinfo (Phase 7.2-7e).
+# The admin displays datetimes in Asia/Shanghai. zoneinfo reads the system tz
+# database first and only falls back to this package, so it is a no-op on Linux
+# servers that already ship one. Windows has no system IANA database, and without
+# this package ZoneInfo("Asia/Shanghai") raises ZoneInfoNotFoundError there --
+# app/admin/views.py then falls back to rendering UTC with an explicit label
+# rather than showing a time that merely looks like Beijing time.
+tzdata>=2024.1

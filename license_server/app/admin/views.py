@@ -28,16 +28,129 @@ Phase 7.2-7 — 管理后台视图。
     不会生成 key_hash，直接提交会写入 NULL。
 """
 
+import datetime as _dt
+import logging
+
+from markupsafe import Markup
 from pydantic import ValidationError
+from sqlalchemy import distinct as sa_distinct, func as sa_func
 from sqladmin import BaseView, Flash, ModelView, Secret, action, expose
 from sqladmin.filters import StaticValuesFilter
 from starlette.responses import RedirectResponse
 
+import config
 import database
 from admin.auth import AdminAuth
-from models import Authorization, License, LicenseState
+from models import Authorization, DeviceDailyActive, License, LicenseState
 from schemas import LicenseCreate
 from services.license_service import LicenseService
+
+logger = logging.getLogger(__name__)
+
+
+# ======================================================================
+# 展示层时区
+#
+# 数据库里所有 datetime 列都是 **naive UTC**：``models.py`` 的 ``DateTime`` 没有
+# 声明 ``timezone=True``，SQLite 的绑定处理器直接取 ``value.year/month/...``
+# 存储，不做时区归一；写入侧是 ``datetime.now(timezone.utc)`` 与 ``func.now()``
+# （SQLite 展开为 ``CURRENT_TIMESTAMP``，同为 UTC）。
+# 业务侧也遵循同一条约定 —— ``susi_security_service._to_rfc3339()`` 与
+# ``redemption_service`` 都把 naive 值显式当作 UTC 解释。
+#
+# 后台是给人看的，运维在东八区；直接渲染 naive UTC 会让每个时间都早 8 小时。
+# 因此只在展示层做一次换算，不改动存储值，也不改动任何业务计算。
+# ======================================================================
+DISPLAY_TZ_NAME = config.settings.BUSINESS_TZ_NAME
+
+try:
+    from zoneinfo import ZoneInfo
+
+    _DISPLAY_TZ = ZoneInfo(DISPLAY_TZ_NAME)
+except Exception as exc:  # noqa: BLE001 - 缺时区库不应让整个后台不可用
+    # Windows 没有系统 IANA 时区库，需要 tzdata 包（见 requirements.txt）。
+    # 这里刻意不降级成固定偏移去「看起来正确」：宁可显示带 UTC 标注的原值，
+    # 也不让运维看到一个无法分辨真伪的北京时间。
+    _DISPLAY_TZ = None
+    logger.warning(
+        "无法加载时区 %s，后台将按 UTC 展示并显式标注（原因：%s）。"
+        "请在运行环境安装 tzdata。",
+        DISPLAY_TZ_NAME,
+        exc,
+    )
+
+
+def _datetime_formatter(value):
+    """后台 datetime 列格式化：naive UTC → 北京时间（仅展示层换算）。
+
+    只读：返回新字符串，``value`` 本身不被修改。
+
+    与 SQLAdmin 内置 ``datetime_formatter`` 的差异：
+        - 内置版直接 ``value.strftime(...)``，把 naive 值按字面量渲染，
+          因而在东八区看起来早 8 小时。
+        - 本函数先把 naive 值显式解释为 UTC，再 ``astimezone`` 到
+          ``Asia/Shanghai``；已带时区的值按其自身偏移换算（不会二次平移）。
+        - 非 datetime 值（``datetime.date``、``str`` 等）原样返回，
+          与内置行为一致；``None`` 仍由 ``empty_formatter`` 处理。
+    """
+    if value is None:
+        return Markup("")
+
+    if not isinstance(value, _dt.datetime):
+        # 保持原有行为：date / str / int 等一概不做处理
+        return value
+
+    if _DISPLAY_TZ is None:
+        stamp = value.strftime("%d %B %Y %H:%M:%S")
+        return Markup(
+            f"<span "
+            f'class="my-1 py-1 px-2 badge bg-secondary text-light '
+            f'lead d-inline-block text-truncate" '
+            f'data-bs-toggle="tooltip" '
+            f'data-bs-html="true" '
+            f'data-bs-placement="bottom" '
+            f'title="{stamp} UTC"'
+            f">"
+            f'<i class="fa-solid fa-calendar-days"></i> '
+            f"{stamp} UTC"
+            f"</span>"
+        )
+
+    # naive 一律按 UTC 解释 —— 与 redemption_service / _to_rfc3339 同一约定
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_dt.timezone.utc)
+
+    local = value.astimezone(_DISPLAY_TZ)
+    stamp = local.strftime("%d %B %Y %H:%M:%S")
+
+    return Markup(
+        f"<span "
+        f'class="my-1 py-1 px-2 badge bg-secondary text-light '
+        f'lead d-inline-block text-truncate" '
+        f'data-bs-toggle="tooltip" '
+        f'data-bs-html="true" '
+        f'data-bs-placement="bottom" '
+        f'title="{stamp} {DISPLAY_TZ_NAME}"'
+        f">"
+        f'<i class="fa-solid fa-calendar-days"></i> '
+        f"{stamp} {DISPLAY_TZ_NAME}"
+        f"</span>"
+    )
+
+
+#: 类型格式化表。必须 ``dict(...)`` 复制一份：``ModelView.column_type_formatters``
+#: 就是 ``sqladmin.formatters.BASE_FORMATTERS`` 这个**共享对象**，就地写入会污染
+#: 上游快照的全局状态。
+#:
+#: 为什么要显式登记：内置的 ``BASE_FORMATTERS`` 只有 ``type(None)`` 与 ``bool``
+#: 两个键，并不包含 ``datetime`` —— 上游自带的 ``datetime_formatter`` 因此从未
+#: 被调用过，datetime 列会走 ``_default_formatter`` 的父类回退并被原样 ``str()``，
+#: 这正是本次修复前「早 8 小时」的直接成因。
+#:
+#: 挂在 ``column_type_formatters`` 上即同时作用于列表页与详情页：SQLAdmin 在
+#: ``column_type_formatters_detail`` 保持默认时会自动沿用本表。
+DISPLAY_TZ_FORMATTERS = dict(ModelView.column_type_formatters)
+DISPLAY_TZ_FORMATTERS[_dt.datetime] = _datetime_formatter
 
 
 def _require_operator(request) -> bool:
@@ -171,6 +284,9 @@ class LicenseAdmin(ModelView, model=License):
     can_delete = False
     can_view_details = True
     can_export = True
+
+    #: created_at / redeemed_at 的东八区展示（存储与业务计算仍为 UTC）。
+    column_type_formatters = DISPLAY_TZ_FORMATTERS
 
     #: 列表列。明文 license_key 不是数据库列，故此处只能展示 key_hash 指纹。
     column_list = [
@@ -379,6 +495,10 @@ class AuthorizationAdmin(ModelView, model=Authorization):
     can_view_details = True
     can_export = True
 
+    #: expires_at / created_at / activated_at 的东八区展示
+    #: （存储与业务计算仍为 UTC）。
+    column_type_formatters = DISPLAY_TZ_FORMATTERS
+
     column_list = [
         "id",
         "device_id",
@@ -533,5 +653,72 @@ class GenerateKeysView(BaseView):
             },
         )
         # 自定义视图需自行加防缓存头（内置 create/edit 由 SQLAdmin 自动处理）。
+        Secret.apply_no_store_headers(response)
+        return response
+
+
+# ======================================================================
+# DAU（只读聚合，Phase 7.4）
+# ======================================================================
+#: 本页展示的最近天数。按日聚合后每天一行，30 天足够看趋势；
+#: 更早的历史随时可用 SQL 直接查 device_daily_active，不在本页提供。
+DAU_PAGE_DAYS = 30
+
+
+class DauView(BaseView):
+    """每日活跃设备数 —— 只读。
+
+    为什么不是 ModelView：``device_daily_active`` 每行是「一台设备的一天」，
+    而 DAU 要的是「一天有多少台设备」—— 这需要 GROUP BY 聚合，而 ModelView
+    只会逐行渲染模型对象，做不到。所以沿用本项目已有的 ``BaseView`` + 自带
+    模板写法（与 ``GenerateKeysView`` 同构）。
+
+    本页没有任何写入口，也没有吊销/删除能力：DAU 是纯统计视图。
+
+    口径：``device_id`` 是设备机器码，因此这里统计的是**活跃设备数**，
+    不是自然人数。同一人多台设备会各计一次。
+    """
+
+    name = "DAU"
+    icon = "fa-solid fa-chart-line"
+    category = "Licensing"
+
+    def is_accessible(self, request) -> bool:
+        return _require_operator(request)
+
+    @expose("/dau")
+    async def dau(self, request):
+        with database.SessionLocal() as db:
+            # 按业务时区日历日聚合。归属已经在写入时定好（见 heartbeat_service），
+            # 这里只是计数，不做任何时区换算。
+            rows = (
+                db.query(
+                    DeviceDailyActive.active_date.label("active_date"),
+                    sa_func.count().label("devices"),
+                    sa_func.sum(DeviceDailyActive.launch_count).label("launches"),
+                )
+                .group_by(DeviceDailyActive.active_date)
+                .order_by(DeviceDailyActive.active_date.desc())
+                .limit(DAU_PAGE_DAYS)
+                .all()
+            )
+
+            # 累计去重设备数：与上面的按日计数不同，这里跨天去重。
+            total_devices = db.query(
+                sa_func.count(sa_distinct(DeviceDailyActive.device_id))
+            ).scalar()
+
+        response = await self.templates.TemplateResponse(
+            request,
+            "dau.html",
+            {
+                "title": "DAU",
+                "subtitle": "每日活跃设备数",
+                "rows": rows,
+                "total_devices": total_devices or 0,
+                "days": DAU_PAGE_DAYS,
+                "tz_name": DISPLAY_TZ_NAME,
+            },
+        )
         Secret.apply_no_store_headers(response)
         return response

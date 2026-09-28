@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Set, List
 
 from sqlalchemy.orm import Session
-from models import License, LicenseState, Authorization, AuthorizationState
+from models import License, LicenseState, Authorization, AuthorizationState, RedemptionEvent
 from schemas import LicenseActivate, LicenseValidationResponse, LicenseValidate
 from services.susi_security_service import SusiSecurityService
 
@@ -145,6 +145,12 @@ class RedemptionService:
             license.duration_days
         )
 
+        # STEP 3.5 (Phase 3): capture pre-mutation state for the audit event.
+        # The event itself is inserted below and committed in the SAME
+        # transaction as the License/Authorization mutation (STEP 6).
+        auth_state_before = None if created else authorization.state
+        expires_before = None if created else authorization.expires_at
+
         # STEP 4: Update Authorization based on its current state
         if created:
             # Brand new authorization: it already expires at exactly
@@ -163,10 +169,70 @@ class RedemptionService:
             authorization.expires_at = server_time + timedelta(days=license.duration_days)
         # REVOKED handled in find_or_create_authorization()
 
+        # STEP 4.5 (Phase 3): append the immutable redemption event.
+        #
+        # Same-transaction guarantee: this INSERT joins the session's pending
+        # License/Authorization mutations and is committed together with them
+        # in STEP 6 -- the log can never show a redemption that did not happen
+        # or miss one that did. ``ON CONFLICT DO NOTHING`` makes a retried or
+        # concurrent duplicate harmless (License is one-time => at most one
+        # event per license_id). Plain INSERT would abort the whole redemption
+        # on a duplicate; do-nothing keeps the redemption itself authoritative.
+        from sqlalchemy.dialects.sqlite import insert as _sqlite_insert
+
+        if created:
+            event_type, result = "first", "new"
+        elif auth_state_before == AuthorizationState.ACTIVE:
+            event_type, result = "renewal", "extend"
+        else:  # EXPIRED -> restart
+            event_type, result = "renewal", "reset"
+        _event_stmt = (
+            _sqlite_insert(RedemptionEvent)
+            .values(
+                license_id=license.id,
+                authorization_id=authorization.id,
+                device_id=authorization.device_id,
+                event_type=event_type,
+                duration_days=license.duration_days,
+                redeemed_at=server_time,
+                auth_created_at=authorization.created_at,
+                auth_expires_before=expires_before,
+                auth_expires_after=authorization.expires_at,
+                result=result,
+                recorded_via="live",
+            )
+            .on_conflict_do_nothing(index_elements=["license_id"])
+        )
+        self.db.execute(_event_stmt)
+
         # STEP 5: Mark License as REDEEMED
         license.state = LicenseState.REDEEMED
         license.redeemed_at = server_time
         license.authorization_id = authorization.id
+
+        # STEP 5.5 (Phase 3): row-level one-time guard.
+        # The state check in STEP 2 is check-then-act; SQLite readers do not
+        # block writers, so two concurrent redemptions of the same key could
+        # both pass it and both commit (double redemption / double duration).
+        # The conditional UPDATE makes the UNUSED -> REDEEMED transition
+        # atomic: exactly one concurrent writer matches state='UNUSED', the
+        # loser rolls back (its pending event insert rolls back with it) and
+        # reports already_redeemed. Business semantics are unchanged -- this
+        # only enforces the existing "globally one-time" rule at the row level.
+        guarded = self.db.query(License).filter(
+            License.id == license.id,
+            License.state == LicenseState.UNUSED,
+        ).update(
+            {
+                "state": LicenseState.REDEEMED,
+                "redeemed_at": server_time,
+                "authorization_id": authorization.id,
+            },
+            synchronize_session=False,
+        )
+        if guarded != 1:
+            self.db.rollback()
+            raise ValueError("already_redeemed")
 
         # STEP 6: Commit atomically
         self.db.commit()

@@ -1,0 +1,76 @@
+{# Phase 7.4 — DAU 只读聚合页（本项目自有模板，不修改 SQLAdmin 快照） #}
+{# 沿用 SQLAdmin 的 layout，与 generate_keys.html 同构。 #}
+{% extends "sqladmin/layout.html" %}
+
+{% block content %}
+<div class="col-12">
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">每日活跃设备数（DAU）</h3>
+    </div>
+    <div class="card-body">
+
+      <div class="alert alert-info" role="alert">
+        <div class="text-muted">
+          日历日按 <strong>{{ tz_name }}</strong> 划分，与后台其它时间显示一致。
+          时间戳在数据库中仍以 <strong>UTC</strong> 存储，此处只是计数，不做换算。
+        </div>
+        <div class="text-muted mt-2">
+          <strong>口径：</strong>以设备机器码为唯一标识，统计的是
+          <strong>活跃设备数</strong>，不是自然人数 —— 同一人多台设备会计为多台。
+          设备当天多次启动只计 1。
+        </div>
+      </div>
+
+      <div class="row mb-3">
+        <div class="col-md-4">
+          <div class="card">
+            <div class="card-body">
+              <div class="text-muted">累计去重设备数（全部历史）</div>
+              <div class="h1 mb-0">{{ total_devices }}</div>
+            </div>
+          </div>
+        </div>
+        <div class="col-md-8">
+          <div class="card">
+            <div class="card-body">
+              <div class="text-muted">展示范围</div>
+              <div class="h1 mb-0">最近 {{ days }} 天</div>
+              <div class="text-muted">更早的数据可用 SQL 直接查询该表</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {% if rows %}
+      <table class="table table-vcenter table-striped">
+        <thead>
+          <tr>
+            <th>日期（{{ tz_name }}）</th>
+            <th>活跃设备数</th>
+            <th>心跳次数</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td>{{ row.active_date }}</td>
+            <td><strong>{{ row.devices }}</strong></td>
+            <td class="text-muted">{{ row.launches }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="alert alert-warning" role="alert">
+        <div class="text-muted">
+          暂无心跳数据。客户端需为已激活设备，且服务器需已更新到包含
+          <code>POST /licenses/heartbeat</code> 的版本。
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+</div>
+{% endblock %}

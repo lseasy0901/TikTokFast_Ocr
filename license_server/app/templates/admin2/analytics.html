@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="ph-titles">
+    <h1 class="page-title">数据分析</h1>
+    <p class="page-desc">按天统计新增设备与套餐兑换，支持日期筛选。全部日切按北京时间（Asia/Shanghai）归档，与数据库查询结果一致。</p>
+  </div>
+  <div class="page-actions">
+    <button class="btn" id="btnExport" data-icon="download">导出 CSV</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body tight" style="padding:14px 20px">
+    <div class="toolbar">
+      <div class="seg" id="rangeSeg">
+        <button data-days="7">近7天</button>
+        <button data-days="14">近14天</button>
+        <button data-days="30" class="on">近30天</button>
+        <button data-days="60">近60天</button>
+      </div>
+      <div class="toolbar" style="gap:8px">
+        <input type="date" class="input" id="dateFrom" title="开始日期（北京时间）">
+        <span class="text-dim">至</span>
+        <input type="date" class="input" id="dateTo" title="结束日期（北京时间）">
+        <button class="btn" id="btnApplyRange">应用</button>
+      </div>
+      <div class="spacer" style="flex:1"></div>
+      <span class="text-dim" style="font-size:12px" id="rangeLabel"></span>
+    </div>
+  </div>
+</div>
+
+<div class="kpi-grid mt-20" id="kpiGrid">{{ '' }}</div>
+
+<div class="grid grid-2 mt-20">
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h3 class="card-title">每日兑换量（按套餐）</h3>
+        <p class="card-desc">堆叠柱状图 · 天卡 / 月卡 / 半年卡 / 年卡 / 其他</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="chart-legend mb-14" id="planLegend"></div>
+      <div class="chart-box" id="planBars"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <h3 class="card-title">每日新增设备与 DAU</h3>
+        <p class="card-desc">新增设备 = 首次激活；DAU 含已到期设备</p>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="chart-legend mb-14">
+        <span class="lg"><i style="background:var(--primary)"></i>新增设备</span>
+        <span class="lg"><i style="background:var(--info)"></i>DAU</span>
+      </div>
+      <div class="chart-box" id="trendChart"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card mt-20">
+  <div class="card-head">
+    <div>
+      <h3 class="card-title">按日统计明细</h3>
+      <p class="card-desc">与图表同口径，日期为北京时间日历日</p>
+    </div>
+  </div>
+  <div class="table-wrap" id="dailyTable">{{ '' }}</div>
+  <div class="table-foot" id="dailyFoot">{{ '' }}</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/admin2/static/js/pages/analytics.js?v=2.0.1"></script>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="ph-titles">
+    <h1 class="page-title">兑换记录</h1>
+    <p class="page-desc">
+      完整兑换流水，区分「首次激活」与「老设备续费」。类型判定：同一授权下最早的兑换为首次激活
+      （确定性规则，含平局取更小 ID）；历史续费的累加/重置语义不可回溯，标记为未知。
+    </p>
+  </div>
+  <div class="page-actions">
+    <button class="btn" id="btnExport" data-icon="download">导出 CSV</button>
+  </div>
+</div>
+
+<div class="kpi-grid" id="kpiGrid">{{ '' }}</div>
+
+<div class="card mt-20">
+  <div class="card-head" style="border-bottom:0;padding-bottom:6px">
+    <div class="seg" id="typeSeg">{{ '' }}</div>
+    <div class="spacer"></div>
+    <div class="toolbar">
+      <input type="date" class="input" id="dateFrom" title="开始日期（北京时间）">
+      <span class="text-dim">至</span>
+      <input type="date" class="input" id="dateTo" title="结束日期（北京时间）">
+      <select class="select" id="quickRange">
+        <option value="">日期：全部</option>
+        <option value="7">近 7 天</option>
+        <option value="30">近 30 天</option>
+      </select>
+      <select class="select" id="planFilter">
+        <option value="">全部套餐</option>
+        <option value="d1">天卡</option>
+        <option value="m30">月卡</option>
+        <option value="h180">半年卡</option>
+        <option value="y365">年卡</option>
+        <option value="other">其他套餐</option>
+      </select>
+      <div class="input-icon-wrap" style="width:200px">
+        <span data-icon="search"></span>
+        <input class="input" id="searchInput" placeholder="设备 ID / 指纹">
+      </div>
+    </div>
+  </div>
+  <div class="table-wrap" id="rdTable">{{ '' }}</div>
+  <div class="table-foot" id="rdFoot">{{ '' }}</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/admin2/static/js/pages/redemptions.js?v=2.0.1"></script>
+{% endblock %}

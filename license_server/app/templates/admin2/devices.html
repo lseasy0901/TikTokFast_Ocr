@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="ph-titles">
+    <h1 class="page-title">设备授权</h1>
+    <p class="page-desc">
+      设备以机器码（device_id）为唯一标识。授权状态由兑换动作驱动：新建授权、
+      有效期内累加、过期后重置（口径见审计报告 §4.1）。本页为只读视图。
+    </p>
+  </div>
+  <div class="page-actions">
+    <button class="btn" id="btnExport" data-icon="download">导出 CSV</button>
+  </div>
+</div>
+
+<div class="kpi-grid" id="kpiGrid">{{ '' }}</div>
+
+<div class="card mt-20">
+  <div class="card-head" style="border-bottom:0;padding-bottom:6px">
+    <div class="toolbar" style="flex:1">
+      <div class="input-icon-wrap grow" style="max-width:300px">
+        <span data-icon="search"></span>
+        <input class="input" id="searchInput" placeholder="搜索设备 ID">
+      </div>
+      <select class="select" id="stateFilter">
+        <option value="">全部状态</option>
+        <option value="active">有效授权</option>
+        <option value="expiring">7 日内到期</option>
+        <option value="expired">已过期</option>
+      </select>
+      <select class="select" id="sortSel">
+        <option value="remain_asc">到期时间 ↑（最紧急优先）</option>
+        <option value="remain_desc">到期时间 ↓</option>
+        <option value="recent">最近活跃优先</option>
+      </select>
+    </div>
+  </div>
+  <div class="table-wrap" id="devTable">{{ '' }}</div>
+  <div class="table-foot" id="devFoot">{{ '' }}</div>
+</div>
+
+<div class="drawer-overlay" id="devDrawerOverlay"></div>
+<aside class="drawer" id="devDrawer">
+  <div class="drawer-head">
+    <div style="flex:1">
+      <div class="modal-title" id="drawerTitle">设备详情</div>
+      <div class="text-dim" style="font-size:12px">授权与兑换时间线（北京时间）</div>
+    </div>
+    <button class="modal-close" id="drawerClose" data-icon="close"></button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+{% endblock %}
+
+{% block scripts %}
+<script src="/admin2/static/js/pages/devices.js?v=2.0.1"></script>
+{% endblock %}

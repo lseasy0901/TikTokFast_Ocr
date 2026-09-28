@@ -134,6 +134,7 @@ def setup_admin(app):
     from admin.auth import AdminAuth
     from admin.views import (
         AuthorizationAdmin,
+        DauView,
         GenerateKeysView,
         LicenseAdmin,
         RedeemedHistoryView,
@@ -157,5 +158,6 @@ def setup_admin(app):
     admin.add_view(AuthorizationAdmin)
     admin.add_view(GenerateKeysView)
     admin.add_view(RedeemedHistoryView)
+    admin.add_view(DauView)
 
     return admin
