@@ -156,3 +156,49 @@ class DeviceDailyActive(Base):
     last_seen_at = Column(DateTime, nullable=False)
     #: How many times the app reported in on this day (startup + periodic pings).
     launch_count = Column(Integer, nullable=False, default=1)
+
+class RedemptionEvent(Base):
+    """Immutable audit record of one successful redemption (Phase 3).
+
+    Written in the SAME database transaction as the License state mutation and
+    the Authorization update (see services/redemption_service.py), so the event
+    log can never show a redemption that did not happen, or miss one that did.
+
+    ``license_id`` is UNIQUE: a License can be redeemed exactly once, therefore
+    it can produce at most one event. Writers use SQLite
+    ``ON CONFLICT DO NOTHING`` so a retried or concurrent write can never
+    duplicate an event or abort the redemption itself.
+
+    ``result`` semantics (live writes):
+        - ``new``    : Authorization created by this redemption.
+        - ``extend`` : ACTIVE authorization, expiry accumulated.
+        - ``reset``  : EXPIRED authorization, restarted from redemption time.
+    Backfilled rows (recorded_via='backfill') use ``new``/``unknown``: the
+    pre-redemption ``expires_at`` of historical renewals was never recorded and
+    is deliberately NOT guessed.
+    """
+
+    __tablename__ = "redemption_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    #: Exactly one event per License (UNIQUE = the de-duplication guarantee).
+    license_id = Column(Integer, nullable=False, unique=True, index=True)
+    authorization_id = Column(Integer, nullable=True, index=True)
+    #: Denormalized from Authorization for query convenience; the machine code.
+    device_id = Column(String(64), nullable=True, index=True)
+    #: 'first' | 'renewal' -- first = this redemption created the Authorization.
+    event_type = Column(String(16), nullable=False)
+    duration_days = Column(Integer, nullable=False)
+    #: naive UTC, mirrors licenses.redeemed_at.
+    redeemed_at = Column(DateTime, nullable=False)
+    auth_created_at = Column(DateTime, nullable=True)
+    #: Expiry BEFORE the mutation (NULL for new authorizations and backfilled
+    #: renewals -- history cannot be reconstructed).
+    auth_expires_before = Column(DateTime, nullable=True)
+    #: Expiry AFTER the mutation (NULL on backfill).
+    auth_expires_after = Column(DateTime, nullable=True)
+    #: 'new' | 'extend' | 'reset' | 'unknown'
+    result = Column(String(16), nullable=False)
+    #: 'live' | 'backfill'
+    recorded_via = Column(String(16), nullable=False, default="live")
+    recorded_at = Column(DateTime, default=func.now(), nullable=False)

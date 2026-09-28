@@ -1,0 +1,73 @@
+{# LiveLens Admin 2.0 — 公共外壳（服务端渲染；真实数据版） #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{ csrf_token }}">
+<title>{{ title }} · LiveLens Admin 2.0</title>
+<link rel="stylesheet" href="/admin2/static/css/admin.css?v=2.0.1">
+</head>
+<body>
+
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-mark">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/><path d="M12 3v2.5M21 12h-2.5" stroke-linecap="round"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">LiveLens Admin</div>
+        <div class="brand-sub">2.0</div>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">总览</div>
+      <a class="nav-item {{ 'active' if active == 'index' else '' }}" href="/admin2/"><span data-icon="chart"></span><span>数据总览</span></a>
+      <div class="nav-section">运营管理</div>
+      <a class="nav-item {{ 'active' if active == 'keys' else '' }}" href="/admin2/keys"><span data-icon="key"></span><span>卡密管理</span></a>
+      <a class="nav-item {{ 'active' if active == 'devices' else '' }}" href="/admin2/devices"><span data-icon="device"></span><span>设备授权</span></a>
+      <a class="nav-item {{ 'active' if active == 'redemptions' else '' }}" href="/admin2/redemptions"><span data-icon="swap"></span><span>兑换记录</span></a>
+      <div class="nav-section">数据</div>
+      <a class="nav-item {{ 'active' if active == 'analytics' else '' }}" href="/admin2/analytics"><span data-icon="analytics"></span><span>数据分析</span></a>
+      <div class="nav-section">系统</div>
+      <a class="nav-item" href="/admin/" title="经典后台（SQLAdmin）· 回退入口"><span data-icon="archive"></span><span>经典后台</span></a>
+      <a class="nav-item" href="/admin2/logout"><span data-icon="logout"></span><span>退出登录</span></a>
+    </nav>
+    <div class="sidebar-foot">
+      <span>v2.0.0</span>
+      <span>admin</span>
+    </div>
+  </aside>
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+  <div class="app-main">
+    <header class="topbar">
+      <button class="icon-btn" id="menuBtn" aria-label="菜单" data-icon="menu"></button>
+      <div>
+        <div class="topbar-title">{{ title }}</div>
+        <div class="topbar-sub">{{ subtitle }}</div>
+      </div>
+      <div class="topbar-spacer"></div>
+      <span class="topbar-clock"><span data-icon="clock" style="display:inline-flex;width:13px"></span><span id="bjClock"></span></span>
+      <div class="topbar-user">
+        <div class="avatar">OP</div>
+        <div class="u-meta">
+          <div class="u-name">运营管理员</div>
+          <div class="u-role">admin</div>
+        </div>
+      </div>
+    </header>
+    <main class="page-content">
+      {% block content %}{% endblock %}
+      <div class="page-note">LiveLens Admin 2.0 · 数据来自许可证服务器实时查询，统计口径按北京时间（Asia/Shanghai）日切</div>
+    </main>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+<script src="/admin2/static/js/charts.js?v=2.0.1"></script>
+<script src="/admin2/static/js/common.js?v=2.0.1"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

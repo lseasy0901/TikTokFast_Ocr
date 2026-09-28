@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div class="ph-titles">
+    <h1 class="page-title">卡密管理</h1>
+    <p class="page-desc">
+      卡密明文仅生成时显示一次，服务端只保存 SHA-256 指纹（与现有安全模型一致）。
+      支持批量生成、状态筛选与 KEY 反向查询。
+    </p>
+  </div>
+  <div class="page-actions">
+    <button class="btn" id="btnExport" data-icon="download">导出 CSV</button>
+    <button class="btn btn-primary" id="btnGenerate" data-icon="plus">批量生成卡密</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h3 class="card-title">KEY 反向查询</h3>
+      <p class="card-desc">服务端用现有 SHA-256 算法检索 <code class="mono">licenses.key_hash</code>；输入不落库、不写日志</p>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="toolbar">
+      <div class="input-icon-wrap grow" style="max-width:520px">
+        <span data-icon="search"></span>
+        <input class="input" id="lookupInput" placeholder="粘贴用户提供的明文 Key" spellcheck="false">
+      </div>
+      <button class="btn btn-primary" id="btnLookup" data-icon="search">查询</button>
+    </div>
+    <div id="lookupResult"></div>
+  </div>
+</div>
+
+<div class="card mt-20">
+  <div class="card-head" style="border-bottom:0;padding-bottom:6px">
+    <div class="seg" id="stateSeg">{{ '' }}</div>
+    <div class="spacer"></div>
+    <div class="toolbar">
+      <select class="select" id="planFilter">
+        <option value="">全部套餐</option>
+        <option value="d1">天卡（1 天）</option>
+        <option value="m30">月卡（30 天）</option>
+        <option value="h180">半年卡（180 天）</option>
+        <option value="y365">年卡（365 天）</option>
+        <option value="other">其他套餐</option>
+      </select>
+      <div class="input-icon-wrap" style="width:220px">
+        <span data-icon="search"></span>
+        <input class="input" id="searchInput" placeholder="指纹前缀 / 设备 / ID">
+      </div>
+    </div>
+  </div>
+  <div class="table-wrap" id="keysTable">{{ '' }}</div>
+  <div class="table-foot" id="keysFoot">{{ '' }}</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<div class="modal-overlay" id="genModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">批量生成卡密</div>
+      <button class="modal-close" data-close-modal="genModal" data-icon="close"></button>
+    </div>
+    <div class="modal-body">
+      <div class="notice notice-warn"><span data-icon="alert"></span><div><b>明文 Key 只会显示一次。</b>服务器只保存 SHA-256 指纹，生成后请立即复制分发；丢失只能吊销重建。</div></div>
+      <div class="form-row">
+        <div class="field">
+          <label>套餐 / 有效期</label>
+          <select class="select" id="genPlan">
+            <option value="1">天卡（1 天）</option>
+            <option value="30" selected>月卡（30 天）</option>
+            <option value="180">半年卡（180 天）</option>
+            <option value="365">年卡（365 天）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>数量（1–1000）</label>
+          <input type="number" class="input" id="genQty" value="10" min="1" max="1000">
+        </div>
+      </div>
+      <div class="form-row single">
+        <div class="field">
+          <label>功能标签（可选）</label>
+          <input class="input" id="genFeatures" placeholder="英文逗号分隔，例如：ocr,hd">
+          <span class="hint">兑换时并入设备授权（features 联合），与现有业务层一致</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close-modal="genModal">取消</button>
+      <button class="btn btn-primary" id="btnGenConfirm">生成</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="genResultModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">生成结果 · 明文仅此一次</div>
+      <button class="modal-close" data-close-modal="genResultModal" data-icon="close"></button>
+    </div>
+    <div class="modal-body">
+      <div class="notice notice-warn"><span data-icon="alert"></span><div><b>关闭本窗口后无法再次查看明文，也无法检索找回。</b>请立即复制并分发；若丢失，请吊销对应 Key 并重新生成。</div></div>
+      <div class="field">
+        <label id="genResultMeta"></label>
+        <textarea class="input mono" id="genResultArea" readonly spellcheck="false" style="min-height:180px;white-space:pre"></textarea>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="btnCopyKeys" data-icon="copy">复制全部</button>
+      <button class="btn btn-primary" id="btnGenDone">我已保存，关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="licModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">卡密详情 <span class="text-dim" style="font-size:13px" id="licModalId"></span></div>
+      <button class="modal-close" data-close-modal="licModal" data-icon="close"></button>
+    </div>
+    <div class="modal-body" id="licModalBody"></div>
+    <div class="modal-foot"><button class="btn" data-close-modal="licModal">关闭</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="revokeModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">确认吊销</div>
+      <button class="modal-close" data-close-modal="revokeModal" data-icon="close"></button>
+    </div>
+    <div class="modal-body">
+      <div class="notice notice-danger"><span data-icon="alert"></span><div id="revokeMsg"></div></div>
+      <p class="text-2" style="font-size:13px">仅「未使用」的卡密可吊销。已兑换的 Key 不可吊销——吊销不会收回设备上已生效的授权（与现有业务规则一致）。</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close-modal="revokeModal">取消</button>
+      <button class="btn btn-danger" id="btnRevokeConfirm">确认吊销</button>
+    </div>
+  </div>
+</div>
+
+<script src="/admin2/static/js/pages/keys.js?v=2.0.1"></script>
+{% endblock %}

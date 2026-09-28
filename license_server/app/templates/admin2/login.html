@@ -1,0 +1,49 @@
+{# LiveLens Admin 2.0 — 管理员登录（复用 ADMIN_API_KEY，fail closed） #}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理员登录 · LiveLens Admin 2.0</title>
+<link rel="stylesheet" href="/admin2/static/css/admin.css?v=2.0.1">
+</head>
+<body>
+
+<div class="login-stage">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-mark">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none"/><path d="M12 3v2.5M21 12h-2.5" stroke-linecap="round"/></svg>
+      </div>
+      <div class="login-title">LiveLens Admin 2.0</div>
+      <div class="login-sub">许可证与运营控制台</div>
+    </div>
+
+    {% if error %}
+    <div class="login-error show">{{ error }}</div>
+    {% else %}
+    <div class="login-error" id="loginError"></div>
+    {% endif %}
+
+    <form method="post" action="/admin2/login" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field">
+        <label>用户名</label>
+        <input class="input" name="username" value="admin" required>
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input class="input" type="password" name="password" placeholder="请输入 ADMIN_API_KEY" required>
+      </div>
+      <button type="submit" class="btn btn-primary login-btn">登 录</button>
+    </form>
+
+    <div class="login-foot">
+      登录凭据与经典后台一致；连续会话由签名 Cookie 保护<br>
+      登录即代表同意操作将被记录至管理审计日志（2.0 规划）
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

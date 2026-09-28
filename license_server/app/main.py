@@ -265,6 +265,14 @@ from admin import setup_admin  # noqa: E402
 
 setup_admin(app)
 
+# ----------------------------------------------------------------------
+# Phase 2: Admin 2.0 — 独立新后台，挂载于 /admin2，与既有 /admin（经典后台）
+# 并行运行。认证复用同一套会话（admin.auth.SESSION_KEY），登录态互通。
+# ----------------------------------------------------------------------
+from admin2 import setup_admin2  # noqa: E402
+
+setup_admin2(app)
+
 
 if __name__ == "__main__":
     # 便捷启动入口。固定绑定回环地址，且**永不**自动开启 reload：

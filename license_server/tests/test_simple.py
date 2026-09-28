@@ -5,10 +5,10 @@ Simple integration tests for the license server
 
 import pytest
 from fastapi.testclient import TestClient
-from app.main import app
-from app.database import SessionLocal, get_db
-from app.models import License, LicenseState
-from app.services.license_service import generate_secure_key, generate_key_hash
+from main import app  # noqa: 与生产 --app-dir app 的顶层模块布局一致
+from database import SessionLocal, get_db
+from models import License, LicenseState
+from services.license_service import generate_secure_key, generate_key_hash
 
 # Override get_db to use test database
 def override_get_db():
@@ -51,7 +51,7 @@ def test_invalid_key_validation():
     response = client.post(
         "/api/v1/licenses/validate",
         json={
-            "license_key": "invalid-key-123",
+            "license_key": "invalid-key-123456",  # ≥16 字符（min_length 加固后短 Key 由 422 拒绝）
             "device_id": "test-device-1"
         }
     )
@@ -61,20 +61,24 @@ def test_invalid_key_validation():
     assert data["state"] == "invalid_key"
 
 
-def test_admin_endpoint_no_key():
+def test_admin_endpoint_no_key(monkeypatch):
     """Test admin endpoint without API key"""
+    import config
+    monkeypatch.setattr(config.settings, "ADMIN_API_KEY", "test-key-for-simple")
     response = client.post(
         "/api/v1/admin/licenses",
-        json={"duration_days": 30, "max_devices": 1}
+        json={"duration_days": 30}
     )
     assert response.status_code == 401
 
 
-def test_admin_endpoint_invalid_key():
+def test_admin_endpoint_invalid_key(monkeypatch):
     """Test admin endpoint with invalid API key"""
+    import config
+    monkeypatch.setattr(config.settings, "ADMIN_API_KEY", "test-key-for-simple")
     response = client.post(
         "/api/v1/admin/licenses",
-        json={"duration_days": 30, "max_devices": 1},
+        json={"duration_days": 30},
         headers={"X-API-Key": "invalid-key"}
     )
     assert response.status_code == 401
