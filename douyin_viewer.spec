@@ -41,13 +41,13 @@ print("=" * 72)
 #   susi_helper/target/release/susi_helper.exe    (Rust target tree, gitignored)
 #   runtime/ffmpeg/ffmpeg.exe                     (large third-party binary)
 #   runtime/ffmpeg/*.dll                          (their required companion DLLs)
-#   runtime/ppocr/PP-OCRv6_medium_rec_infer/      (production OCR model, large)
+#   runtime/onnx/                                 (production OCR artifacts, large)
 #
 # PyInstaller only *warns* when a `datas` source is missing and then produces an
 # EXE anyway. Each of those omissions is invisible here and fatal on a customer's
 # machine: no helper -> activation never works; no FFmpeg -> the video pipeline
 # dies at spawn; no ffprobe -> the resolution probe silently degrades to a wrong
-# fixed frame size; no PP-OCRv6 model -> the production OCR backend cannot load.
+# fixed frame size; no ONNX model -> the production OCR backend cannot load.
 # Verify all of them up front and stop the build.
 #
 # The Tesseract set (runtime/tesseract/tesseract.exe, its ~26 companion DLLs and
@@ -135,54 +135,40 @@ _FFMPEG_DLLS = sorted(
 _FFMPEG_DLL_MIN = 7
 
 # ---------------------------------------------------------------------------
-# PP-OCRv6 model (the production OCR backend)
+# ONNX Runtime OCR artifacts (the production OCR backend)
 #
-# PP-OCRv6_medium_rec replaced the retired Tesseract runtime as the production
-# OCR model, so the build now has to ship the model itself. It must land exactly
-# where the client probes for it:
+# PP-OCRv6_medium_rec on ONNX Runtime + DirectML replaced the retired
+# PaddlePaddle-GPU / PaddleX runtime, so the build ships exactly two OCR
+# artifacts. They must land where the client probes for them:
 #
-#   ocr.ppocr_engine.PPOCRModelLocator._bundled_candidates()
-#       -> <base>/runtime/ppocr/PP-OCRv6_medium_rec_infer
+#   ocr.onnx_engine.ONNXModelLocator._bundled_candidates()
+#       -> <base>/runtime/onnx/PP-OCRv6_medium_rec_fp32.onnx
+#       -> <base>/runtime/onnx/charset.txt
 #
 # where <base> is sys._MEIPASS in a frozen onedir build -- the same contract the
-# retired ocr.engine.TesseractLocator had for runtime/tesseract/.
+# retired Tesseract and Paddle locators had for their own runtime/ subtrees.
 #
-# The predicate below mirrors PPOCRModelLocator.is_usable_model_dir() rather than
-# calling it: this spec deliberately runs in a build interpreter that may have no
-# runtime dependencies installed, so it must not import the ocr package. "Usable"
-# is therefore restated in the same terms the locator uses (directory exists and
-# inference.pdiparams is present and non-empty), because a 0-byte placeholder
-# must never count as provisioned -- that is how the Tesseract set used to be
-# faked into a build.
+# Both datas sources below are *files*, not directories, so PyInstaller copies
+# them straight into dest. The "a directory source drops its own name" trap
+# (which is why the old PP-OCRv6 model dest had to repeat the directory name)
+# does not apply to them.
 #
-# The bundling itself used to be unwritten, and the "PP-OCRv6 packaging phase"
-# note here said so. It is written now -- the model directory, the Paddle runtime
-# and the CUDA closure all land in `datas` below (see the Phase 1.1 block further
-# down for why each one has to be listed by hand):
-#   1. the model goes to _PPOCR_MODEL_DIR, which the gate above already requires,
-#   2. (_PPOCR_MODEL_DIR, _PPOCR_DEST) puts it on the frozen probe path,
-#   3. paddlepaddle-gpu plus the nvidia-* CUDA wheels that
-#      ocr.ppocr_engine._ensure_cuda_dlls() puts on the DLL search path are
-#      collected out of the build environment and shipped alongside it.
-# Until (1) happens the gate below fails the build, which is the point: an EXE
-# without the model reports "OCR 组件缺失" on every customer machine.
+# ONNX Runtime itself is deliberately NOT listed in datas/binaries: the pinned
+# pyinstaller-hooks-contrib ships hook-onnxruntime.py, whose
+# `collect_dynamic_libs("onnxruntime")` picks up onnxruntime/capi/*.dll
+# (onnxruntime.dll, DirectML.dll, onnxruntime_providers_shared.dll) by itself.
+# Only the two model artifacts are ours to place.
+#
+# There is no CUDA closure and no Paddle runtime any more: DirectML is the GPU
+# path and CPUExecutionProvider is the fallback, both inside onnxruntime.
 # ---------------------------------------------------------------------------
-_PPOCR_SUBDIR = "ppocr"                      # mirrors ocr.ppocr_engine._PPOCR_SUBDIR
-_PPOCR_MODEL_DIR_NAME = "PP-OCRv6_medium_rec_infer"
-_PPOCR_MODEL_DIR = os.path.join(PROJECT_ROOT, "runtime", _PPOCR_SUBDIR,
-                                _PPOCR_MODEL_DIR_NAME)
-_PPOCR_MODEL_PARAMS = os.path.join(_PPOCR_MODEL_DIR, "inference.pdiparams")
-_PPOCR_DEST = os.path.join("runtime", _PPOCR_SUBDIR)
-
-# PyInstaller copies a *directory* datas source as "dest + the files' paths
-# relative to that source directory" -- the source directory's own name is
-# dropped. So dest=_PPOCR_DEST would flatten the three model files into
-# runtime/ppocr/ and the locator's probe path
-# (<base>/runtime/ppocr/PP-OCRv6_medium_rec_infer) would find nothing. The
-# model directory name has to be part of the destination.
-# Measured, not assumed: a build with dest=_PPOCR_DEST produced exactly
-# _internal/runtime/ppocr/inference.pdiparams.
-_PPOCR_MODEL_DEST = os.path.join(_PPOCR_DEST, _PPOCR_MODEL_DIR_NAME)
+_ONNX_SUBDIR = "onnx"                        # mirrors ocr.onnx_engine._ONNX_SUBDIR
+_ONNX_DEST = os.path.join("runtime", _ONNX_SUBDIR)
+_ONNX_DIR = os.path.join(PROJECT_ROOT, "runtime", _ONNX_SUBDIR)
+_ONNX_MODEL_NAME = "PP-OCRv6_medium_rec_fp32.onnx"
+_ONNX_CHARSET_NAME = "charset.txt"
+_ONNX_MODEL_SRC = os.path.join(_ONNX_DIR, _ONNX_MODEL_NAME)
+_ONNX_CHARSET_SRC = os.path.join(_ONNX_DIR, _ONNX_CHARSET_NAME)
 
 
 def require_build_inputs(required):
@@ -231,12 +217,14 @@ def require_build_inputs(required):
         "      ffprobe.exe is the shared ACLOS build, not ffmpeg.exe's; without",
         "      those it dies at process start (0xC0000135) and the app silently",
         "      falls back to a hardcoded 1920x1080 frame size.",
-        "  runtime/ppocr/",
-        "      copy the %s model directory to %s" % (
-            _PPOCR_MODEL_DIR_NAME, _PPOCR_MODEL_DIR),
-        "      (inference.pdiparams must be present and non-empty).",
-        "      PP-OCRv6_medium_rec is the production OCR backend; the Paddle/PaddleX",
-        "      runtime that loads it is supplied by the PP-OCRv6 packaging phase.",
+        "  runtime/onnx/",
+        "      copy the two ONNX artifacts to %s:" % _ONNX_DIR,
+        "        %s" % _ONNX_MODEL_NAME,
+        "        %s" % _ONNX_CHARSET_NAME,
+        "      (both must be present and non-empty; charset.txt is exported by",
+        "      scripts/export_onnx_charset.py from the PP-OCRv6 inference.yml).",
+        "      PP-OCRv6_medium_rec on ONNX Runtime + DirectML is the production",
+        "      OCR backend; the old Paddle/PaddleX + CUDA runtime is retired.",
         "=" * 72,
         "",
     ]
@@ -251,7 +239,8 @@ require_build_inputs(
         ("FFmpeg runtime library", _FFMPEG_DLL_REQUIRED),
         ("FFprobe executable", _FFPROBE_SRC),
         ("FFprobe runtime library", _FFPROBE_CORE),
-        ("PP-OCRv6 model", _PPOCR_MODEL_PARAMS),
+        ("ONNX OCR model", _ONNX_MODEL_SRC),
+        ("ONNX charset", _ONNX_CHARSET_SRC),
     )
 )
 
@@ -369,259 +358,91 @@ if len(_FFPROBE_DLLS) < len(_FFPROBE_DLL_NAMES):
 # what the client actually applies, and it rejects a 0-byte inference.pdiparams,
 # so a placeholder must fail the build here rather than ship an EXE that cannot
 # load its production OCR backend.
-if os.path.isfile(_PPOCR_MODEL_PARAMS) and os.path.getsize(_PPOCR_MODEL_PARAMS) == 0:
-    raise FileNotFoundError(
-        "\n".join(
-            [
-                "",
-                "=" * 72,
-                "BUILD ABORTED: the PP-OCRv6 model is empty.",
-                "",
-                "  %s" % _PPOCR_MODEL_PARAMS,
-                "  is a 0-byte placeholder; expected the model's real weights.",
-                "",
-                "PPOCRModelLocator.is_usable_model_dir() treats a 0-byte",
-                "inference.pdiparams as 'not found', so this build would produce an",
-                "EXE whose OCR never starts -- which looks like an OCR bug, not a",
-                "packaging bug.",
-                "",
-                "How to provision:",
-                "  copy the %s model directory to %s" % (
-                    _PPOCR_MODEL_DIR_NAME, _PPOCR_MODEL_DIR),
-                "=" * 72,
-                "",
-            ]
+for _onnx_label, _onnx_path in (("ONNX OCR model", _ONNX_MODEL_SRC),
+                                ("ONNX charset", _ONNX_CHARSET_SRC)):
+    if os.path.isfile(_onnx_path) and os.path.getsize(_onnx_path) == 0:
+        raise FileNotFoundError(
+            "\n".join(
+                [
+                    "",
+                    "=" * 72,
+                    "BUILD ABORTED: %s is empty." % _onnx_label,
+                    "",
+                    "  %s" % _onnx_path,
+                    "  is a 0-byte placeholder; expected the real artifact.",
+                    "",
+                    "ONNXModelLocator.is_usable_model_file() treats a 0-byte file as",
+                    "'not found', so this build would produce an EXE whose OCR never",
+                    "starts -- which looks like an OCR bug, not a packaging bug.",
+                    "",
+                    "How to provision:",
+                    "  put %s and %s under %s" % (
+                        _ONNX_MODEL_NAME, _ONNX_CHARSET_NAME, _ONNX_DIR),
+                    "  (charset.txt is generated by scripts/export_onnx_charset.py)",
+                    "=" * 72,
+                    "",
+                ]
+            )
         )
-    )
 
 # ---------------------------------------------------------------------------
-# Paddle / PaddleX runtime + CUDA closure (Phase 1.1)
+# ONNX Runtime: why nothing else has to be listed by hand
 #
-# 1.1.1 的内部包是这个缺陷的实例：构建机上 GPU 栈一应俱全，发行包里却
-# 既没有 PP-OCRv6 模型，也没有任何 CUDA DLL —— 客户机上 OCR 一次都跑不起来。
-# 原因不是哪个路径写错了，而是 **PyInstaller 的依赖分析本来就看不见它们**：
+# The retired Paddle/CUDA stack needed a hand-written Phase-1.1 block here
+# because PyInstaller's dependency analysis could not see any of it:
+#   * the model was pure data -- a missing datas entry only warns;
+#   * paddle/libs DLLs are opened with LoadLibrary at runtime, so they are
+#     absent from the PE import table (measured: libpaddle.pyd statically
+#     imports only phi.dll and python311.dll);
+#   * the nvidia-* CUDA wheels were located via os.add_dll_directory, which is
+#     neither a Python module nor a static dependency.
 #
-#   * PP-OCRv6 模型是纯数据，没有任何 import 指向它，datas 漏写只警告不报错；
-#   * paddle/libs 下的 mklml / libblas / liblapack / libgfortran / libquadmath /
-#     warpctc / warprnnt 是 phi.dll 与 libpaddle.pyd 用 LoadLibrary 在运行期
-#     打开的，不在 PE 导入表里。实测导入表：libpaddle.pyd 只静态导入
-#     phi.dll 与 python311.dll，phi.dll 只静态导入
-#     common.dll / mkldnn.dll / libiomp5md.dll —— 所以 PyInstaller 只收到这四个；
-#   * nvidia-* wheel 的 CUDA 库既不是 Python 模块也不是静态依赖，paddle 靠
-#     os.add_dll_directory 拼路径去找，分析器完全看不见。
+# ONNX Runtime has none of those problems. It is an ordinary importable package
+# and the pinned pyinstaller-hooks-contrib ships hook-onnxruntime.py:
 #
-# 目标目录不是随便选的，是运行期查找路径的硬要求：
-#   * 模型 -> <MEIPASS>/runtime/ppocr/PP-OCRv6_medium_rec_infer
-#       （ocr.ppocr_engine.PPOCRModelLocator._bundled_candidates()）
-#   * CUDA -> <MEIPASS>/nvidia/...（保持 wheel 里的原相对路径）
-#       ocr.ppocr_engine._ensure_cuda_dlls() 在 site.getsitepackages() 下
-#       glob "nvidia/cu13/bin/*"。冻结环境里 site.getsitepackages() 的根
-#       **就是** sys._MEIPASS —— 已用一个最小冻结探针实测确认（PyInstaller
-#       6.22.2 onedir 下 sys.prefix == sys.exec_prefix == sys._MEIPASS），
-#       所以只要文件按原相对路径落进 _internal/nvidia/...，这个函数在冻结包
-#       里照样命中，无需改动 OCR 代码。paddle 自己找 cudnn 用的是
-#       <paddle>/../nvidia/<pkg>/bin —— 同一个根。
-#   * paddle/libs -> <MEIPASS>/paddle/libs（paddle 自己 glob 这个目录）
+#     binaries = collect_dynamic_libs("onnxruntime")
 #
-# 为什么 CUDA 闭包整目录收、不挑子集：Phase 1 审计区分了「实测被生产 OCR
-# 链路加载」（cudnn 8 个 + cublas 2 个，906.5 MiB）与「实测被 paddle 其它
-# 算子按需加载」（cufft / cusolver / cusparse / nvJitLink，632.2 MiB）。
-# 裁剪需要在剥离后重测，属于高风险实验，本阶段明确不做，因此整目录收。
+# which collects onnxruntime/capi/*.dll -- onnxruntime.dll, DirectML.dll and
+# onnxruntime_providers_shared.dll -- while the pybind11 extension
+# (onnxruntime_pybind11_state.pyd) arrives through the normal import graph.
+# CPUExecutionProvider is compiled into onnxruntime.dll; DirectML ships as its
+# own DLL next to it. So the only OCR entries this spec adds are the two model
+# artifacts, and there is no CUDA closure and no Paddle runtime to keep alive.
+#
+# What can still go silently wrong is the *import*: PyInstaller only warns about
+# an unresolvable hidden import, so a build interpreter without onnxruntime
+# would still produce an installer whose OCR never starts. That is what the ONNX
+# import gate below is for -- same reasoning as the pytesseract gate above.
 # ---------------------------------------------------------------------------
-_PADDLE_LIBS_DEST = os.path.join("paddle", "libs")
 
-#: PyInstaller 的 PE 依赖分析**已经能收到**的 paddle/libs DLL（见上面的实测
-#: 导入表）。它们由 BINARY TOC 落到 paddle/libs/，不能再写进 datas ——
-#: 同一个目标名出现两次会让 COLLECT 收到重复条目。
-_PADDLE_LIBS_PE_COLLECTED = ("phi.dll", "common.dll", "mkldnn.dll", "libiomp5md.dll")
-
-#: mkldnn.dll 静态导入的 MSVC OpenMP 运行时。它随 VC++ 2015-2022 可再发行
-#: 组件分发，干净 Windows 机器上不保证存在；缺失时
-#: phi.dll -> libpaddle.pyd -> import paddle 整条链失败，而原来的闸门看不见。
-_MSVC_OPENMP_DLL = "vcomp140.dll"
-
-#: 模型完整性期望值。由 scripts/verify_ppocr_model.py --record 生成，
-#: 也是该脚本校验时读的同一份文件 —— 这里复用同一份 SHA-256 期望值。
-_PPOCR_MANIFEST = os.path.join(PROJECT_ROOT, "scripts", "ppocr_model_manifest.json")
-
-# ---------------------------------------------------------------------------
-# PaddleX 运行时依赖的发行元数据（dist-info）
-#
-# paddlex 判断「某个运行时依赖装了没有」用的是**发行元数据**，不是模块能不能
-# import：paddlex/utils/deps.py:get_dep_version() 就是
-# importlib.metadata.version(dep)，拿不到版本号就判定该依赖不可用，然后
-# require_deps() 直接拒绝构造识别器。
-#
-# 冻结包里默认**没有**任何 dist-info，于是 version() 抛 PackageNotFoundError，
-# paddlex 判定缺依赖 —— 而那个依赖的模块其实就在包里。这是实测到的：
-# 冻结 OcrSelfCheck 报
-#   `TextRecRunnerPredictor` is not ready for use, because the following
-#   dependencies are not available: python-bidi
-# 而 _internal/bidi/ 与 bidi.cp311-win_amd64.pyd 都在。
-#
-# 下面这几个名字来自**实测**，不是抄 paddlex 的依赖表：在生产路径上把
-# paddlex.utils.deps.is_dep_available 打桩，跑一遍完整的
-# PPOCREngine() 构造 + 识别，记录它查过的全部依赖，只有这些。
-#   paddlepaddle 也在其中，但它走 importlib.util.find_spec 分支，不需要元数据。
-#   opencv-contrib-python / pypdfium2 的检查排在 python-bidi 之后，所以冻结包
-#   先报的是 python-bidi；三个都要带，否则只是把失败推到下一步。
-# 换模型或升级 paddlex 时这个集合要重新实测（见 scripts/verify_frozen_bundle.py
-# 的同类检查，它会在打包后核对这里没漏）。
-# ---------------------------------------------------------------------------
-_PADDLE_METADATA_DISTS = ("python-bidi", "pypdfium2", "opencv-contrib-python")
+#: 模型完整性期望值，与 scripts/verify_onnx_model.py 读同一份文件。
+_ONNX_MANIFEST = os.path.join(PROJECT_ROOT, "scripts", "onnx_model_manifest.json")
 
 
-def _build_env_package_dirs():
-    """构建解释器里可能承载第三方包的目录（去重保序）。"""
-    dirs = []
-
-    def _add(path):
-        if path and os.path.isdir(path) and path not in dirs:
-            dirs.append(path)
-
-    try:
-        import sysconfig
-        _paths = sysconfig.get_paths()
-        for _key in ("purelib", "platlib"):
-            _add(_paths.get(_key))
-    except Exception:  # noqa: BLE001 - 定位失败交给下面的 importlib 兜底
-        pass
-
-    for _module in ("paddle", "nvidia"):
-        try:
-            _found = importlib.util.find_spec(_module)
-        except Exception:  # noqa: BLE001
-            _found = None
-        for _location in list(getattr(_found, "submodule_search_locations", None) or []):
-            _add(os.path.dirname(_location))
-    return dirs
-
-
-def _find_under_build_env(leaf):
-    """在构建环境的包目录下找**目录** leaf，返回第一个存在的绝对路径。"""
-    for _base in _build_env_package_dirs():
-        _candidate = os.path.join(_base, leaf)
-        if os.path.isdir(_candidate):
-            return _candidate
-    return None
-
-
-def _find_file_under_build_env(leaf):
-    """在构建环境的包目录下找**文件** leaf，返回第一个存在的绝对路径。"""
-    for _base in _build_env_package_dirs():
-        _candidate = os.path.join(_base, leaf)
-        if os.path.isfile(_candidate):
-            return _candidate
-    return None
-
-
-def _collect_paddle_libs():
-    """paddle/libs 下运行期 LoadLibrary 打开、PE 分析看不见的 DLL。
-
-    common.lib 是静态导入库，不是运行期文件，按 .dll 后缀自然排除。
-    """
-    _libs = _find_under_build_env(os.path.join("paddle", "libs"))
-    if not _libs:
-        return [], None
-    _collected = [
-        (os.path.join(_libs, _name), _PADDLE_LIBS_DEST)
-        for _name in sorted(os.listdir(_libs))
-        if _name.lower().endswith(".dll")
-        and _name.lower() not in _PADDLE_LIBS_PE_COLLECTED
-    ]
-    return _collected, _libs
-
-
-def _collect_nvidia_dlls():
-    """nvidia-* wheel 的全部 DLL，保持 wheel 内的原相对路径。"""
-    _nvidia = _find_under_build_env("nvidia")
-    if not _nvidia:
-        return [], None
-    _parent = os.path.dirname(_nvidia)
-    _collected = []
-    for _root, _dirs, _files in os.walk(_nvidia):
-        _dest = os.path.relpath(_root, _parent)
-        for _name in sorted(_files):
-            if _name.lower().endswith(".dll"):
-                _collected.append((os.path.join(_root, _name), _dest))
-    return sorted(_collected), _nvidia
-
-
-def _find_msvc_openmp():
-    """定位 vcomp140.dll：先用构建环境自带的副本（与 app 同源），再退到系统。"""
-    for _leaf in (os.path.join("PySide6", _MSVC_OPENMP_DLL),
-                  os.path.join("shiboken6", _MSVC_OPENMP_DLL)):
-        _found = _find_file_under_build_env(_leaf)
-        if _found:
-            return _found
-    _fallback = os.path.join(
-        os.environ.get("SystemRoot", r"C:\Windows"), "System32", _MSVC_OPENMP_DLL)
-    return _fallback if os.path.isfile(_fallback) else None
-
-
-def _collect_dist_metadata(dist_names):
-    """按发行名取 dist-info 目录，返回 [(目录, ".")] 形式的 datas 片段。
-
-    发行名与目录名不是一回事（python-bidi -> python_bidi-0.6.11.dist-info），
-    所以读每个 METADATA 的 Name 字段来配对，而不是拼字符串。
-    """
-    wanted = {name.lower().replace("_", "-") for name in dist_names}
-    found = {}
-    for _base in _build_env_package_dirs():
-        if not os.path.isdir(_base):
-            continue
-        for _entry in sorted(os.listdir(_base)):
-            if not _entry.endswith(".dist-info"):
-                continue
-            _meta = os.path.join(_base, _entry, "METADATA")
-            if not os.path.isfile(_meta):
-                continue
-            try:
-                with open(_meta, "r", encoding="utf-8", errors="replace") as _f:
-                    _name = ""
-                    for _line in _f:
-                        if _line.startswith("Name:"):
-                            _name = _line.split(":", 1)[1].strip()
-                            break
-            except OSError:
-                continue
-            _key = _name.lower().replace("_", "-")
-            if _key in wanted and _key not in found:
-                found[_key] = os.path.join(_base, _entry)
-    # dest 必须是 dist-info **目录名**，不能是 "."：PyInstaller 对目录型 datas
-    # 源只保留文件相对该目录的路径，会把 METADATA / RECORD / WHEEL 平铺到包根，
-    # 三个包的这些文件互相覆盖。与 _PPOCR_MODEL_DEST 是同一个坑。
-    return ([(found[name], os.path.basename(found[name])) for name in sorted(found)],
-            sorted(found))
-
-
-_PADDLE_LIBS, _PADDLE_LIBS_DIR = _collect_paddle_libs()
-_NVIDIA_DLLS, _NVIDIA_DIR = _collect_nvidia_dlls()
-_MSVC_OPENMP_SRC = _find_msvc_openmp()
-_PADDLE_METADATA, _PADDLE_METADATA_FOUND = _collect_dist_metadata(_PADDLE_METADATA_DISTS)
-
-# Paddle / PaddleX 是*可导入*依赖：PyInstaller 对解析不了的 hidden import
-# 只警告不报错，缺了会得到"包能构建、OCR 起不来"。检查在 spec 自己的解释器里
-# 跑 —— 那正是 PyInstaller 走 import 图用的同一个解释器，"这里能解析" == "会被打进包"。
-_paddle_missing = [
-    _mod for _mod in ("paddle", "paddlex")
+# onnxruntime is an *importable* dependency, and PyInstaller only warns about a
+# hidden import it cannot resolve -- the build would succeed and ship an
+# installer whose OCR never starts on any machine. Gate it like pytesseract.
+_onnx_missing = [
+    _mod for _mod in ("onnxruntime",)
     if importlib.util.find_spec(_mod) is None
 ]
-if _paddle_missing:
+
+if _onnx_missing:
     raise FileNotFoundError(
         "\n".join(
             [
                 "",
                 "=" * 72,
-                "BUILD ABORTED: the Paddle OCR runtime is not installed.",
+                "BUILD ABORTED: the ONNX OCR runtime is not installed.",
                 "",
                 "  not importable in the build interpreter (%s):" % sys.executable,
-                "    %s" % ", ".join(_paddle_missing),
+                "    %s" % ", ".join(_onnx_missing),
                 "",
-                "PP-OCRv6_medium_rec is the production OCR backend and runs on",
-                "Paddle. Without it the frozen package cannot load its OCR model on",
-                "any machine, and PyInstaller will not tell you: an unresolvable",
-                "hidden import is only a warning.",
+                "PP-OCRv6_medium_rec runs on ONNX Runtime (DirectML, with a",
+                "CPUExecutionProvider fallback) and is the production OCR backend.",
+                "Without it the frozen package cannot load its OCR model on any",
+                "machine, and PyInstaller will not tell you: an unresolvable hidden",
+                "import is only a warning.",
                 "",
                 "Fix: install the packaging requirements into the build environment",
                 "  python -m pip install -r requirements-packaging.txt",
@@ -631,117 +452,21 @@ if _paddle_missing:
         )
     )
 
-if not _PADDLE_LIBS:
-    raise FileNotFoundError(
-        "\n".join(
-            [
-                "",
-                "=" * 72,
-                "BUILD ABORTED: the Paddle runtime libraries are missing.",
-                "",
-                "  no paddle/libs found under any of:",
-                "    %s" % "\n    ".join(_build_env_package_dirs() or ["(none)"]),
-                "",
-                "paddle/libs holds libpaddle.pyd's runtime companions. They are",
-                "opened with LoadLibrary, so PyInstaller's PE dependency walk cannot",
-                "see them; the spec has to list them by hand, and it can only do that",
-                "from an installed paddlepaddle-gpu.",
-                "",
-                "Fix: python -m pip install -r requirements-packaging.txt",
-                "=" * 72,
-                "",
-            ]
-        )
-    )
-
-if not _NVIDIA_DLLS:
-    raise FileNotFoundError(
-        "\n".join(
-            [
-                "",
-                "=" * 72,
-                "BUILD ABORTED: the CUDA runtime is missing.",
-                "",
-                "  no CUDA DLLs found under any of:",
-                "    %s" % "\n    ".join(_build_env_package_dirs() or ["(none)"]),
-                "",
-                "ocr.ppocr_engine._ensure_cuda_dlls() resolves them out of",
-                "site-packages/nvidia/cu13/bin/x86_64 (and nvidia/cudnn/bin) at",
-                "runtime. Without them the frozen app fails on the first GPU op",
-                'with "cublas64_13.dll ... not configured correctly" (error 126),',
-                "and there is no CPU fallback by design.",
-                "",
-                "Fix: python -m pip install -r requirements-packaging.txt",
-                "=" * 72,
-                "",
-            ]
-        )
-    )
-
-if _MSVC_OPENMP_SRC is None:
-    raise FileNotFoundError(
-        "\n".join(
-            [
-                "",
-                "=" * 72,
-                "BUILD ABORTED: %s is missing." % _MSVC_OPENMP_DLL,
-                "",
-                "mkldnn.dll statically imports it, and mkldnn.dll is a static import",
-                "of phi.dll, which libpaddle.pyd imports in turn. On a clean Windows",
-                "machine that has no VC++ 2015-2022 redistributable the whole chain",
-                "fails and 'import paddle' never succeeds -- which surfaces as an OCR",
-                "that never starts, not as a packaging error.",
-                "",
-                "Looked for it beside PySide6/shiboken6 in the build environment and",
-                "in %%SystemRoot%%\\System32.",
-                "=" * 72,
-                "",
-            ]
-        )
-    )
-
-_metadata_missing = [
-    _name for _name in _PADDLE_METADATA_DISTS
-    if _name.lower().replace("_", "-") not in _PADDLE_METADATA_FOUND
-]
-if _metadata_missing:
-    raise FileNotFoundError(
-        "\n".join(
-            [
-                "",
-                "=" * 72,
-                "BUILD ABORTED: PaddleX runtime dependency metadata is missing.",
-                "",
-                "  no dist-info found for: %s" % ", ".join(_metadata_missing),
-                "",
-                "PaddleX decides whether an optional runtime dependency is present",
-                "with importlib.metadata.version() (paddlex/utils/deps.py), NOT by",
-                "importing it. A frozen package without dist-info therefore makes",
-                "PaddleX refuse to build the recognizer even though the module is",
-                "right there -- measured on the frozen OcrSelfCheck:",
-                '  TextRecRunnerPredictor ... dependencies are not available:',
-                "  python-bidi",
-                "",
-                "Fix: python -m pip install -r requirements-packaging.txt",
-                "=" * 72,
-                "",
-            ]
-        )
-    )
-
-# 模型完整性：与 scripts/verify_ppocr_model.py 读同一份 manifest，因此
-# "构建机上的模型 == manifest 记录的模型" 由同一处期望值判定。
-# manifest 不在（例如被某个测试的临时工程树)时只告警 —— 真实仓库里它进 Git。
+# 产物完整性：与 scripts/verify_onnx_model.py 读同一份 manifest，因此
+# 「构建机上的产物 == manifest 记录的产物」由同一处期望值判定。
+# charset.txt 也在其中：项数或顺序错了**不会报错**，只会把每个字符索引
+# 静默解错，所以它必须被同一把 SHA-256 锁住。
+# manifest 不在时只告警 —— 真实仓库里它进 Git。
 _MODEL_MANIFEST = {}
-if os.path.isfile(_PPOCR_MANIFEST):
+if os.path.isfile(_ONNX_MANIFEST):
     import json as _json
     import hashlib as _hashlib
-    with open(_PPOCR_MANIFEST, "r", encoding="utf-8") as _f:
+    with open(_ONNX_MANIFEST, "r", encoding="utf-8") as _f:
         _MODEL_MANIFEST = _json.load(_f).get("files", {})
 
     _model_failures = []
     for _name, _expected in sorted(_MODEL_MANIFEST.items()):
-        _path = os.path.join(_PPOCR_MODEL_DIR, _name)
+        _path = os.path.join(_ONNX_DIR, _name)
         if not os.path.isfile(_path):
             _model_failures.append("缺少文件 %s" % _name)
             continue
@@ -765,27 +490,28 @@ if os.path.isfile(_PPOCR_MANIFEST):
                 [
                     "",
                     "=" * 72,
-                    "BUILD ABORTED: the PP-OCRv6 model does not match its manifest.",
+                    "BUILD ABORTED: the ONNX OCR artifacts do not match their manifest.",
                     "",
-                    "  %s" % _PPOCR_MODEL_DIR,
-                    "  expected by %s" % _PPOCR_MANIFEST,
+                    "  %s" % _ONNX_DIR,
+                    "  expected by %s" % _ONNX_MANIFEST,
                     "",
                 ]
                 + ["  - %s" % item for item in _model_failures]
                 + [
                     "",
-                    "打包一份与 manifest 不同的权重，会让「准确率变了」被当成代码",
-                    "回归去查。要么把构建机上的模型换成 manifest 记录的那一份，",
-                    "要么在确认新权重后重新记录：",
-                    "    python scripts/verify_ppocr_model.py --record",
+                    "打包一份与 manifest 不同的产物，会让「识别结果变了」被当成代码",
+                    "回归去查。要么把构建机上的产物换成 manifest 记录的那一份，",
+                    "要么在确认新产物后重新记录：",
+                    "    python scripts/verify_onnx_model.py --record",
                     "=" * 72,
                     "",
                 ]
             )
         )
 else:
-    print("WARNING: %s 不存在，跳过模型 SHA-256 校验（只按字节数判非空）"
-          % _PPOCR_MANIFEST)
+    print("WARNING: %s 不存在，跳过 ONNX 产物 SHA-256 校验（只按字节数判非空）"
+          % _ONNX_MANIFEST)
+
 
 # Data files to include
 datas = [
@@ -821,30 +547,17 @@ datas += [(dll, _FFMPEG_DEST) for dll in _FFMPEG_DLLS]
 # directory as ffmpeg.exe's set, and the same reason.
 datas += [(dll, _FFMPEG_DEST) for dll in _FFPROBE_DLLS]
 
-# PP-OCRv6 model. Dest carries the model directory name (see _PPOCR_MODEL_DEST),
-# so the frozen probe path <MEIPASS>/runtime/ppocr/PP-OCRv6_medium_rec_infer is
-# exactly what PPOCRModelLocator._bundled_candidates() looks for.
-datas += [(_PPOCR_MODEL_DIR, _PPOCR_MODEL_DEST)]
+# ONNX OCR artifacts. Both sources are files, so dest is the directory they must
+# land in and the frozen probe path <MEIPASS>/runtime/onnx/<name> is exactly what
+# ONNXModelLocator._bundled_candidates() looks for.
+datas += [
+    (_ONNX_MODEL_SRC, _ONNX_DEST),
+    (_ONNX_CHARSET_SRC, _ONNX_DEST),
+]
 
-# paddle/libs: only the members PyInstaller's dependency walk cannot see. The
-# four it does resolve (phi/common/mkldnn/libiomp5md) already land in this same
-# directory via the BINARY TOC -- listing them here as well would put the same
-# destination name in the TOC twice.
-datas += _PADDLE_LIBS
-
-# CUDA closure: the whole nvidia/ tree from the wheels, original relative paths
-# preserved, because both _ensure_cuda_dlls() (nvidia/cu13/bin/x86_64) and
-# paddle itself (nvidia/cudnn/bin) probe by that layout.
-datas += _NVIDIA_DLLS
-
-# MSVC OpenMP runtime, flat at the bundle root beside msvcp140/vcruntime140 --
-# that is where the Windows loader searches for mkldnn.dll's static import.
-datas += [(_MSVC_OPENMP_SRC, ".")]
-
-# PaddleX's dependency-check metadata (see _PADDLE_METADATA_DISTS). importlib
-# .metadata scans sys.path for *.dist-info; in a frozen onedir that is
-# _internal/, which is exactly where dest="." puts them.
-datas += _PADDLE_METADATA
+# Nothing else is needed for OCR: ONNX Runtime and its provider DLLs come from
+# PyInstaller's hook-onnxruntime (see the ONNX Runtime block above). There is no
+# Paddle runtime, no CUDA closure and no PaddleX dependency metadata any more.
 
 # Binaries to include (will be added to runtime directory)
 binaries = []
@@ -858,8 +571,20 @@ hiddenimports = [
     "PySide6.QtWidgets",
     "PySide6.QtGui",
     "PySide6.QtSvg",
+    # 音频播放（AudioService）：QtMultimedia 的 pyd/DLL 与 multimedia 插件必须
+    # 进包，否则冻结包里 import 即失败、音频一次都放不出来。模块在
+    # audio/output.py 内延迟导入，modulegraph 发现不了，必须显式声明
+    # （与本文件里 onnxruntime 的注释同理）。
+    "PySide6.QtMultimedia",
     "cv2",
     "numpy",
+    # ONNX OCR runtime. hook-onnxruntime (pyinstaller-hooks-contrib) collects its
+    # DLLs; this entry guarantees the module itself resolves even though the
+    # production import lives inside ONNXEngine.__init__. The modulegraph does
+    # find function-level imports, but the failure mode here -- a silent warning
+    # and an installer whose OCR never starts -- is one this project has been
+    # bitten by before.
+    "onnxruntime",
     "pytesseract",
     "yaml",
     "requests",
@@ -887,6 +612,7 @@ def collect_qt_plugins():
             "platforms",  # Windows platform plugin
             "imageformats",  # Image format plugins
             "styles",  # Style plugins
+            "multimedia",  # 音频后端插件（windowsmediaplugin 等，AudioService 用）
         ]
 
         plugins = []
@@ -942,7 +668,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # The OCR backend moved to ONNX Runtime; Paddle/PaddleX must not come back in
+    # through the import graph. Deleting the datas entries alone does NOT drop
+    # them -- PyInstaller walks imports, and any stray `import paddle` left in the
+    # tree would pull roughly 735 MB of Paddle plus its CUDA closure back in.
+    excludes=["paddle", "paddlex"],
     noarchive=False,
     optimize=0,
 )
@@ -997,6 +727,10 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    # UPX-compressing the ONNX Runtime DLLs is a known breakage source, and it
+    # buys little on files this large. UPX is not installed on the current build
+    # machine, so upx=True is a no-op today; this list is here so that stays
+    # harmless if UPX is ever put on PATH.
+    upx_exclude=["onnxruntime.dll", "DirectML.dll"],
     name='DouyinLowLatencyViewer',
 )

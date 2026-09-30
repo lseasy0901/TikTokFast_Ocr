@@ -35,8 +35,12 @@ class AuthorizationState(str, enum.Enum):
 class UpdateRelease(Base):
     """一次已发布的自动更新（Phase 2）。
 
-    只保存**永久**的小飞机分享链接；临时直链（direct_url）绝不入库 —— 它每次
-    下载时由 resolver 实时换取，用完即弃。
+    ``package_share_url`` 保存**永久**公开 URL，两种后端（v2.1.0 起支持对象存储）：
+        - OSS（阿里云对象存储，公共读桶）：值 = 永久公开直链。永久有效，入库
+          不违反脱敏原则 —— 脱敏针对的是**有时效**的临时 direct_url。
+        - Feijipan（遗留）：值 = 永久分享链接；临时 direct_url 仍由 resolver 在
+          每次下载时实时换取，绝不入库。
+    下载端点按 URL host 分流（见 main._redirect_package）。
 
     ``(channel, version)`` 唯一：同一渠道同一版本不允许存在多个 release。
 
@@ -66,6 +70,17 @@ class UpdateRelease(Base):
     package_size = Column(Integer, nullable=False)
     release_notes = Column(Text, nullable=True)
     published_at = Column(DateTime, default=func.now(), nullable=False)
+
+    # ---- 增量包（v2.1.0 起可选）----
+    # 一个版本可以有 Full（必须）+ Delta（可选）两个包。Delta 只服务
+    # 「从上一版本升级」这一条路径；其余场景（老版本、delta 应用失败）
+    # 由 Full 兜底 —— 这就是清单必须同时登记两种类型的原因。
+    # Delta 的 URL 语义与 package_share_url 相同：OSS 永久直链或飞盘分享。
+    delta_filename = Column(String(255), nullable=True)
+    delta_share_url = Column(String(512), nullable=True)
+    delta_sha1 = Column(String(40), nullable=True)
+    delta_sha256 = Column(String(64), nullable=True)
+    delta_size = Column(Integer, nullable=True)
 
 
 class Authorization(Base):

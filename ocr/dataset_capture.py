@@ -69,7 +69,7 @@ __all__ = [
 # ======================================================================
 #: 数据集采集入口总开关。
 #: False 时：UI 不显示入口、Recorder 不构造、不建队列/线程、不落任何文件。
-DATASET_CAPTURE_ENABLED = True
+DATASET_CAPTURE_ENABLED = False
 
 #: 采样间隔（毫秒）。§7 要求 300~500ms，且必须可配。
 DEFAULT_SAMPLE_INTERVAL_MS = 300

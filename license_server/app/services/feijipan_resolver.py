@@ -187,7 +187,11 @@ def validate_share_url(share_url: str) -> str:
         )
     if parts.port not in (None, 443):
         raise FeijipanResolveError("分享链接端口非法", code=400)
-    if not _SHARE_PATH_RE.match(parts.path or ""):
+    # 尾部斜杠容忍：浏览器/复制粘贴经常带来 `/s/<id>/`，分享身份不变。
+    # （管理端 bat 的本地正则 `/s/.+` 一直放行尾斜杠，这里对齐两端，避免
+    #   "本地过了、服务端 400" 的排障陷阱。）多段路径 `/s/a/b` 仍然拒绝。
+    path = (parts.path or "").rstrip("/")
+    if not _SHARE_PATH_RE.match(path):
         raise FeijipanResolveError(
             "分享链接必须形如 https://share.feijipan.com/s/<id>", code=400
         )
@@ -373,7 +377,9 @@ class FeijipanClient:
 
                     if matched is None:
                         # 精确匹配失败即失败：绝不改用第一个文件顶上。
-                        logger.info("分享中未找到指定文件: %s", filename)
+                        # warning 而非 info：服务端默认 WARNING 级别，排障时
+                        # 必须能在 journalctl 直接看到"分享里到底有没有这个名"。
+                        logger.warning("分享中未找到指定文件: %s", filename)
                         return {
                             "code": 404,
                             "url": None,
@@ -471,7 +477,7 @@ class FeijipanClient:
 
                         if download_url:
                             # 注意：只记录文件名/大小，绝不记录 download_url。
-                            logger.info(
+                            logger.warning(
                                 "小飞机解析成功: file_name=%s file_size=%s",
                                 file_name,
                                 file_size,

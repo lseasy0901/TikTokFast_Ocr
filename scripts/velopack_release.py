@@ -68,7 +68,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # 冻结产物完整性校验。它补的是构建闸门补不上的那一半：闸门只回答「构建机上
 # 有没有」，这里回答「有没有真的进包」—— 1.1.1 的内部包正是在这一步漏掉了
-# 整个 PP-OCRv6 模型和 CUDA 闭包，而构建链一路绿灯。
+# 整个 OCR 模型和 CUDA 闭包，而构建链一路绿灯。
+# OCR 现在跑在 ONNX Runtime 上，所以这里校验的是 runtime/onnx/ 的两个产物、
+# ONNX Runtime 的原生库，并**反向**确认 runtime/ppocr、paddle/、nvidia/ 不在包里。
 # 追加而不是插到最前：scripts/ 下的模块名不该盖住标准库。
 sys.path.append(str(Path(__file__).resolve().parent))
 from verify_frozen_bundle import verify_bundle  # noqa: E402

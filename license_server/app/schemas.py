@@ -97,13 +97,24 @@ class UpdateReleaseCreate(BaseModel):
     version: str = Field(..., min_length=5, max_length=32)
     channel: str = Field(default="stable", max_length=16)
     package_filename: str = Field(..., min_length=1, max_length=255)
-    #: 永久的小飞机分享链接。临时直链由服务端在下载时实时换取，绝不保存。
+    #: 永久公开 URL，两种后端二选一：
+    #:   - 对象存储（OSS 公共读桶）的**文件直链**（v2.1.0 起推荐）：
+    #:     永久有效，服务端发布时 HEAD 复核存在性与字节数。
+    #:   - 小飞机分享链接（遗留）：临时直链由服务端在下载时实时换取，绝不保存。
     package_share_url: str = Field(..., min_length=1, max_length=512)
     release_notes: Optional[str] = None
     package_sha1: str = Field(..., min_length=40, max_length=40)
     package_sha256: str = Field(..., min_length=64, max_length=64)
     #: 可选：申报大小。给了就会与分享中的实际大小做交叉校验，不一致即拒绝发布。
     package_size: Optional[int] = Field(default=None, gt=0)
+    #: ---- 增量包（可选；提供了才会发布 Delta 条目）----
+    #: 与 Full 相同的校验规则；delta_filename 约定形如
+    #: LiveLensDesktop-<版本>-stable-delta.nupkg（与 vpk 产出一致）。
+    delta_filename: Optional[str] = Field(default=None, max_length=255)
+    delta_share_url: Optional[str] = Field(default=None, max_length=512)
+    delta_sha1: Optional[str] = Field(default=None, min_length=40, max_length=40)
+    delta_sha256: Optional[str] = Field(default=None, min_length=64, max_length=64)
+    delta_size: Optional[int] = Field(default=None, gt=0)
 
 
 class UpdateReleaseResponse(BaseModel):

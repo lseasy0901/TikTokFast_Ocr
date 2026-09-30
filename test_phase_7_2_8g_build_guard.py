@@ -9,7 +9,7 @@ douyin_viewer.spec bundles artifacts that are NOT in Git:
     susi_helper/target/release/susi_helper.exe              (gitignored Rust target)
     runtime/ffmpeg/ffmpeg.exe                               (third-party binary)
     runtime/ffmpeg/*.dll                                    (its companion DLLs)
-    runtime/ppocr/PP-OCRv6_medium_rec_infer/                (production OCR model)
+    runtime/onnx/                                           (production OCR artifacts)
 
 runtime/ffmpeg/ffprobe.exe itself is tracked, but its av*/sw* companion closure is
 not -- and a lone ffprobe.exe cannot start. Both the exe and the closure are guarded.
@@ -50,10 +50,11 @@ Covers:
   [6] FFmpeg set incomplete      -> abort, saying the runtime is incomplete
   [6a] ffprobe core lib missing  -> abort, naming it
   [6b] ffprobe set incomplete    -> abort, saying the runtime is incomplete
-  [7] PP-OCRv6 model missing     -> abort, naming the model path
-  [8] PP-OCRv6 model empty       -> abort, saying the model is empty
-  [9] the real repository  -> accepted once the model is provisioned; aborts
-                              naming the model until then
+  [7] ONNX model missing         -> abort, naming the model file
+  [8] ONNX model empty           -> abort, saying the model is empty
+  [8b] ONNX charset empty        -> abort, saying the charset is empty
+  [9] the real repository  -> accepted (both ONNX artifacts are provisioned in
+                              runtime/onnx/); aborts naming them until then
   [10] real PyInstaller    -> exits non-zero on a tree missing the inputs
 """
 
@@ -106,17 +107,19 @@ FFPROBE_DLL_NAMES = (
 FFPROBE_DLL_REQUIRED = FFPROBE_DLL_NAMES[0]
 FFPROBE_DLL_COUNT = len(FFPROBE_DLL_NAMES)
 
-# PP-OCRv6 is the production OCR backend, so the build has to ship the model. The
-# spec requires inference.pdiparams by name (it mirrors
-# PPOCRModelLocator.is_usable_model_dir(), which rejects a 0-byte placeholder) and
+# ONNX Runtime is the production OCR backend, so the build has to ship its two
+# artifacts. The spec gates on both (it mirrors
+# ONNXModelLocator.is_usable_model_file(), which rejects a 0-byte placeholder) and
 # the destination must match the locator's probe path:
-#   <base>/runtime/ppocr/PP-OCRv6_medium_rec_infer
-PPOCR_SUBDIR = "ppocr"
-PPOCR_MODEL_DIR_NAME = "PP-OCRv6_medium_rec_infer"
-PPOCR_MODEL_PARAMS = "inference.pdiparams"
-PPOCR_RELPATH = ("runtime", PPOCR_SUBDIR, PPOCR_MODEL_DIR_NAME)
-PPOCR_PARAMS_RELPATH = PPOCR_RELPATH + (PPOCR_MODEL_PARAMS,)
-PPOCR_DEST = os.path.join("runtime", PPOCR_SUBDIR)
+#   <base>/runtime/onnx/PP-OCRv6_medium_rec_fp32.onnx
+#   <base>/runtime/onnx/charset.txt
+ONNX_SUBDIR = "onnx"
+ONNX_MODEL_NAME = "PP-OCRv6_medium_rec_fp32.onnx"
+ONNX_CHARSET_NAME = "charset.txt"
+ONNX_RELPATH = ("runtime", ONNX_SUBDIR)
+ONNX_MODEL_RELPATH = ONNX_RELPATH + (ONNX_MODEL_NAME,)
+ONNX_CHARSET_RELPATH = ONNX_RELPATH + (ONNX_CHARSET_NAME,)
+ONNX_DEST = os.path.join("runtime", ONNX_SUBDIR)
 
 RUNTIME_RELPATHS = (FFMPEG_RELPATH, FFPROBE_RELPATH)
 
@@ -144,7 +147,8 @@ def skip(msg):
 def make_tree(root, with_key, with_helper, with_runtime=True,
               ffmpeg_dll_count=FFMPEG_DLL_MIN,
               ffprobe_dll_count=FFPROBE_DLL_COUNT,
-              with_ppocr_model=True, ppocr_params=b"stub model weights"):
+              with_onnx_artifacts=True, onnx_model=b"stub onnx model",
+              onnx_charset=b"a\nb\n"):
     """Build a throwaway repository root containing the requested inputs."""
     root = pathlib.Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -178,10 +182,11 @@ def make_tree(root, with_key, with_helper, with_runtime=True,
         dll_dir.mkdir(parents=True, exist_ok=True)
         for name in FFPROBE_DLL_NAMES[:ffprobe_dll_count]:
             (dll_dir / name).write_bytes(b"stub dll")
-    if with_ppocr_model:
-        model_dir = root.joinpath(*PPOCR_RELPATH)
-        model_dir.mkdir(parents=True, exist_ok=True)
-        (model_dir / PPOCR_MODEL_PARAMS).write_bytes(ppocr_params)
+    if with_onnx_artifacts:
+        onnx_dir = root.joinpath(*ONNX_RELPATH)
+        onnx_dir.mkdir(parents=True, exist_ok=True)
+        (onnx_dir / ONNX_MODEL_NAME).write_bytes(onnx_model)
+        (onnx_dir / ONNX_CHARSET_NAME).write_bytes(onnx_charset)
     return root
 
 
@@ -385,17 +390,17 @@ if __name__ == "__main__":
                   for p in ff_dlls),
               "every FFmpeg companion DLL lands beside ffmpeg.exe (%s)" % FFMPEG_DEST)
 
-        # The PP-OCRv6 model is *gated* as a required build input, but its datas
-        # entry is deliberately not written yet: shipping the model directory and
-        # the Paddle/PaddleX runtime is the PP-OCRv6 packaging phase's job. Record
-        # which of the two states the spec is in, so the flip is visible.
-        ppocr_src = os.path.normpath(runtime_path(root, PPOCR_PARAMS_RELPATH))
-        if ppocr_src in entries:
-            check(entries[ppocr_src] == os.path.normpath(PPOCR_DEST),
-                  "the PP-OCRv6 model is bundled to %s" % PPOCR_DEST)
-        else:
-            skip("PP-OCRv6 model datas entry not written yet "
-                 "(PP-OCRv6 packaging phase)")
+        # Both ONNX artifacts must be gated AND land in the directory
+        # ONNXModelLocator probes. The charset is checked alongside the model on
+        # purpose: a missing charset.txt is exactly as fatal and just as invisible
+        # (recognition would decode every index wrong without raising).
+        for name, relpath in ((ONNX_MODEL_NAME, ONNX_MODEL_RELPATH),
+                              (ONNX_CHARSET_NAME, ONNX_CHARSET_RELPATH)):
+            src = os.path.normpath(runtime_path(root, relpath))
+            check(src in entries, "the spec bundles %s as a datas entry" % name)
+            if src in entries:
+                check(entries[src] == os.path.normpath(ONNX_DEST),
+                      "%s is bundled to %s" % (name, ONNX_DEST))
 
         # --------------------------------------------------------------
         print("\n[5] FFmpeg runtime library missing")
@@ -460,51 +465,63 @@ if __name__ == "__main__":
         check(calls["analysis"] == 0, "analysis never ran")
 
         # --------------------------------------------------------------
-        print("\n[7] PP-OCRv6 model missing")
-        root = make_tree(temp / "noppocr", with_key=True, with_helper=True,
-                         with_ppocr_model=False)
+        print("\n[7] ONNX model missing")
+        root = make_tree(temp / "noonnx", with_key=True, with_helper=True,
+                         with_onnx_artifacts=False)
         error, _, calls = exec_spec(root)
         check(isinstance(error, FileNotFoundError),
               "the spec raises FileNotFoundError")
         if isinstance(error, FileNotFoundError):
             report = missing_section(str(error))
-            check("PP-OCRv6 model" in report,
-                  "it names the missing PP-OCRv6 model")
-            check(PPOCR_MODEL_DIR_NAME in report,
-                  "it names the model directory (%s)" % PPOCR_MODEL_DIR_NAME)
+            check("ONNX OCR model" in report,
+                  "it names the missing ONNX OCR model")
+            check(ONNX_MODEL_NAME in report,
+                  "it names the model file (%s)" % ONNX_MODEL_NAME)
         check(calls["analysis"] == 0, "analysis never ran")
 
         # --------------------------------------------------------------
-        print("\n[8] PP-OCRv6 model present but empty")
-        root = make_tree(temp / "emptyppocr", with_key=True, with_helper=True,
-                         ppocr_params=b"")
+        print("\n[8] ONNX model present but empty")
+        root = make_tree(temp / "emptyonnx", with_key=True, with_helper=True,
+                         onnx_model=b"")
         error, _, calls = exec_spec(root)
         check(isinstance(error, FileNotFoundError),
               "the spec raises FileNotFoundError")
         if isinstance(error, FileNotFoundError):
             message = str(error)
-            check("PP-OCRv6 model is empty" in message,
-                  "it says the PP-OCRv6 model is empty")
+            check("ONNX OCR model is empty" in message,
+                  "it says the ONNX OCR model is empty")
             check("0-byte" in message,
                   "it explains that a 0-byte placeholder is not provisioned")
         check(calls["analysis"] == 0, "analysis never ran")
 
         # --------------------------------------------------------------
+        print("\n[8b] ONNX charset present but empty")
+        root = make_tree(temp / "emptycharset", with_key=True, with_helper=True,
+                         onnx_charset=b"")
+        error, _, calls = exec_spec(root)
+        check(isinstance(error, FileNotFoundError),
+              "the spec raises FileNotFoundError")
+        if isinstance(error, FileNotFoundError):
+            check("ONNX charset is empty" in str(error),
+                  "it says the ONNX charset is empty")
+        check(calls["analysis"] == 0, "analysis never ran")
+
+        # --------------------------------------------------------------
         print("\n[9] the real repository")
         error, namespace, calls = exec_spec(ROOT)
-        # The model is gated but not shipped yet, so the real repository is
-        # expected to abort *until* the PP-OCRv6 packaging phase provisions it.
-        # This case flips to "accepted" on its own once it does.
-        if os.path.isfile(runtime_path(ROOT, PPOCR_PARAMS_RELPATH)):
+        # Both artifacts are provisioned in runtime/onnx/, so the real repository
+        # must now be ACCEPTED -- this is the flip the migration is about.
+        if (os.path.isfile(runtime_path(ROOT, ONNX_MODEL_RELPATH))
+                and os.path.isfile(runtime_path(ROOT, ONNX_CHARSET_RELPATH))):
             check(error is None,
-                  "the real repository is accepted (model provisioned)")
+                  "the real repository is accepted (ONNX artifacts provisioned)")
             check(calls["analysis"] == 1, "analysis ran exactly once")
         else:
             check(isinstance(error, FileNotFoundError),
-                  "the real repository aborts until the PP-OCRv6 model is "
+                  "the real repository aborts until the ONNX artifacts are "
                   "provisioned (%s)" % type(error).__name__)
-            check(PPOCR_MODEL_DIR_NAME in str(error),
-                  "the abort names the PP-OCRv6 model that is still missing")
+            check(ONNX_MODEL_NAME in str(error),
+                  "the abort names the ONNX artifact that is still missing")
             check(calls["analysis"] == 0, "analysis never ran")
         check(SPEC.is_file(), "the spec file exists")
 

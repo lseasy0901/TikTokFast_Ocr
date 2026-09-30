@@ -32,6 +32,7 @@ DLV_OCR_BACKEND=legacy 是**源码树**里的对照开关（见 test_release_ocr
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,12 +44,11 @@ DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 INTERNAL = os.path.join(DIST, "_internal")
 FAILURES = []
 
-# 与 douyin_viewer.spec / ocr.ppocr_engine 必须一致
-PPOCR_SUBDIR = "ppocr"
-PPOCR_MODEL_DIR_NAME = "PP-OCRv6_medium_rec_infer"
-PPOCR_MODEL_PARAMS = "inference.pdiparams"
-PACKAGED_MODEL_DIR = os.path.join(INTERNAL, "runtime", PPOCR_SUBDIR,
-                                  PPOCR_MODEL_DIR_NAME)
+# 与 douyin_viewer.spec / ocr.onnx_engine 必须一致
+ONNX_SUBDIR = "onnx"
+ONNX_MODEL_NAME = "PP-OCRv6_medium_rec_fp32.onnx"
+ONNX_CHARSET_NAME = "charset.txt"
+PACKAGED_ONNX_DIR = os.path.join(INTERNAL, "runtime", ONNX_SUBDIR)
 
 
 def section(title):
@@ -75,21 +75,34 @@ def test_assets():
     check(os.path.isfile(os.path.join(DIST, "DouyinLowLatencyViewer.exe")),
           "存在主程序 exe")
 
-    # PP-OCRv6 是生产 OCR 后端：模型必须随包，且落在定位器探测的位置。
-    params = os.path.join(PACKAGED_MODEL_DIR, PPOCR_MODEL_PARAMS)
-    check(os.path.isdir(PACKAGED_MODEL_DIR),
-          "打包内含 PP-OCRv6 模型目录 runtime/%s/%s"
-          % (PPOCR_SUBDIR, PPOCR_MODEL_DIR_NAME), PACKAGED_MODEL_DIR)
-    check(os.path.isfile(params), "打包内含 %s" % PPOCR_MODEL_PARAMS, params)
-    if os.path.isfile(params):
-        check(os.path.getsize(params) > 0,
-              "%s 非空（0 字节占位会被 PPOCRModelLocator 判为未提供）"
-              % PPOCR_MODEL_PARAMS, "%d 字节" % os.path.getsize(params))
+    # ONNX Runtime 是生产 OCR 后端：两个产物必须随包，且落在定位器探测的位置。
+    model = os.path.join(PACKAGED_ONNX_DIR, ONNX_MODEL_NAME)
+    charset = os.path.join(PACKAGED_ONNX_DIR, ONNX_CHARSET_NAME)
+    check(os.path.isdir(PACKAGED_ONNX_DIR),
+          "打包内含 runtime/%s/" % ONNX_SUBDIR, PACKAGED_ONNX_DIR)
+    for label, path in (("模型", model), ("字符表", charset)):
+        check(os.path.isfile(path),
+              "打包内含 %s %s" % (label, os.path.basename(path)), path)
+        if os.path.isfile(path):
+            check(os.path.getsize(path) > 0,
+                  "%s 非空（0 字节占位会被 ONNXModelLocator 判为未提供）"
+                  % os.path.basename(path),
+                  "%d 字节" % os.path.getsize(path))
 
-    # Tesseract 已退役：这些资产不得再出现在打包产物里。
-    retired = os.path.join(INTERNAL, "runtime", "tesseract")
-    check(not os.path.exists(retired),
-          "打包产物内不再含 runtime/tesseract/（已退役）")
+    # ONNX Runtime 的原生库由 hook-onnxruntime 收集。漏收时构建不会失败，
+    # 只会打出一个 import 就崩的包，所以在这里显式核对。
+    ort_capi = os.path.join(INTERNAL, "onnxruntime", "capi")
+    for name in ("onnxruntime.dll", "DirectML.dll"):
+        check(os.path.isfile(os.path.join(ort_capi, name)),
+              "打包内含 onnxruntime/capi/%s" % name)
+
+    # 已退役的 Paddle/CUDA 运行时不得到包里 —— 复用旧 dist/ 时它们会残留在
+    # 产物树里，而「必需文件都在」发现不了这种多余。
+    for relpath in (os.path.join("runtime", "tesseract"),
+                    os.path.join("runtime", "ppocr"),
+                    "paddle", "nvidia"):
+        check(not os.path.exists(os.path.join(INTERNAL, relpath)),
+              "打包产物内不再含 %s（已退役）" % relpath)
 
     ff_dir = os.path.join(INTERNAL, "runtime", "ffmpeg")
     for name in ("ffmpeg.exe", "ffprobe.exe"):
@@ -120,7 +133,7 @@ def _walk_code_names(code, depth=0):
 
 
 def test_bundled_code():
-    section("[B2] 打包后的代码就是 PP-OCRv6 实现（从归档读出 ocr.ppocr_engine 比对）")
+    section("[B2] 打包后的代码就是 ONNX 实现（从归档读出 ocr.onnx_engine 比对）")
     exe = os.path.join(DIST, "DouyinLowLatencyViewer.exe")
     # 归档读取依赖 PyInstaller（构建期依赖，运行环境里不一定有）。import 必须
     # 放在 try 内：放在外面时缺 PyInstaller 会直接抛 ModuleNotFoundError，
@@ -141,23 +154,31 @@ def test_bundled_code():
     toc = sorted(str(n) for n in z.toc)
     ocr_mods = [n for n in toc if n.startswith("ocr")]
     check(len(ocr_mods) >= 12, "打包内含全部 ocr.* 模块", repr(ocr_mods))
-    check("ocr.ppocr_engine" in ocr_mods and "ocr.worker" in ocr_mods,
-          "含 ocr.ppocr_engine 与 ocr.worker")
+    check("ocr.onnx_engine" in ocr_mods and "ocr.worker" in ocr_mods,
+          "含 ocr.onnx_engine 与 ocr.worker")
 
-    packaged_names = _walk_code_names(z.extract("ocr.ppocr_engine"))
-    markers = ("PPOCREngine", "PPOCREngineError", "PPOCRModelLocator",
-               "PPOCRModelNotFoundError", "iter_readings", "recognize",
-               "shutdown", "MODEL_NAME")
+    if "ocr.onnx_engine" not in toc:
+        # 旧产物树（Paddle 时代）里没有这个模块：这本身就是一条失败，
+        # 但要让检查**报告**它而不是抛 KeyError 中断整个用例。
+        check(False, "打包归档内含 ocr.onnx_engine（缺失，无法继续比对）",
+              repr([n for n in toc if n.startswith("ocr")][:8]))
+        return
+
+    packaged_names = _walk_code_names(z.extract("ocr.onnx_engine"))
+    markers = ("ONNXEngine", "ONNXEngineError", "ONNXModelLocator",
+               "ONNXModelNotFoundError", "ensure_session_for_roi",
+               "iter_readings", "recognize", "shutdown", "MODEL_NAME",
+               "REC_IMAGE_SHAPE")
     for m in markers:
-        check(m in packaged_names, "打包的 ocr.ppocr_engine 含生产后端符号 %s" % m)
+        check(m in packaged_names, "打包的 ocr.onnx_engine 含生产后端符号 %s" % m)
 
     # 与当前源码逐名对比：证明打包的就是这一版实现
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "ocr", "ppocr_engine.py"), encoding="utf-8").read()
-    src_names = _walk_code_names(compile(src, "ocr/ppocr_engine.py", "exec"))
+                            "ocr", "onnx_engine.py"), encoding="utf-8").read()
+    src_names = _walk_code_names(compile(src, "ocr/onnx_engine.py", "exec"))
     missing = sorted(src_names - packaged_names)
     check(not missing, "打包模块的名字集合与当前源码一致（差异: %s）" % (missing[:5] or "无"))
-    print("  打包 ocr.ppocr_engine 名字数=%d，源码名字数=%d"
+    print("  打包 ocr.onnx_engine 名字数=%d，源码名字数=%d"
           % (len(packaged_names), len(src_names)))
 
 
@@ -170,28 +191,41 @@ sys.path.insert(0, "@ROOT@")
 sys.frozen = True
 sys._MEIPASS = os.path.join("@ROOT@", "dist", "DouyinLowLatencyViewer", "_internal")
 
-from ocr.ppocr_engine import PPOCRModelLocator, PPOCREngine, MODEL_NAME
-from bench_phase_ocr1_latency import make_card
+import cv2
+import numpy as np
+from ocr.onnx_engine import ONNXEngine, ONNXModelLocator, MODEL_NAME
+from ocr.roi_manager import ROI
 
-CARD = make_card("ABX1234", False)
+# 合成自检图：与 scripts/ocr_frozen_selfcheck.py 用的是同一张，本机 ONNX 后端
+# 实测逐字识别为 "AB1234"，所以这里可以断言**具体字符**而不只是"非空"——
+# 字符表(charset.txt)顺序错位只会输出乱码，不会抛异常。
+IMG = np.full((80, 320, 3), 245, dtype=np.uint8)
+cv2.putText(IMG, "AB1234", (20, 55), cv2.FONT_HERSHEY_SIMPLEX, 1.4,
+            (10, 10, 10), 3)
+ROI_BOX = ROI(0, 0, IMG.shape[1], IMG.shape[0], IMG.shape[1], IMG.shape[0])
 
 print("MODEL_NAME=%s" % MODEL_NAME)
-model_dir = PPOCRModelLocator.find_model_dir()
-print("MODEL_DIR=%s" % model_dir)
-print("DEVDIR_USED=%s" % (os.path.normcase(model_dir) ==
-                          os.path.normcase(r"D:\new_model\PP-OCRv6_medium_rec_infer")))
+model_path = ONNXModelLocator.find_model_path()
+print("MODEL_PATH=%s" % model_path)
+print("CHARSET_PATH=%s" % ONNXModelLocator.find_charset_path())
+# 开发兜底目录（仅非冻结环境可达）：冻结布局下绝不能命中它。
+print("DEVDIR_USED=%s" % os.path.normcase(model_path).startswith(
+    os.path.normcase(r"D:\TIikTok_Ocr\_onnx_export_lab")))
 
-eng = PPOCREngine()
+eng = ONNXEngine()
 print("INIT_MS=%s" % eng.init_ms)
-print("STATUS_DIR=%s" % eng.backend_status["model_dir"])
-text = eng.recognize(CARD).replace(" ", "")
+eng.ensure_session_for_roi(ROI_BOX, IMG)
+print("PROVIDER=%s" % eng.backend_status["provider_actual"])
+print("WIDTH=%s" % eng.pinned_width)
+text = eng.recognize(IMG).replace(" ", "")
 print("TEXT1=%r" % text)
 eng.shutdown()
 print("AFTER_SHUTDOWN=%s" % eng.backend_status["closed"])
 
-# 释放后重新构造（新对象新模型），证明可反复启停
-eng2 = PPOCREngine()
-text2 = eng2.recognize(CARD).replace(" ", "")
+# 释放后重新构造（新对象新 session），证明可反复启停
+eng2 = ONNXEngine()
+eng2.ensure_session_for_roi(ROI_BOX, IMG)
+text2 = eng2.recognize(IMG).replace(" ", "")
 print("RESTART_TEXT=%r" % text2)
 eng2.shutdown()
 print("DONE")
@@ -225,26 +259,40 @@ def test_frozen_run():
           [l for l in out.splitlines() if l.startswith("MODEL_NAME=")])
 
     # 模型必须从**打包目录**解析，而不是开发目录
-    check("DEVDIR_USED=False" in out,
-          "模型未回退到开发目录 D:\\new_model",
-          [l for l in out.splitlines() if l.startswith(("MODEL_DIR=", "DEVDIR_USED="))])
-    check(os.path.normcase(PACKAGED_MODEL_DIR) in os.path.normcase(out),
-          "模型从**打包目录**解析（runtime/%s/）" % PPOCR_SUBDIR,
-          [l for l in out.splitlines() if l.startswith("MODEL_DIR=")])
-    check("STATUS_DIR=" in out and "INIT_MS=" in out,
-          "引擎状态快照可用（model_dir / init_ms）",
-          [l for l in out.splitlines() if l.startswith("INIT_MS=")])
+    # 子进程的 stdout 与 stderr 合流，而 ONNX Runtime 会写出**不带换行**的告警
+    # （它自己带 ANSI 转义），于是紧接着的 print 会被粘在那条告警的尾部，不再
+    # 位于行首。所以这里一律用「任意位置匹配 NAME=value」，不要求行首 ——
+    # 实测踩过：PROVIDER 与 RESTART_TEXT 被粘住，WIDTH/TEXT1 侥幸没被粘。
+    def field(name):
+        found = re.findall(r"%s=(\S+)" % re.escape(name), out)
+        return found[-1] if found else None
 
-    # 识别只断言"跑通且产出文本"：识别内容取决于模型与前处理，
-    # 准确率由离线准确率基准与真机验收负责，不在这里断言具体字符。
-    text_lines = [l for l in out.splitlines() if l.startswith("TEXT1=")]
-    check(bool(text_lines) and not text_lines[0].endswith("TEXT1=''"),
-          "生产引擎在冻结布局下完成一次识别并产出文本", text_lines)
+    check(field("DEVDIR_USED") == "False",
+          "模型未回退到开发兜底目录（_onnx_export_lab）", field("MODEL_PATH"))
 
-    check("AFTER_SHUTDOWN=True" in out, "shutdown 后句柄释放")
-    restart = [l for l in out.splitlines() if l.startswith("RESTART_TEXT=")]
-    check(bool(restart) and not restart[0].endswith("RESTART_TEXT=''"),
-          "释放后重新构造仍可识别", restart)
+    model_path = field("MODEL_PATH")
+    check(bool(model_path)
+          and os.path.normcase(PACKAGED_ONNX_DIR) in os.path.normcase(model_path),
+          "模型从**打包目录**解析（runtime/%s/）" % ONNX_SUBDIR, model_path)
+
+    check(field("INIT_MS") is not None and field("WIDTH") is not None,
+          "引擎状态快照可用（init_ms / pinned_width）",
+          "INIT_MS=%s WIDTH=%s" % (field("INIT_MS"), field("WIDTH")))
+
+    provider = field("PROVIDER")
+    check(provider in ("DmlExecutionProvider", "CPUExecutionProvider"),
+          "选中了受支持的 provider（DirectML 主路径 / CPU 回退）", provider)
+
+    # 断言**具体字符**而不只是"非空"：charset.txt 的项数或顺序错位只会把每个
+    # 索引解成别的字，输出仍是"一段非空文本"，只断言非空会放过它。
+    # 准确率本身由离线基准与真机验收负责，这里只钉住这一张已知答案的合成图。
+    check(field("TEXT1") == "'AB1234'",
+          "生产引擎在冻结布局下识别出正确文本 AB1234", field("TEXT1"))
+
+    check(field("AFTER_SHUTDOWN") == "True", "shutdown 后句柄释放",
+          field("AFTER_SHUTDOWN"))
+    check(field("RESTART_TEXT") == "'AB1234'",
+          "释放后重新构造仍识别出 AB1234", field("RESTART_TEXT"))
     check("DONE" in out, "冻结子进程跑到收尾")
 
 

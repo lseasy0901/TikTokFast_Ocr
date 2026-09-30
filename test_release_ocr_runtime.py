@@ -51,7 +51,15 @@ from ocr.ppocr_engine import (
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 SPEC_PATH = os.path.join(PROJECT_ROOT, "douyin_viewer.spec")
 
-# PP-OCRv6 打包契约。必须与 douyin_viewer.spec 和 ocr/ppocr_engine.py 同时一致。
+# ONNX 后端的打包契约（当前生产 OCR 路径）。
+# 必须与 douyin_viewer.spec 和 ocr/onnx_engine.py 同时一致。
+ONNX_SUBDIR = os.path.join("runtime", "onnx")
+ONNX_MODEL_NAME = "PP-OCRv6_medium_rec_fp32.onnx"
+ONNX_CHARSET_NAME = "charset.txt"
+
+# 下面这组是 **Paddle 时代**的契约。后端已迁到 ONNX，但 ocr/ppocr_engine.py
+# 仍在源码里（DLV_OCR_ENGINE=ppocr 的兼容分支），所以它的定位器单元测试继续
+# 有效 —— 只是它不再是打包契约的一部分，运行期产物也已随 runtime/ppocr/ 删除。
 PPOCR_SUBDIR = "ppocr"
 PPOCR_MODEL_DIR_NAME = "PP-OCRv6_medium_rec_infer"
 PPOCR_MODEL_PARAMS = "inference.pdiparams"
@@ -344,22 +352,59 @@ class TestSpecPackaging(unittest.TestCase):
         self.assertIn("importlib.util.find_spec", self.spec)
         self.assertIn("pytesseract", self.spec)
 
-    def test_spec_requires_ppocrv6_model(self):
-        """构建闸门必须点名 PP-OCRv6 模型，否则 OCR 后端会被静默漏掉。"""
-        self.assertIn(PPOCR_MODEL_DIR_NAME, self.spec)
-        self.assertIn(PPOCR_MODEL_PARAMS, self.spec)
-        self.assertIn("PP-OCRv6 model", self.spec)
+    def test_spec_requires_onnx_artifacts(self):
+        """构建闸门必须点名 ONNX 产物，否则 OCR 后端会被静默漏掉。"""
+        self.assertIn(ONNX_MODEL_NAME, self.spec)
+        self.assertIn(ONNX_CHARSET_NAME, self.spec)
+        self.assertIn("ONNX OCR model", self.spec)
+        self.assertIn("ONNX charset", self.spec)
 
-    def test_spec_model_dest_matches_locator(self):
-        """spec 的落盘位置与定位器的探测位置必须指向同一处。"""
-        self.assertIn('_PPOCR_SUBDIR = "ppocr"', self.spec)
-        self.assertIn('os.path.join("runtime", _PPOCR_SUBDIR)', self.spec)
-        self.assertEqual(PPOCR_SUBDIR, "ppocr")
+    def test_spec_dest_matches_onnx_locator(self):
+        """spec 的落盘位置与 ONNXModelLocator 的探测位置必须指向同一处。
 
-    def test_spec_declares_paddle_runtime_prerequisite(self):
-        """Paddle/PaddleX 运行时的提供方式必须写在 spec 里（本阶段不实现）。"""
-        self.assertIn("Paddle", self.spec)
-        self.assertIn("packaging phase", self.spec)
+        版本之间的真实缺陷就是「spec 放一处、定位器找另一处」，所以这里不比对
+        字面量，而是拿定位器算出来的候选路径去核 spec 的 dest。
+        """
+        self.assertIn('_ONNX_SUBDIR = "onnx"', self.spec)
+        self.assertIn('os.path.join("runtime", _ONNX_SUBDIR)', self.spec)
+
+        from ocr.onnx_engine import ONNXModelLocator
+
+        expected_rel = os.path.join(ONNX_SUBDIR, ONNX_CHARSET_NAME)
+        candidates = ONNXModelLocator._bundled_candidates(ONNX_CHARSET_NAME)
+        self.assertTrue(candidates, "定位器没有给出任何候选路径")
+        self.assertTrue(
+            all(c.replace("/", os.sep).endswith(expected_rel) for c in candidates),
+            "定位器的候选路径与 spec 的 dest 不一致：%s" % candidates,
+        )
+
+    def test_spec_forbids_paddle_runtime(self):
+        """Paddle / PaddleX / CUDA 必须被显式排除，不能从导入图回到包里。
+
+        只删掉 datas 是不够的：PyInstaller 走导入图，漏网的 `import paddle`
+        会把约 735 MB 的 Paddle 连同它的 CUDA 闭包重新拖进包里。
+        """
+        self.assertIn('excludes=["paddle", "paddlex"]', self.spec)
+        # 断言的是「收集机器已经拆掉」，而不是「paddle 这个词不许出现」：
+        # spec 里有大段注释解释历史与为什么不再需要 Paddle/CUDA，按字面断言
+        # 会被注释本身绊倒（实测踩过一次）。
+        for identifier in (
+            "_PADDLE_LIBS",
+            "_PADDLE_LIBS_DEST",
+            "_PADDLE_METADATA_DISTS",
+            "_NVIDIA_DLLS",
+            "_MSVC_OPENMP_DLL",
+            "_collect_paddle_libs",
+            "_collect_nvidia_dlls",
+            "_collect_dist_metadata",
+            "_find_msvc_openmp",
+            "_PPOCR_MODEL_DIR",
+            "ppocr_model_manifest",
+        ):
+            self.assertNotIn(
+                identifier, self.spec,
+                "spec 里仍有 Paddle/CUDA 收集代码: %s" % identifier,
+            )
 
 
 if __name__ == "__main__":

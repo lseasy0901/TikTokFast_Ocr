@@ -6,30 +6,32 @@
     构建闸门（douyin_viewer.spec 的 require_build_inputs）只回答
     「构建机上有没有」。它回答不了「有没有真的进包」：
 
-      * PP-OCRv6 模型是纯数据，没有任何 import 指向它，datas 写漏了
-        PyInstaller 只警告不报错；
-      * paddle/libs 下运行期用 LoadLibrary 打开的 DLL 不在 PE 导入表里，
-        PyInstaller 的依赖分析完全看不见；
-      * nvidia-* wheel 的 CUDA 库靠 os.add_dll_directory 拼路径找，
-        既不是 Python 模块也不是静态依赖。
+      * ONNX 模型与 charset.txt 是纯数据，没有任何 import 指向它们，
+        datas 写漏了 PyInstaller 只警告不报错；
+      * ONNX Runtime 的原生库（onnxruntime.dll / DirectML.dll）由
+        hook-onnxruntime 从构建环境收，漏收时构建照样成功；
+      * 反过来，「已经退役的 Paddle/CUDA 运行时还在不在包里」也是
+        「必需文件都在」发现不了的 —— COLLECT 不清理 dist/，复用旧产物树
+        会让 _runtime/ppocr/、paddle/、nvidia/ 一路跟着走。
 
-    实测事故（1.1.1 内部包）：构建机上一切正常，发行包里既没有
-    PP-OCRv6 模型也没有任何 CUDA DLL —— 客户机上 OCR 一次都跑不起来。
-    模型缺失的后果由 ocr.ppocr_engine 呈现为
+    实测事故（1.1.1 内部包，Paddle 时代）：构建机上一切正常，发行包里既没有
+    模型也没有任何 CUDA DLL —— 客户机上 OCR 一次都跑不起来。OCR 组件缺失由
+    ocr.onnx_engine / ocr.ppocr_engine 呈现为
     "内置 OCR 组件缺失或损坏，请重新安装 LiveLens。"
 
 它做什么
     1. 按与 douyin_viewer.spec 相同的规则，算出「应该进包的文件集合」
        （独立于 spec 重新推导一次，因此 spec 漏掉一整类文件时这里能发现）
     2. 在 frozen 产物里逐个核对存在性与字节数（必须等于构建机的源文件）
-    3. PP-OCRv6 模型按 scripts/ppocr_model_manifest.json 做 SHA-256 校验
-       —— 与 scripts/verify_ppocr_model.py 用的是同一份期望值
-    4. 报告同一文件重复出现在多个目录（已知的 datas / BINARY 双收）
+    3. ONNX 产物（模型 + charset.txt）按 scripts/onnx_model_manifest.json 做
+       SHA-256 校验 —— 与 douyin_viewer.spec 的闸门、
+       scripts/verify_onnx_model.py 用的是同一份期望值
+    4. **反向**核对：runtime/ppocr、paddle/、nvidia/ 一律不允许出现
+    5. 报告同一文件重复出现在多个目录（已知的 datas / BINARY 双收）
 
 它不做什么
-    不做 CUDA 裁剪判断、不推断「哪些 DLL 可以不装」、不修改任何文件。
-    清单里的「必需」来自 Phase 1 审计的**实测加载证据**；是否可裁剪属于
-    后续阶段，本脚本刻意不参与那个判断。
+    不推断「哪些 DLL 可以不装」、不修改任何文件。
+    是否可裁剪属于后续阶段，本脚本刻意不参与那个判断。
 
 用法
     python scripts/verify_frozen_bundle.py [onedir 目录]
@@ -47,14 +49,52 @@ import sys
 __all__ = [
     "VerifyError",
     "expected_payload",
+    "audio_payload_failures",
     "verify_bundle",
     "default_dist_dir",
 ]
 
-#: 随包模型的位置，必须与 ocr.ppocr_engine.PPOCRModelLocator 一致。
-MODEL_SUBDIR = os.path.join("runtime", "ppocr")
-MODEL_DIR_NAME = "PP-OCRv6_medium_rec_infer"
-MODEL_PARAMS = "inference.pdiparams"
+#: 随包 ONNX 产物的位置，必须与 ocr.onnx_engine.ONNXModelLocator 一致。
+ONNX_SUBDIR = os.path.join("runtime", "onnx")
+ONNX_MODEL_NAME = "PP-OCRv6_medium_rec_fp32.onnx"
+ONNX_CHARSET_NAME = "charset.txt"
+
+#: ONNX Runtime 的原生库所在的包目录与其必需的 DLL。
+#: 它们由 PyInstaller 的 hook-onnxruntime
+#: （collect_dynamic_libs("onnxruntime")）从构建环境的 onnxruntime/capi 收进包。
+#: PyInstaller 不会因为漏收而中止构建 —— 只会打出一个 import 就失败的包 ——
+#: 所以打包后必须显式核对这两个名字（CPUExecutionProvider 编在
+#: onnxruntime.dll 里，DirectML 是独立的 DirectML.dll）。
+ORT_PACKAGE_DIR = "onnxruntime"
+ORT_REQUIRED_DLLS = ("onnxruntime.dll", "DirectML.dll")
+
+#: 包里必须存在的 ONNX Runtime 原生库（相对 _internal）。
+#: 它们由 hook-onnxruntime 收集，不是 spec 的 datas —— 漏收时构建照常成功，
+#: 只会打出一个 `import onnxruntime` 就崩的包，所以要在**包内**直接核对。
+ORT_BUNDLE_DLLS = tuple(
+    os.path.join(ORT_PACKAGE_DIR, "capi", name) for name in ORT_REQUIRED_DLLS
+)
+
+#: 音频（QtMultimedia）产物：AudioService（v0.1.0 新增）的冻结包依赖。
+#: 与 ORT 一样由 hiddenimport + hook 收集、插件由 spec 的 collect_qt_plugins
+#: 收集——都不是 datas，漏收时构建照样成功，必须逐项断言"包里真的有"。
+#: 项目只 import 了 QtMultimedia（QAudioSink/QMediaDevices），**不依赖**
+#: QtMultimediaWidgets —— 刻意不要求它，避免为无用模块增大包体。
+QTMULTIMEDIA_PYD = os.path.join("PySide6", "QtMultimedia.pyd")
+QTMULTIMEDIA_QT_DLL = os.path.join("PySide6", "Qt6Multimedia.dll")
+MULTIMEDIA_PLUGIN_DIR = os.path.join("PySide6", "plugins", "multimedia")
+#: Windows 后端插件：至少要有一个在包里，否则 QAudioSink 打不开任何设备。
+MULTIMEDIA_BACKEND_PLUGINS = ("windowsmediaplugin.dll", "ffmpegmediaplugin.dll")
+
+#: 退役的 Paddle/CUDA 运行时：这些路径**不允许**出现在包里。
+#: 迁移后它们只可能因为两类缺陷出现，两类都必须拦住：
+#:   * 复用了旧的 dist/（COLLECT 不清理，残留会一直跟着）；
+#:   * 导入图里还有漏网的 `import paddle`，datas 删了也照样把运行时拖进来。
+FORBIDDEN_PATHS = (
+    (os.path.join("runtime", "ppocr"), "旧 Paddle OCR 模型目录"),
+    ("paddle", "Paddle 运行时"),
+    ("nvidia", "NVIDIA CUDA 运行时"),
+)
 
 #: ffprobe.exe 的 av*/sw* 伴生库（与 douyin_viewer.spec 的 _FFPROBE_DLL_NAMES 一致）。
 FFPROBE_DLL_NAMES = (
@@ -67,157 +107,12 @@ FFPROBE_DLL_NAMES = (
     "swscale-6.dll",
 )
 
-#: paddle/libs 的目标目录（paddle 自己 glob 这个目录）。
-PADDLE_LIBS_DEST = os.path.join("paddle", "libs")
-
-#: PyInstaller 的 PE 依赖分析**已经能收到**的 paddle/libs DLL：
-#: libpaddle.pyd 静态导入 phi.dll，phi.dll 静态导入
-#: common.dll / mkldnn.dll / libiomp5md.dll。它们由 BINARY TOC 落到
-#: paddle/libs/，同样必须存在 —— 但不由 datas 声明（重复目标名会让
-#: COLLECT 收到重复条目）。
-PADDLE_LIBS_STATIC = ("phi.dll", "common.dll", "mkldnn.dll", "libiomp5md.dll")
-
-#: mkldnn.dll 静态导入、但不在 paddle/libs 里的 MSVC OpenMP 运行时。
-MSVC_OPENMP_DLL = "vcomp140.dll"
-
-#: PaddleX 用 importlib.metadata.version() 判断「装了没有」的运行时依赖
-#: （paddlex/utils/deps.py:get_dep_version）。冻结包里没有 dist-info 时，
-#: version() 抛 PackageNotFoundError，paddlex 判定依赖缺失并拒绝构造识别器
-#: —— 而它的模块其实就在包里。实测报错：
-#:   `TextRecRunnerPredictor` is not ready for use ... not available: python-bidi
-#: 集合来自把 is_dep_available 打桩后跑一遍真实生产路径的记录；paddlepaddle
-#: 也在查询序列里，但它走 find_spec 分支，不需要元数据。
-PADDLE_METADATA_DISTS = ("python-bidi", "pypdfium2", "opencv-contrib-python")
 
 
 class VerifyError(RuntimeError):
     """冻结产物不完整。消息里逐条列出缺什么。"""
 
 
-# ----------------------------------------------------------------------
-# 构建环境侧：算出「应该进包的文件」
-# ----------------------------------------------------------------------
-def build_env_package_dirs():
-    """构建解释器里可能承载第三方包的目录（去重保序）。
-
-    与 douyin_viewer.spec 用的是同一套定位方式：sysconfig 的 purelib/platlib
-    优先，再用 importlib 的包定位兜底（namespace package 也能命中）。
-    """
-    dirs = []
-
-    def _add(path):
-        if path and os.path.isdir(path) and path not in dirs:
-            dirs.append(path)
-
-    try:
-        import sysconfig
-        paths = sysconfig.get_paths()
-        for key in ("purelib", "platlib"):
-            _add(paths.get(key))
-    except Exception:  # noqa: BLE001 - 定位失败交给下面的 importlib 兜底
-        pass
-
-    import importlib.util
-    for module in ("paddle", "nvidia"):
-        try:
-            found = importlib.util.find_spec(module)
-        except Exception:  # noqa: BLE001
-            found = None
-        for location in list(getattr(found, "submodule_search_locations", None) or []):
-            _add(os.path.dirname(location))
-    return dirs
-
-
-def _find_under_build_env(leaf, is_file=False):
-    """在构建环境的包目录下找 leaf，返回第一个存在的绝对路径。"""
-    probe = os.path.isfile if is_file else os.path.isdir
-    for base in build_env_package_dirs():
-        candidate = os.path.join(base, leaf)
-        if probe(candidate):
-            return candidate
-    return None
-
-
-def nvidia_dlls(nvidia_dir):
-    """nvidia-* wheel 里的全部 DLL，保持 wheel 内的原相对路径。
-
-    目标路径是硬要求：ocr.ppocr_engine._ensure_cuda_dlls() 在
-    site.getsitepackages() 下 glob "nvidia/cu13/bin/*"，而冻结环境里
-    site.getsitepackages() 的根**就是** sys._MEIPASS（已用冻结探针实测），
-    所以文件必须落在 _internal/nvidia/<原相对路径>。
-    """
-    if not nvidia_dir:
-        return []
-    parent = os.path.dirname(nvidia_dir)
-    found = []
-    for root, _dirs, files in os.walk(nvidia_dir):
-        dest = os.path.relpath(root, parent)
-        for name in sorted(files):
-            if name.lower().endswith(".dll"):
-                found.append((os.path.join(root, name), dest))
-    return sorted(found)
-
-
-def paddle_libs(paddle_libs_dir):
-    """paddle/libs 下所有运行期 LoadLibrary 打开的 DLL（含 PE 已收的那几个）。
-
-    返回全部，交给调用方按 PADDLE_LIBS_STATIC 分流：spec 只为「PE 看不见的
-    那些」写 datas，校验则要求**全部**都在包里。
-    """
-    if not paddle_libs_dir:
-        return []
-    return [
-        (os.path.join(paddle_libs_dir, name), PADDLE_LIBS_DEST)
-        for name in sorted(os.listdir(paddle_libs_dir))
-        if name.lower().endswith(".dll")
-    ]
-
-
-def find_dist_metadata(dist_names):
-    """按发行名定位 dist-info 目录。
-
-    发行名与目录名不是一回事（python-bidi -> python_bidi-0.6.11.dist-info），
-    所以读每个 METADATA 的 Name 字段配对，不拼字符串。
-    返回 (目录列表, 已找到的规范化发行名集合)。
-    """
-    wanted = {name.lower().replace("_", "-") for name in dist_names}
-    found = {}
-    for base in build_env_package_dirs():
-        if not os.path.isdir(base):
-            continue
-        for entry in sorted(os.listdir(base)):
-            if not entry.endswith(".dist-info"):
-                continue
-            meta = os.path.join(base, entry, "METADATA")
-            if not os.path.isfile(meta):
-                continue
-            try:
-                with open(meta, "r", encoding="utf-8", errors="replace") as handle:
-                    for line in handle:
-                        if line.startswith("Name:"):
-                            key = line.split(":", 1)[1].strip().lower().replace("_", "-")
-                            if key in wanted:
-                                found.setdefault(key, os.path.join(base, entry))
-                            break
-            except OSError:
-                continue
-    return [found[name] for name in sorted(found)], set(found)
-
-
-def find_msvc_openmp():
-    """定位 vcomp140.dll（mkldnn.dll 的静态依赖，MSVC OpenMP 运行时）。
-
-    优先用构建环境里已有的副本（随 PySide6 / shiboken6 一起装的，
-    与 app 同源）；系统副本只是兜底 —— 干净 Windows 机器上没有它。
-    """
-    for leaf in (os.path.join("PySide6", MSVC_OPENMP_DLL),
-                 os.path.join("shiboken6", MSVC_OPENMP_DLL)):
-        found = _find_under_build_env(leaf, is_file=True)
-        if found:
-            return found
-    system_root = os.environ.get("SystemRoot", r"C:\Windows")
-    fallback = os.path.join(system_root, "System32", MSVC_OPENMP_DLL)
-    return fallback if os.path.isfile(fallback) else None
 
 
 class Entry(object):
@@ -242,9 +137,12 @@ def expected_payload(project_root):
     entries = []
     warnings = []
 
-    # --- 1. PP-OCRv6 模型（期望值来自进 Git 的 manifest） -----------------
-    model_dir = os.path.join(project_root, MODEL_SUBDIR, MODEL_DIR_NAME)
-    manifest_path = os.path.join(project_root, "scripts", "ppocr_model_manifest.json")
+    # --- 1. ONNX OCR 产物（期望值来自进 Git 的 manifest） -----------------
+    # 与 douyin_viewer.spec 的 SHA-256 闸门读同一份 manifest，因此「构建机上的
+    # 产物 == manifest 记录的产物」由同一处期望值判定。
+    # charset.txt 与模型同等重要：它的项数或顺序错了不会报错，只会把每个字符
+    # 索引静默解错。
+    manifest_path = os.path.join(project_root, "scripts", "onnx_model_manifest.json")
     manifest_files = {}
     if os.path.isfile(manifest_path):
         try:
@@ -253,22 +151,23 @@ def expected_payload(project_root):
         except Exception as exc:  # noqa: BLE001
             warnings.append("manifest 无法读取：%s（%s）" % (manifest_path, exc))
     else:
-        warnings.append("manifest 不存在，模型只能按字节数核对：%s" % manifest_path)
+        warnings.append("manifest 不存在，ONNX 产物只能按字节数核对：%s" % manifest_path)
 
+    onnx_dir = os.path.join(project_root, ONNX_SUBDIR)
     if manifest_files:
         for name in sorted(manifest_files):
             entries.append(Entry(
-                os.path.join(MODEL_SUBDIR, MODEL_DIR_NAME, name),
-                os.path.join(model_dir, name),
-                "PP-OCRv6 模型",
+                os.path.join(ONNX_SUBDIR, name),
+                os.path.join(onnx_dir, name),
+                "ONNX OCR 产物",
                 sha256=manifest_files[name].get("sha256"),
             ))
     else:
-        for name in (MODEL_PARAMS, "inference.json", "inference.yml"):
+        for name in (ONNX_MODEL_NAME, ONNX_CHARSET_NAME):
             entries.append(Entry(
-                os.path.join(MODEL_SUBDIR, MODEL_DIR_NAME, name),
-                os.path.join(model_dir, name),
-                "PP-OCRv6 模型",
+                os.path.join(ONNX_SUBDIR, name),
+                os.path.join(onnx_dir, name),
+                "ONNX OCR 产物",
             ))
 
     # --- 2. FFmpeg / ffprobe 及其伴生闭包 ---------------------------------
@@ -285,49 +184,10 @@ def expected_payload(project_root):
     else:
         warnings.append("构建环境没有 %s，跳过 FFmpeg 闭包校验" % ffmpeg_dir)
 
-    # --- 3. Paddle 运行时 --------------------------------------------------
-    libs_dir = _find_under_build_env(os.path.join("paddle", "libs"))
-    if libs_dir:
-        for source, dest in paddle_libs(libs_dir):
-            entries.append(Entry(os.path.join(dest, os.path.basename(source)),
-                                 source, "Paddle 运行时"))
-        libpaddle = os.path.join(os.path.dirname(libs_dir), "base", "libpaddle.pyd")
-        if os.path.isfile(libpaddle):
-            entries.append(Entry(os.path.join("paddle", "base", "libpaddle.pyd"),
-                                 libpaddle, "Paddle 运行时"))
-    else:
-        warnings.append("构建环境没有 paddle/libs，跳过 Paddle 运行时校验")
-
-    # --- 4. CUDA 闭包 ------------------------------------------------------
-    nvidia_dir = _find_under_build_env("nvidia")
-    if nvidia_dir:
-        for source, dest in nvidia_dlls(nvidia_dir):
-            entries.append(Entry(os.path.join(dest, os.path.basename(source)),
-                                 source, "CUDA 运行时"))
-    else:
-        warnings.append("构建环境没有 nvidia(轮子)，跳过 CUDA 闭包校验")
-
-    # --- 5. vcomp140（mkldnn.dll 的静态依赖） ------------------------------
-    openmp = find_msvc_openmp()
-    if openmp:
-        entries.append(Entry(MSVC_OPENMP_DLL, openmp, "MSVC OpenMP 运行时"))
-    else:
-        warnings.append("构建环境找不到 %s" % MSVC_OPENMP_DLL)
-
-    # --- 6. PaddleX 依赖检查用的发行元数据 ---------------------------------
-    meta_dirs, meta_found = find_dist_metadata(PADDLE_METADATA_DISTS)
-    for directory in meta_dirs:
-        dist_info = os.path.basename(directory)
-        for root, _dirs, files in os.walk(directory):
-            rel = os.path.relpath(root, directory)
-            for name in sorted(files):
-                inside = name if rel == os.curdir else os.path.join(rel, name)
-                entries.append(Entry(os.path.join(dist_info, inside),
-                                     os.path.join(root, name), "PaddleX 依赖元数据"))
-    absent = [n for n in PADDLE_METADATA_DISTS
-              if n.lower().replace("_", "-") not in meta_found]
-    if absent:
-        warnings.append("构建环境缺少 dist-info：%s" % ", ".join(absent))
+    # ONNX Runtime 的原生库不在这里推导：它们由 PyInstaller 的 hook-onnxruntime
+    # 从**构建环境的 site-packages** 收进包，与源码树无关，所以「构建机上的源
+    # 文件」这种对照没有意义。它们的核对放在 verify_bundle() 里直接查包内路径
+    # （见 ORT_BUNDLE_DLLS）—— 那才是真正要回答的问题：包里有没有。
 
     # --- 7. 其它随包资产 ---------------------------------------------------
     for relpath, label in (
@@ -338,7 +198,64 @@ def expected_payload(project_root):
     ):
         entries.append(Entry(relpath, os.path.join(project_root, relpath), label))
 
+    # --- 8. 音频（QtMultimedia）产物 ---------------------------------------
+    # 与 ORT 同理：由 hiddenimport + hook + spec 的 collect_qt_plugins 收集，
+    # 不是 datas —— 漏收时构建照样成功。构建环境里存在的才进期望集（字节数
+    # 逐一对照）；构建环境本身缺失则打 WARN，由 audio_payload_failures() 的
+    # "包内必须存在" 断言兜底（它无条件核对 pyd / Qt DLL / 后端插件）。
+    try:
+        import importlib.util as _ilu
+        _pyside_spec = _ilu.find_spec("PySide6")
+        if _pyside_spec is None or not _pyside_spec.submodule_search_locations:
+            raise ImportError("PySide6 not importable in build interpreter")
+        pyside_dir = list(_pyside_spec.submodule_search_locations)[0]
+
+        for name in ("QtMultimedia.pyd", "Qt6Multimedia.dll"):
+            source = os.path.join(pyside_dir, name)
+            if os.path.isfile(source):
+                entries.append(Entry(os.path.join("PySide6", name), source,
+                                     "QtMultimedia 产物"))
+            else:
+                warnings.append("构建环境缺少 %s（冻结包音频将不可用）" % source)
+
+        plugin_src_dir = os.path.join(pyside_dir, "plugins", "multimedia")
+        if os.path.isdir(plugin_src_dir):
+            for name in sorted(os.listdir(plugin_src_dir)):
+                if name.lower().endswith(".dll"):
+                    entries.append(Entry(
+                        os.path.join(MULTIMEDIA_PLUGIN_DIR, name),
+                        os.path.join(plugin_src_dir, name),
+                        "Qt Multimedia 插件"))
+        else:
+            warnings.append("构建环境没有 %s，跳过多媒体插件字节数校验"
+                            % plugin_src_dir)
+    except Exception as exc:  # noqa: BLE001 - 构建环境残缺降级为警告
+        warnings.append("无法定位构建环境 PySide6，跳过音频产物字节数校验：%s" % exc)
+
     return entries, warnings
+
+
+def audio_payload_failures(internal_dir):
+    """QtMultimedia 音频产物核对（相对 _internal）。返回失败项列表。
+
+    无条件核对（不依赖构建环境推导）：
+        1. PySide6/QtMultimedia.pyd        （hiddenimport 收集的 Python 绑定）
+        2. PySide6/Qt6Multimedia.dll       （Qt 多媒体运行库）
+        3. plugins/multimedia/ 至少一个 Windows 后端插件
+    """
+    failures = []
+    for relpath in (QTMULTIMEDIA_PYD, QTMULTIMEDIA_QT_DLL):
+        if not os.path.isfile(os.path.join(internal_dir, relpath)):
+            failures.append("缺失 QtMultimedia 产物: _internal/%s" % relpath)
+    plugins_present = [
+        name for name in MULTIMEDIA_BACKEND_PLUGINS
+        if os.path.isfile(os.path.join(internal_dir, MULTIMEDIA_PLUGIN_DIR, name))
+    ]
+    if not plugins_present:
+        failures.append(
+            "缺失 Qt Multimedia Windows 后端插件: _internal/%s/（需要 %s 之一）"
+            % (MULTIMEDIA_PLUGIN_DIR, " 或 ".join(MULTIMEDIA_BACKEND_PLUGINS)))
+    return failures
 
 
 # ----------------------------------------------------------------------
@@ -412,7 +329,7 @@ def verify_bundle(dist_dir, project_root=None, stream=sys.stdout):
     for warning in warnings:
         stream.write("  [WARN] %s\n" % warning)
 
-    # 同一目标路径只核对一次（paddle/libs 由两处推导，可能重名）。
+    # 同一目标路径只核对一次（同一文件可能由两处推导）。
     by_relpath = {}
     for entry in entries:
         by_relpath.setdefault(os.path.normcase(entry.relpath), entry)
@@ -453,7 +370,42 @@ def verify_bundle(dist_dir, project_root=None, stream=sys.stdout):
         fail("SHA-256 不符 %s: %s" % (entry.label, entry.relpath))
 
     if not failures:
-        ok("必需文件全部到位（%d 项，含模型 SHA-256）" % len(present))
+        ok("必需文件全部到位（%d 项，含 ONNX 产物 SHA-256）" % len(present))
+
+    # --- 已退役的 Paddle/CUDA 运行时必须**不存在** -------------------------
+    # 「必需文件都在」发现不了这一类缺陷，而它正好是最可能发生的：COLLECT
+    # 不清理 dist/，复用旧产物树会让 _internal/runtime/ppocr/、paddle/、
+    # nvidia/ 一直跟着走；导入图里漏网的 `import paddle` 也会把它们拖回来。
+    # 两者都会让包体悄悄涨回 2.5 GB。
+    stale_found = False
+    for relpath, label in FORBIDDEN_PATHS:
+        target = os.path.join(internal_dir, relpath)
+        if os.path.exists(target):
+            stale_found = True
+            fail("包里出现了已退役的 %s: _internal/%s" % (label, relpath))
+    if not stale_found:
+        ok("已退役的 Paddle/CUDA 运行时均不在包内（%d 项）" % len(FORBIDDEN_PATHS))
+
+    # --- ONNX Runtime 原生库必须真的在包里 ---------------------------------
+    # 它们由 hook-onnxruntime 从构建环境收集，不是 spec 的 datas：漏收时构建
+    # 不会失败，只会打出一个 import onnxruntime 就崩的包。
+    ort_missing = [
+        rel for rel in ORT_BUNDLE_DLLS
+        if not os.path.isfile(os.path.join(internal_dir, rel))
+    ]
+    for rel in ort_missing:
+        fail("缺失 ONNX Runtime 原生库: _internal/%s" % rel)
+    if not ort_missing:
+        ok("ONNX Runtime 原生库到位（%d 项，含 DirectML）" % len(ORT_BUNDLE_DLLS))
+
+    # --- QtMultimedia 音频产物必须真的在包里 -------------------------------
+    # 与 ORT 同理：由 hiddenimport + hook + collect_qt_plugins 收集，漏收时
+    # 构建不会失败，只会打出一个没有声音的包（v0.1.0 音频功能整段不可用）。
+    audio_failures = audio_payload_failures(internal_dir)
+    for message in audio_failures:
+        fail(message)
+    if not audio_failures:
+        ok("QtMultimedia 音频产物到位（pyd + Qt6Multimedia.dll + Windows 后端插件）")
 
     # 已知的 datas/BINARY 双收：只报告，不作为失败项（不影响可运行性）。
     duplicates = duplicate_report(internal_dir)

@@ -85,6 +85,8 @@ NOTES = "## LiveLens 1.1.1\n\n- Phase 2：动态更新分发"
 
 #: 假分享里「存在」的文件。
 FAKE_FILES = {FILENAME: {"size": SIZE}}
+# [17] 尾斜杠回归用的第二个文件（不同版本，避免撞 (channel, version) 唯一约束）
+FAKE_FILES["LiveLensDesktop-9.8.7-stable-delta.nupkg"] = {"size": SIZE}
 
 
 def check(condition, message, detail=""):
@@ -100,10 +102,14 @@ _REAL_RESOLVE = fr.resolve
 
 
 async def _fake_resolve(share_url, share_password="", filename=None):
-    """只认 FAKE_FILES；找不到就按 resolver 的真实语义抛 404。"""
+    """只认 FAKE_FILES；找不到就按 resolver 的真实语义抛 404。
+
+    share_url 先 rstrip("/")：与真实 parse() 的 ``/s/([^/?]+)`` 提取语义一致
+    （尾斜杠不改变分享身份，v2.1.0 排障修复的回归覆盖点）。
+    """
     if filename is None:
         raise fr.FeijipanResolveError("测试必须传 filename", code=500)
-    if share_url not in (SHARE_URL,):
+    if share_url.rstrip("/") not in (SHARE_URL,):
         raise fr.FeijipanResolveError("分享中未找到文件: " + filename, code=404)
     if filename not in FAKE_FILES:
         raise fr.FeijipanResolveError("分享中未找到文件: " + filename, code=404)
@@ -308,6 +314,251 @@ def main() -> int:
     r = client.get(f"/updates/stable/{FILENAME}")
     check(r.status_code == 307 and not r.content,
           "仍是 307 且无 body（未读取整包）", f"{r.status_code}/{len(r.content)}")
+
+    print("\n[17] share URL 尾部斜杠容忍（v2.1.0 排障修复回归）")
+    # 单元层：validate_share_url 本体——尾斜杠放行、多段路径仍拒绝
+    try:
+        key = fr.validate_share_url(SHARE_URL + "/")
+        check(bool(key), "尾斜杠链接通过校验并提取到 key")
+    except fr.FeijipanResolveError as e:
+        check(False, "尾斜杠链接通过校验", str(e))
+    for bad in (SHARE_URL + "/extra/", SHARE_URL.replace("/s/", "/s/a/")):
+        try:
+            fr.validate_share_url(bad)
+            check(False, "多段路径被拒绝: " + bad)
+        except fr.FeijipanResolveError:
+            check(True, "多段路径被拒绝")
+    # API 层：带尾斜杠的完整发布流程（release_service → 真实 validate_share_url）
+    r = client.post(
+        "/api/v1/updates/releases",
+        json=_payload(version="9.8.7",
+                      package_filename="LiveLensDesktop-9.8.7-stable-delta.nupkg",
+                      package_share_url=SHARE_URL + "/"),
+        headers=ADMIN,
+    )
+    check(r.status_code == 200, "尾斜杠 URL 发布 → 200", str(r.status_code))
+    if r.status_code == 200:
+        check(_row_count() == 2, "尾斜杠发布的记录已入库", str(_row_count()))
+
+    # 发布失败时服务端必须留下含原因的 error 日志（v2.1.0 排障修复回归）
+    log_records[0].clear()
+    r = client.post("/api/v1/updates/releases",
+                    json=_payload(version="9.8.7",
+                                  package_filename="LiveLensDesktop-9.8.7-stable-delta.nupkg"),
+                    headers=ADMIN)
+    check(r.status_code == 409, "同版本重复发布 → 409", str(r.status_code))
+    check(any("release publish failed" in t for t in log_records[0]),
+          "发布失败日志含 'release publish failed'")
+    check(any("409" in t or "已存在版本" in t for t in log_records[0]),
+          "日志携带失败原因")
+
+    print("\n[18] 飞盘 fileSize=KB 取整的交叉校验（v2.1.0 排障修复回归）")
+    # 实测：飞盘 fileSize 是字节数 // 1024。申报真实字节、分享报告 KB，
+    # 必须判为一致且落库**真实字节**（feed Size 需要真实字节）。
+    KB_REPORTED = 14752
+    REAL_BYTES = KB_REPORTED * 1024 + 369          # 15,106,417 的真实案例形态
+    kb_name = "LiveLensDesktop-9.8.6-stable-delta.nupkg"
+    FAKE_FILES[kb_name] = {"size": KB_REPORTED}
+
+    async def _kb_resolve(share_url, share_password="", filename=None):
+        if filename == kb_name:
+            return {"code": 200, "url": SENTINEL_DIRECT, "message": "解析成功",
+                    "file_name": kb_name, "file_size": KB_REPORTED,
+                    "selection": "filename_exact"}
+        return await _fake_resolve(share_url, share_password, filename)
+
+    fr.resolve = _kb_resolve
+    try:
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.8.6",
+                                      package_filename=kb_name,
+                                      package_size=REAL_BYTES),
+                        headers=ADMIN)
+        check(r.status_code == 200, "KB 取整口径 → 200（不再误判不一致）",
+              str(r.status_code) + r.text[:80])
+        from sqlalchemy.orm import Session
+        import database
+        with Session(database.engine) as s:
+            row = (s.query(models.UpdateRelease)
+                   .filter(models.UpdateRelease.version == "9.8.6").first())
+        check(row.package_size == REAL_BYTES,
+              "落库的是申报的真实字节", str(row and row.package_size))
+        # 字节级声明也仍然精确匹配
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.8.5",
+                                      package_filename=kb_name,
+                                      package_size=KB_REPORTED),
+                        headers=ADMIN)
+        check(r.status_code == 200, "精确字节口径 → 200", str(r.status_code))
+        # 真不一致（既非字节也非 KB 口径）仍然拒绝
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.8.4",
+                                      package_filename=kb_name,
+                                      package_size=KB_REPORTED + 500),
+                        headers=ADMIN)
+        check(r.status_code == 400, "大小真正不一致 → 400", str(r.status_code))
+    finally:
+        fr.resolve = _fake_resolve
+
+    print("\n[19] 对象存储（OSS）后端：发布 HEAD 复核 + 下载 307（v2.1.0）")
+    oss_name = "LiveLensDesktop-9.9.0-stable-delta.nupkg"
+    oss_url = "https://livlensupdate.oss-cn-beijing.aliyuncs.com/stable/" + oss_name
+    OSS_HEADERS = {"Content-Length": str(SIZE)}
+
+    # 模拟 HEAD：可控的响应/异常；sizes 按 URL 精确返回字节数
+    class _FakeHeadResp:
+        def __init__(self, status, headers):
+            self.status = status
+            self.headers = headers
+
+    head_state = {"status": 200, "raise": None, "calls": 0, "sizes": {},
+                  "last_url": None}
+
+    class _FakeHeadCtx:
+        def __init__(self, url, **kw):
+            self.url = url
+            head_state["calls"] += 1
+            head_state["last_url"] = url
+            if head_state["raise"]:
+                raise head_state["raise"]
+
+        async def __aenter__(self):
+            size = head_state["sizes"].get(self.url, SIZE)
+            return _FakeHeadResp(head_state["status"],
+                                 {"Content-Length": str(size)})
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _FakeSession:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def head(self, url, **kw):
+            return _FakeHeadCtx(url, **kw)
+
+    import aiohttp
+    real_client_session = aiohttp.ClientSession
+    aiohttp.ClientSession = _FakeSession
+    try:
+        # 19a) 正常：HEAD 200 + 字节一致 → 200 入库；旧飞盘记录数 +1 不受影响
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.9.0", package_filename=oss_name,
+                                      package_share_url=oss_url),
+                        headers=ADMIN)
+        check(r.status_code == 200, "OSS 发布 → 200", str(r.status_code) + r.text[:80])
+        check(head_state["calls"] >= 1, "发布前做了 HEAD 复核")
+        check(head_state["last_url"] == oss_url, "HEAD 的就是申报的 OSS 直链")
+        from sqlalchemy.orm import Session
+        import database
+        with Session(database.engine) as s:
+            row = (s.query(models.UpdateRelease)
+                   .filter(models.UpdateRelease.version == "9.9.0").first())
+        check(row is not None and row.package_share_url == oss_url,
+              "OSS 直链作为永久 URL 入库")
+
+        # 19b) 下载 → 307 到 OSS 直链
+        r = client.get(f"/updates/stable/{oss_name}")
+        check(r.status_code == 307, "OSS 包下载 → 307", str(r.status_code))
+        check(r.headers.get("Location") == oss_url, "307 到 OSS 直链")
+        check(r.headers.get("Cache-Control") == "public, max-age=300",
+              "OSS 直链允许短缓存", str(r.headers.get("Cache-Control")))
+
+        # 19c) HEAD 404 → 400，不入库
+        head_state["status"] = 404
+        before = _row_count()
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.9.1", package_filename=oss_name,
+                                      package_share_url=oss_url),
+                        headers=ADMIN)
+        check(r.status_code == 400, "OSS 对象不存在 → 400", str(r.status_code))
+        check(_row_count() == before, "失败发布不入库")
+
+        # 19d) HEAD 网络异常 → 502
+        head_state["status"] = 200
+        head_state["raise"] = OSError("net down")
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.9.1", package_filename=oss_name,
+                                      package_share_url=oss_url),
+                        headers=ADMIN)
+        check(r.status_code == 502, "OSS 不可达 → 502", str(r.status_code))
+
+        # 19e) 大小不符 → 400
+        head_state["raise"] = None
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.9.1", package_filename=oss_name,
+                                      package_share_url=oss_url,
+                                      package_size=SIZE + 1),
+                        headers=ADMIN)
+        check(r.status_code == 400, "OSS 大小不符 → 400", str(r.status_code))
+
+        # 19f) host 白名单：非 aliyuncs 的对象 URL 被当作飞盘路径处理（→ 走
+        # resolver → 404 400），且不会对它发 HEAD
+        head_state["calls"] = 0
+        r = client.post("/api/v1/updates/releases",
+                        json=_payload(version="9.9.2", package_filename=oss_name,
+                                      package_share_url="https://evil.example.com/x.nupkg"),
+                        headers=ADMIN)
+        check(r.status_code == 400, "非白名单 host → 走飞盘路径拒绝", str(r.status_code))
+        check(head_state["calls"] == 0, "非白名单 host 不发 HEAD")
+    finally:
+        aiohttp.ClientSession = real_client_session
+
+    print("\n[20] Full + Delta 双条目（v2.1.0 增量分发回归）")
+    full_name = "LiveLensDesktop-9.9.3-stable-full.nupkg"
+    dlt_name = "LiveLensDesktop-9.9.3-stable-delta.nupkg"
+    full_url = ("https://livlensupdate.oss-cn-beijing.aliyuncs.com/stable/"
+                + full_name)
+    dlt_url = ("https://livlensupdate.oss-cn-beijing.aliyuncs.com/stable/"
+               + dlt_name)
+    head_state["sizes"] = {full_url: 2985, dlt_url: 1500}
+    head_state["status"] = 200
+    head_state["raise"] = None
+    import aiohttp
+    real_session_20 = aiohttp.ClientSession
+    aiohttp.ClientSession = _FakeSession
+    r = client.post(
+        "/api/v1/updates/releases",
+        json=_payload(version="9.9.3", package_filename=full_name,
+                      package_share_url=full_url, package_size=2985,
+                      delta_filename=dlt_name, delta_share_url=dlt_url,
+                      delta_sha1=SHA1, delta_sha256=SHA256, delta_size=1500),
+        headers=ADMIN)
+    check(r.status_code == 200, "Full+Delta 同一次发布 → 200",
+          str(r.status_code) + r.text[:100])
+
+    r = client.get("/updates/stable/releases.stable.json")
+    assets = r.json()["Assets"]
+    kinds = {(a["Version"], a["Type"]) for a in assets}
+    check(("9.9.3", "Full") in kinds and ("9.9.3", "Delta") in kinds,
+          "清单同时登记 Full 与 Delta", str(kinds))
+    d_asset = next(a for a in assets
+                   if a["Version"] == "9.9.3" and a["Type"] == "Delta")
+    check(d_asset["FileName"] == dlt_name and d_asset["Size"] == 1500,
+          "Delta 条目文件名/大小正确", str(d_asset)[:120])
+
+    r = client.get(f"/updates/stable/{dlt_name}")
+    check(r.status_code == 307 and r.headers.get("Location") == dlt_url,
+          "delta 包下载 → 307 到 delta 直链", str(r.status_code))
+    r = client.get(f"/updates/stable/{full_name}")
+    check(r.status_code == 307 and r.headers.get("Location") == full_url,
+          "full 包下载 → 307 到 full 直链", str(r.status_code))
+
+    # delta 字段不完整 → 400
+    r = client.post(
+        "/api/v1/updates/releases",
+        json=_payload(version="9.9.2", package_filename=oss_name,
+                      package_share_url=oss_url,
+                      delta_filename=dlt_name, delta_share_url=dlt_url),
+        headers=ADMIN)
+    check(r.status_code == 400, "delta 字段不完整 → 400", str(r.status_code))
+    aiohttp.ClientSession = real_session_20   # 恢复真实会话（[12b] 不发 HEAD）
 
     print("\n[12b] 兼容性：feed 字段集合与既有 vpk 产出对齐")
     keys = set(asset.keys())

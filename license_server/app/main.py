@@ -175,6 +175,16 @@ async def create_update_release(
     try:
         return await release_service.publish(db, payload)
     except release_service.ReleaseError as e:
+        # 400 的 detail 面向调用方，但排障需要它在服务端日志里也可见——
+        # 否则 journalctl 里只有一行 400，无法区分"文件名不匹配"还是"链接失效"。
+        # 只记 version / filename / channel 等非敏感字段，绝不记临时直链。
+        logger.error(
+            "release publish failed (status=%s): %s | version=%s channel=%s filename=%s",
+            e.status, str(e),
+            getattr(payload, "version", None),
+            getattr(payload, "channel", None),
+            getattr(payload, "package_filename", None),
+        )
         raise HTTPException(status_code=e.status, detail=str(e))
 
 
@@ -227,11 +237,25 @@ async def _redirect_package(db, channel: str, filename: str):
     if release is None:
         raise HTTPException(status_code=404, detail="该版本未发布")
 
+    # 命中的是 Full 还是 Delta（决定用哪个 URL / 走哪条解析路径）
+    is_delta = filename == release.delta_filename
+    package_url = (release.delta_share_url if is_delta
+                   else release.package_share_url)
+
+    # 对象存储（OSS）后端：直链永久公开，直接 307（可缓存）。
+    # 飞盘（遗留）后端：实时解析临时直链，no-store。
+    if release_service.is_package_object_url(package_url):
+        logger.info("重定向更新包(%s) channel=%s file=%s",
+                    "Delta" if is_delta else "Full", channel, filename)
+        return RedirectResponse(
+            url=package_url,
+            status_code=307,
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
     try:
         # 精确传 filename：resolver 只接受完全同名的那一个文件。
-        resolved = await feijipan_resolver.resolve(
-            release.package_share_url, "", release.package_filename
-        )
+        resolved = await feijipan_resolver.resolve(package_url, "", filename)
     except feijipan_resolver.FeijipanResolveError as e:
         # 只记 resolver 的错误消息本身 —— 它不含临时直链。
         logger.warning(

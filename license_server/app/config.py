@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # boundary and the display layer use this zone.
     BUSINESS_TZ_NAME: str = "Asia/Shanghai"
 
+    # Update distribution (v2.1.0): object-storage package hosting.
+    # package_share_url may point at a public-read object store (Aliyun OSS)
+    # instead of a Feijipan share. Downloads 307 to it directly; publish HEADs
+    # it to confirm existence + exact byte size. Host must end with one of
+    # these comma-separated suffixes (defence in depth on an admin-only API).
+    PACKAGE_URL_HOST_SUFFIXES: str = os.getenv(
+        "PACKAGE_URL_HOST_SUFFIXES", "aliyuncs.com"
+    )
+
     # Susi security settings - Phase 7.2-6
     # Path to the susi_helper executable. Empty means "not configured": the service
     # then falls back to the project-root default with an OS-aware filename

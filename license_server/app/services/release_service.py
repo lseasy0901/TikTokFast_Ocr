@@ -33,6 +33,9 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+import aiohttp
+
+import config
 import models
 from services import feijipan_resolver
 
@@ -109,6 +112,52 @@ def validate_share_url(share_url: str) -> str:
     return share_url
 
 
+def is_package_object_url(url: str) -> bool:
+    """判断 package_share_url 是否为对象存储直链（OSS），而非飞盘分享链接。
+
+    分流依据是 host 后缀白名单（config.PACKAGE_URL_HOST_SUFFIXES，环境变量可配）。
+    """
+    from urllib.parse import urlsplit
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    suffixes = [s.strip().lower() for s in
+                config.settings.PACKAGE_URL_HOST_SUFFIXES.split(",") if s.strip()]
+    return any(host == s or host.endswith("." + s) for s in suffixes)
+
+
+async def verify_object_url(url: str, expected_size: Optional[int]) -> None:
+    """发布前对对象存储直链做 HEAD 复核：存在性 + 字节数（精确）。
+
+    与飞盘路径的"发布前确认文件确实存在"同一原则；OSS 返回的是**精确字节**
+    （Content-Length），没有飞盘 KB 取整的问题。
+    失败抛 ReleaseError：不存在/大小不符 → 400；网络异常 → 502。
+    """
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.head(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    raise ReleaseError(
+                        f"对象存储文件不存在或不可读（HTTP {resp.status}）",
+                        status=400,
+                    )
+                length = resp.headers.get("Content-Length")
+                actual = int(length) if length else None
+    except ReleaseError:
+        raise
+    except Exception as e:  # noqa: BLE001 - 上游/网络异常 → 502
+        raise ReleaseError(f"对象存储访问失败: {e}", status=502) from e
+
+    if expected_size is not None and actual != expected_size:
+        raise ReleaseError(
+            f"package_size 与对象存储中的文件大小不一致"
+            f"（申报 {expected_size}B，实际 {actual}B）",
+            status=400,
+        )
+
+
 def validate_hashes(sha1: str, sha256: str) -> Tuple[str, str]:
     if not isinstance(sha1, str) or not _SHA1_RE.match(sha1):
         raise ReleaseError("package_sha1 必须是 40 位十六进制", status=400)
@@ -140,12 +189,13 @@ def current_release(db: Session, channel: str) -> Optional[models.UpdateRelease]
 
 def find_release(db: Session, channel: str, package_filename: str
                  ) -> Optional[models.UpdateRelease]:
-    """按渠道 + 包文件名精确查找。"""
+    """按渠道 + 包文件名精确查找（Full 或 Delta 任一命中即可）。"""
     return (
         db.query(models.UpdateRelease)
         .filter(
             models.UpdateRelease.channel == channel,
-            models.UpdateRelease.package_filename == package_filename,
+            (models.UpdateRelease.package_filename == package_filename)
+            | (models.UpdateRelease.delta_filename == package_filename),
         )
         .first()
     )
@@ -164,7 +214,18 @@ async def publish(db: Session, payload) -> models.UpdateRelease:
     version_key(version)                                  # 1 校验 version
     channel = validate_channel((payload.channel or "stable").strip())
     package_filename = validate_package_filename(payload.package_filename)
-    share_url = validate_share_url(payload.package_share_url)
+    # URL 合法性按后端分流：对象存储直链校验 host 白名单 + https；
+    # 飞盘走 validate_share_url（域名白名单 + /s/<id> 形态）。
+    share_url = (payload.package_share_url or "").strip()
+    if is_package_object_url(share_url):
+        from urllib.parse import urlsplit
+        parts = urlsplit(share_url)
+        if parts.scheme != "https" or parts.username or parts.password:
+            raise ReleaseError("对象存储直链必须是 https 且不含认证信息", status=400)
+        if not parts.path or parts.path.endswith("/"):
+            raise ReleaseError("对象存储直链必须指向具体文件", status=400)
+    else:
+        share_url = validate_share_url(share_url)
     sha1, sha256 = validate_hashes(payload.package_sha1, payload.package_sha256)
     if payload.package_size is not None and payload.package_size <= 0:
         raise ReleaseError("package_size 必须为正整数", status=400)
@@ -183,46 +244,122 @@ async def publish(db: Session, payload) -> models.UpdateRelease:
             f"该渠道已存在版本 {version} 的 release", status=409
         )
 
-    # 6/7/8/9：用精确文件名向 Feijipan 确认 —— 文件必须真的存在，且完全同名。
-    # 注意：resolved 里的 url 是**临时直链**，只在本函数作用域内存在，绝不入库/入日志。
-    try:
-        resolved = await feijipan_resolver.resolve(
-            share_url, "", package_filename
-        )
-    except feijipan_resolver.FeijipanResolveError as e:
-        # 这里只透传 resolver 自己的消息（不含临时直链）。
-        # 分享里根本没有这个文件名 → 调用方给错了，属于 400；
-        # 其余（网络 / 上游异常）才是 502。
-        status_code = 400 if getattr(e, "code", None) == 404 else 502
-        raise ReleaseError(f"发布前解析失败: {e}", status=status_code) from e
+    # 6/7/8/9：发布前确认目标文件确实存在。两种后端（按 URL host 分流）：
+    #   - 对象存储（OSS 直链）：HEAD 复核存在性 + 精确字节数（无 KB 取整问题）
+    #   - 飞盘（遗留）：按精确文件名解析确认；resolved 里的 url 是临时直链，
+    #     只在本函数作用域内存在，绝不入库/入日志。
+    # 任一失败都不会留下半条 release（需求：发布失败不得写入 release）。
+    if is_package_object_url(share_url):
+        await verify_object_url(share_url, payload.package_size)
+        package_size = payload.package_size or 0
+        if package_size <= 0:
+            raise ReleaseError(
+                "对象存储发布必须提供 package_size（字节数）", status=400
+            )
+    else:
+        try:
+            resolved = await feijipan_resolver.resolve(
+                share_url, "", package_filename
+            )
+        except feijipan_resolver.FeijipanResolveError as e:
+            # 这里只透传 resolver 自己的消息（不含临时直链）。
+            # 分享里根本没有这个文件名 → 调用方给错了，属于 400；
+            # 其余（网络 / 上游异常）才是 502。
+            status_code = 400 if getattr(e, "code", None) == 404 else 502
+            raise ReleaseError(f"发布前解析失败: {e}", status=status_code) from e
 
-    resolved_name = resolved.get("file_name")
-    if resolved_name != package_filename:
-        raise ReleaseError(
-            "解析结果与 package_filename 不一致，拒绝发布", status=400
-        )
+        resolved_name = resolved.get("file_name")
+        if resolved_name != package_filename:
+            raise ReleaseError(
+                "解析结果与 package_filename 不一致，拒绝发布", status=400
+            )
 
-    resolved_size = resolved.get("file_size")
-    if payload.package_size is not None and resolved_size != payload.package_size:
-        # 名字对了但大小对不上，说明多半指错了文件。
-        raise ReleaseError(
-            f"package_size 与分享中的文件大小不一致"
-            f"（申报 {payload.package_size}，实际 {resolved_size}）",
-            status=400,
-        )
-    package_size = resolved_size if resolved_size else payload.package_size
-    if not package_size or package_size <= 0:
-        raise ReleaseError("无法确定 package_size", status=502)
+        resolved_size = resolved.get("file_size")
+        if payload.package_size is not None:
+            declared = payload.package_size
+            # 实测（2026-09-30，飞盘 recommend/list 原始结构）：fileSize 是
+            # **KB 向下取整**，不是字节 —— 15,106,417B 的包报告为 14,752，且
+            # 结构里没有字节级字段。因此两种口径都算一致：精确字节，或 KB
+            # 取整口径（declared // 1024）。
+            # 落库用申报的**字节**大小：Velopack feed 的 Size 字段需要真实字节，
+            # KB 值会让客户端更新进度/大小显示差 1024 倍。
+            if resolved_size not in (declared, declared // 1024):
+                # 名字对了但大小对不上，说明多半指错了文件。
+                raise ReleaseError(
+                    "package_size 与分享中的文件大小不一致"
+                    f"（申报 {declared}B，飞盘报告 {resolved_size}KB）",
+                    status=400,
+                )
+            package_size = declared
+        else:
+            # 未申报时只能采信飞盘的 KB 值（精度有限，仅在 payload 不带 size 时发生）
+            package_size = resolved_size * 1024 if resolved_size else 0
+        if not package_size or package_size <= 0:
+            raise ReleaseError("无法确定 package_size", status=502)
+
+    # ---- 增量包（可选）：与 Full 同样的「先校验 → 再写库」原则 ----
+    delta_vals = None
+    d_name = (getattr(payload, "delta_filename", None) or "").strip()
+    d_url = (getattr(payload, "delta_share_url", None) or "").strip()
+    if d_name or d_url:
+        if not (d_name and d_url and payload.delta_sha1 and payload.delta_sha256):
+            raise ReleaseError(
+                "增量包字段不完整：delta_filename / delta_share_url / "
+                "delta_sha1 / delta_sha256 必须成对提供", status=400,
+            )
+        validate_package_filename(d_name)
+        d_sha1, d_sha256 = validate_hashes(payload.delta_sha1,
+                                           payload.delta_sha256)
+        if is_package_object_url(d_url):
+            from urllib.parse import urlsplit
+            parts = urlsplit(d_url)
+            if parts.scheme != "https" or parts.username or parts.password:
+                raise ReleaseError(
+                    "增量包对象存储直链必须是 https 且不含认证信息", status=400)
+            if not parts.path or parts.path.endswith("/"):
+                raise ReleaseError("增量包直链必须指向具体文件", status=400)
+            await verify_object_url(d_url, payload.delta_size)
+            d_size = payload.delta_size or 0
+            if d_size <= 0:
+                raise ReleaseError(
+                    "增量包对象存储发布必须提供 delta_size（字节数）", status=400)
+        else:
+            try:
+                d_resolved = await feijipan_resolver.resolve(d_url, "", d_name)
+            except feijipan_resolver.FeijipanResolveError as e:
+                status_code = 400 if getattr(e, "code", None) == 404 else 502
+                raise ReleaseError(f"增量包发布前解析失败: {e}",
+                                   status=status_code) from e
+            if d_resolved.get("file_name") != d_name:
+                raise ReleaseError(
+                    "增量包解析结果与 delta_filename 不一致，拒绝发布", status=400)
+            d_res_size = d_resolved.get("file_size")
+            if payload.delta_size is not None:
+                d_declared = payload.delta_size
+                if d_res_size not in (d_declared, d_declared // 1024):
+                    raise ReleaseError(
+                        "delta_size 与分享中的文件大小不一致"
+                        f"（申报 {d_declared}B，飞盘报告 {d_res_size}KB）",
+                        status=400)
+                d_size = d_declared
+            else:
+                d_size = d_res_size * 1024 if d_res_size else 0
+            if not d_size or d_size <= 0:
+                raise ReleaseError("无法确定 delta_size", status=502)
+        delta_vals = dict(delta_filename=d_name, delta_share_url=d_url,
+                          delta_sha1=d_sha1, delta_sha256=d_sha256,
+                          delta_size=int(d_size))
 
     release = models.UpdateRelease(
         version=version,
         channel=channel,
         package_filename=package_filename,
-        package_share_url=share_url,      # 只保存永久分享链接
+        package_share_url=share_url,      # 永久公开 URL（OSS 直链或飞盘分享）
         package_sha1=sha1,
         package_sha256=sha256,
         package_size=int(package_size),
         release_notes=payload.release_notes,
+        **(delta_vals or {}),
     )
     db.add(release)
     db.commit()
@@ -259,7 +396,21 @@ def build_releases_manifest(release: models.UpdateRelease) -> dict:
     if release.release_notes:
         # 客户端 gui/update_dialog.py 读的就是 NotesMarkdown。
         asset["NotesMarkdown"] = release.release_notes
-    return {"Assets": [asset]}
+    assets = [asset]
+    if release.delta_filename:
+        # Delta 条目：只有从上一版本升级的客户端会用到（Velopack 自动
+        # 选择）；其余场景（老版本 / delta 失败）回落上面的 Full。
+        delta = {
+            "PackageId": PACK_ID,
+            "Version": release.version,
+            "Type": "Delta",
+            "FileName": release.delta_filename,
+            "SHA1": release.delta_sha1.upper(),
+            "SHA256": release.delta_sha256.upper(),
+            "Size": int(release.delta_size),
+        }
+        assets.append(delta)
+    return {"Assets": assets}
 
 
 def build_assets_manifest(release: models.UpdateRelease) -> List[dict]:

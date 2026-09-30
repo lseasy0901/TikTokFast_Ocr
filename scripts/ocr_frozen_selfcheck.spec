@@ -8,8 +8,9 @@
 这样得到的 EXE 与正式包共享**同一份** datas / binaries / hiddenimports /
 COLLECT 布局，因此：
     "自检能跑" == "正式包里 OCR 能跑"
-而"改坏了打包配置导致 PP-OCRv6 模型 / Paddle 运行时没进包"这类问题也会在
-自检里暴露 —— 它验证的是生产后端（PPOCREngine）而不是已退役的 Tesseract。
+而"改坏了打包配置导致 ONNX 模型 / charset.txt / DirectML 没进包"这类问题也会
+在自检里暴露 —— 它验证的是生产后端（ONNXEngine）而不是已退役的 Tesseract，
+也不是已迁移掉的 Paddle。
 
 用法：
     python -m PyInstaller --noconfirm --clean \
