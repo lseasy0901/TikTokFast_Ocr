@@ -118,11 +118,18 @@ from stream.resolver import StreamResolver
 from stream.failover import CandidateFailover
 from stream.ffmpeg_reader import FFmpegReader
 from stream.frame_buffer import LatestFrameBuffer
+from audio import AudioService
+from gui.audio_panel import AudioPanel
+from gui.history_panel import HistoryButton
 from utils.performance import PerformanceMonitor
 from utils.access_status import AccessStatus
 from ocr.roi_manager import ROI, ROIManager
 from ocr.roi_selector import ROISelector
 from ocr.worker import OCRWorker
+# GUI 需要知道当前后端是否使用「会话」模型（只有 ONNX 有），才能决定用哪套
+# 芯片时序。直接复用 worker 的选择器，而不是在 GUI 里再写一份规则 ——
+# ocr/worker.py 是这条规则的唯一权威，两处各写一份必然漂移。
+from ocr.worker import _selected_engine_kind
 from ocr.clipboard import ClipboardManager
 from ocr.copy_log import CopyLog
 from ocr.diagnostics import OCRDiagnostics
@@ -132,7 +139,7 @@ from ocr.sample_capture import SampleCapture
 # 开关本体定义在 ocr/dataset_capture.py，全项目只有那一处。
 from ocr.dataset_capture import DATASET_CAPTURE_ENABLED, TARGET_FORMATS
 from ocr.profiles import game_profiles, get_profile
-from utils.stream_history import StreamHistory
+from stream.history import HistoryService
 from utils.first_run import FirstRunStore
 from utils.startup_timing import (
     STAGE_CANDIDATE_SELECTED,
@@ -527,10 +534,18 @@ class MainWindow(QMainWindow):
         #: 最近一次 failover 切换的实际耗时（ms），无切换为 0.0。仅用于观测。
         self._last_failover_ms: float = 0.0
         self._perf: PerformanceMonitor | None = None
+        # 音频服务：与视频/OCR 平行的独立功能域；main_window 只做生命周期
+        # 接线（_start_playback start / _teardown_playback stop），不碰音频内部。
+        self._audio = AudioService()
+        self._audio_panel: AudioPanel | None = None
         self._connected: bool = False
         self._roi_manager: ROIManager = ROIManager()
         self._roi_selector: ROISelector | None = None
         self._ocr_worker: OCRWorker | None = None
+        # 本次 OCR 会话的后端是否使用「会话」模型（ONNX 专属）。只有它会启用
+        # 加载中 → 等待 ROI → 运行中 三态；Paddle/Tesseract 保持原有芯片时序
+        # （启动即「运行中」）。在 _start_ocr 里于线程启动**之前**定下来。
+        self._ocr_session_backend: bool = False
         self._ocr_running: bool = False
         # 当前选择的游戏档（OCRWorker 构造/切换时使用）
         self._ocr_profile_id: str = DEFAULT_OCR_GAME_PROFILE_ID
@@ -565,7 +580,11 @@ class MainWindow(QMainWindow):
             self._capture_sink = CaptureFanout(self._sample_capture,
                                                self._dataset_recorder)
 
-        self._stream_history: StreamHistory = StreamHistory()
+        # 直播间历史（Model/Repository/Service 在 stream/history.py）。
+        # 只有成功进入直播间才记录；GUI 只经本服务读写。
+        self._history = HistoryService()
+        #: 本次连接尝试的目标 URL（成功后据此记入历史）
+        self._pending_history_url: str | None = None
 
         # 首次启动状态。构造只读一个本地文件（容错，失败按默认值处理），
         # 不联网、不弹窗 —— 真正的弹窗由 main.py 经 maybe_show_first_run_guide()
@@ -658,9 +677,6 @@ class MainWindow(QMainWindow):
         self._connect_error_sig.connect(self._handle_connect_error)
 
         self._init_ui()
-
-        # 加载历史记录
-        self._load_recent_streams()
 
         # 更新初始访问状态
         self._on_access_status_changed()
@@ -821,17 +837,15 @@ class MainWindow(QMainWindow):
         self._url_input.textChanged.connect(self._sync_note_action)
         row.addWidget(self._url_input, 1)
 
-        self._recent_combo = QComboBox()
-        self._recent_combo.setMaxVisibleItems(10)
-        self._recent_combo.setMinimumWidth(60)
-        # 弹性：宽度由 _sync_address_columns 按 OCR 面板的实际宽度算出来后钉住，
-        # 因此它总是吃掉操作区里除固定控件之外的剩余空间。
-        self._recent_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # 选中后立刻复位成占位文案，因此这里平时只显示"历史记录"而不是某个地址
-        self._recent_combo.setPlaceholderText("历史记录")
-        self._recent_combo.setToolTip("最近连接（选中即填入左侧地址框）")
-        self._recent_combo.currentIndexChanged.connect(self._on_recent_selected)
-        row.addWidget(self._recent_combo)
+        # 历史入口：固定宽度按钮 + 卡片式弹窗（gui/history_panel.py）。
+        # 卡片只展示用户可识别信息（备注名/房间号/最近使用），不展示 URL；
+        # 弹窗每次打开都从 HistoryService 实时读取，无需在数据变化时刷新。
+        self._history_btn = HistoryButton(self._history)
+        self._history_btn.setFixedWidth(64)
+        self._history_btn.enterRequested.connect(self._on_history_enter)
+        # 首次进入直播间 → 询问备注（判定在 HistoryService，弹窗在 history_panel）
+        self._history.set_remark_callback(self._history_btn.on_remark_request)
+        row.addWidget(self._history_btn)
 
         # 历史二级入口：备注 / 清除（原先各自占一个按钮，地址栏太挤）
         self._history_menu_btn = QToolButton()
@@ -971,6 +985,14 @@ class MainWindow(QMainWindow):
         self._lbl_fps.setText("FPS --")
         for chip in (self._lbl_status, self._lbl_resolution, self._lbl_fps):
             row.addWidget(chip)
+
+        # 音频控制条：音量 / 模式 / 状态（转发给 AudioService，无音频逻辑在此）
+        self._audio_panel = AudioPanel()
+        self._audio_panel.volumeChanged.connect(self._audio.set_volume)
+        self._audio_panel.modeChanged.connect(self._audio.set_mode)
+        self._audio.set_state_callback(self._audio_panel.on_service_state)
+        row.addWidget(self._audio_panel)
+
         row.addStretch(1)
         return bar
 
@@ -1412,35 +1434,12 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def _sync_address_columns(self) -> None:
-        """让顶部右侧操作区与下方 OCR 面板的列宽一一对应。
+        """地址栏宽度对齐（历史遗留钩子）。
 
-        做法是把「历史下拉」的宽度反推出来，而不是另加一个容器控件去框住
-        操作区：面板宽度减去操作区里所有固定开销（见
-        :data:`_ADDR_ACTIONS_CHROME`），剩下的就是下拉该占的宽度。这样
-        操作区的左边缘落在面板内容左边缘、右边缘落在连接按钮右边缘，两者
-        都与面板内容对齐，且顶部**不新增任何控件**。
-
-        宽度取自 OCR 面板的实时几何（不是 310 常量）：用户拖分隔条、缩放
-        窗口、最大化、展开/收起面板都会让面板 resize，都会重新走到这里。
-
-        收敛性：只从下往上单向取值（用面板宽度定下拉宽度），反向没有依赖，
-        因此不会与 resizeEvent / splitterMoved 互相追着改；并且只在数值真的
-        变化时才 setFixedWidth，避免无谓重排。
+        早期这里按 OCR 面板宽度动态钉住历史下拉的宽度；历史入口改为
+        固定宽度按钮（gui/history_panel.HistoryButton）后，地址栏已全部
+        是固定宽度控件，无需再做对齐。保留本方法使既有调用点不失效。
         """
-        combo = getattr(self, "_recent_combo", None)
-        panel = getattr(self, "_ocr_panel", None)
-        if combo is None or panel is None:
-            return
-
-        # 面板收起时没有可对齐的对象，退回设计宽度：控件铺满这一段，
-        # 地址输入框吃掉剩下的全部空间，既不留空白也不重叠。
-        panel_width = panel.width() if panel.isVisible() else Metrics.OCR_PANEL_WIDTH
-        if panel_width <= 0:
-            return
-
-        combo_width = panel_width - _ADDR_ACTIONS_CHROME
-        if combo_width > 0 and combo.width() != combo_width:
-            combo.setFixedWidth(combo_width)
 
     def _set_ocr_panel_visible(self, visible: bool) -> None:
         """展开 / 收起右侧 OCR 面板（收起时窗口最小宽度收紧，优先保留视频）。"""
@@ -1888,11 +1887,31 @@ class MainWindow(QMainWindow):
         self._lbl_ocr_text.setText(text if text else OCR_RESULT_PLACEHOLDER)
         set_property(self._lbl_ocr_text, "filled", "true" if text else "false")
 
-    def _set_ocr_state(self, running: bool, error: bool = False) -> None:
-        """OCR 状态是同一份状态的两处显示：右栏指示 + 状态栏芯片。"""
+    def _set_ocr_state(self, running: bool, error: bool = False,
+                       phase: str = "") -> None:
+        """OCR 状态是同一份状态的两处显示：右栏指示 + 状态栏芯片。
+
+        phase 只在 running 时生效，用来区分「进程还在跑、但此刻还不能 OCR」
+        的两个中间态（仅影响这两个芯片的文案与语气，不影响按钮与任何流程）：
+
+            ""             引擎已就绪，且（如需要）会话也已建好 —— 真能 OCR
+            "loading"      引擎正在加载（run() 里的运行时/模型/字典尚未就绪）
+            "waiting_roi"  引擎已就绪，但会话还没建：ONNX 的输入 shape 要等
+                           ROI 才能定下来，所以此刻还不能 OCR
+
+        三态流转：加载中 → 等待 ROI → 运行中。
+        不需要会话的后端（Paddle/Tesseract）没有「等待 ROI」态，直接从
+        加载中进入运行中。
+        """
         if error:
             self._set_chip(self._ocr_state_chip, "异常", "error", dot=True)
             self._set_chip(self._lbl_ocr, "OCR 异常", "error", dot=True)
+        elif running and phase == "loading":
+            self._set_chip(self._ocr_state_chip, "加载中", "warn", dot=True)
+            self._set_chip(self._lbl_ocr, "OCR 加载中", "warn", dot=True)
+        elif running and phase == "waiting_roi":
+            self._set_chip(self._ocr_state_chip, "等待 ROI", "warn", dot=True)
+            self._set_chip(self._lbl_ocr, "OCR 等待 ROI", "warn", dot=True)
         elif running:
             self._set_chip(self._ocr_state_chip, "运行中", "ok", dot=True)
             self._set_chip(self._lbl_ocr, "OCR 运行中", "ok", dot=True)
@@ -1972,45 +1991,13 @@ class MainWindow(QMainWindow):
                     else IconButton.FULLSCREEN)
 
     # ------------------------------------------------------------------
-    # 最近连接的流管理
+    # 直播间历史（数据层见 stream/history.py，UI 见 gui/history_panel.py）
     # ------------------------------------------------------------------
-    def _load_recent_streams(self):
-        """加载最近连接的流列表。
-
-        填表期间屏蔽信号：QComboBox 会自动选中第一项并发出 currentIndexChanged，
-        那会让"刷新历史"顺带把某个历史地址写进输入框、并把下拉显示成一个地址。
-        填完复位到 -1，下拉平时只显示「历史记录」占位文案。
-        """
-        streams = self._stream_history.get_all()
-        self._recent_combo.blockSignals(True)
-        self._recent_combo.clear()
-
-        for stream in streams:
-            url = stream["url"]
-            nickname = stream.get("nickname", "")
-
-            if nickname:
-                # 昵称加粗显示
-                display_text = f"{nickname} - {url}"
-            else:
-                # 从URL提取房间ID作为显示
-                room_id = self._extract_room_id(url)
-                if room_id:
-                    display_text = f"房间 {room_id} - {url}"
-                else:
-                    display_text = url
-
-            self._recent_combo.addItem(display_text, url)
-
-        self._recent_combo.setCurrentIndex(-1)
-        self._recent_combo.blockSignals(False)
-        self._sync_note_action()
-
     def _sync_note_action(self, *_args):
-        """备注动作跟随【地址输入框】的内容，而不是跟随历史下拉。
+        """备注动作跟随【地址输入框】的内容。
 
-        原先只在"选中过历史项"时才可用，直接粘贴地址反而不能加备注；
-        现在地址输入框是唯一事实来源，历史下拉只是往它里面写字。
+        地址输入框是唯一事实来源：只要里面有地址（无论手输还是历史进入），
+        「编辑备注…」就可对它生效。
         """
         if getattr(self, "_edit_note_action", None) is None:
             return
@@ -2018,32 +2005,15 @@ class MainWindow(QMainWindow):
         self._selected_url_for_note = url or None
         self._edit_note_action.setEnabled(bool(url))
 
-    def _extract_room_id(self, url: str) -> str:
-        """从URL提取房间ID（仅用于最近记录列表的显示文本）
+    def _on_history_enter(self, url: str):
+        """历史卡片 [进入]：填入地址并直接发起连接。
 
-        按路径取房间标识，不判断具体平台 —— 直播间 URL 的房间号就在第一段
-        路径上（如 https://live.douyin.com/123456789 -> 123456789）。
+        URL 只作为存储键在数据层流转，不在界面上展示。
         """
-        try:
-            return urlparse(url).path.strip("/").split("/")[0]
-        except Exception:
-            return ""
-
-    def _on_recent_selected(self, index: int):
-        """选择最近连接的流：把 URL 写进地址输入框，随后立刻复位下拉。
-
-        复位是刻意的：地址栏里不允许存在两个同时显示直播地址的区域。
-        写入输入框会触发 textChanged → _sync_note_action，备注因此自动可用。
-        """
-        if index < 0:
-            return
-        url = self._recent_combo.itemData(index)
         if not url:
             return
         self._url_input.setText(url)
-        self._recent_combo.blockSignals(True)
-        self._recent_combo.setCurrentIndex(-1)
-        self._recent_combo.blockSignals(False)
+        self._on_connect_clicked()
 
     def _on_edit_note_clicked(self):
         """编辑备注"""
@@ -2051,7 +2021,7 @@ class MainWindow(QMainWindow):
             return
 
         # 获取当前备注
-        current_note = self._stream_history.get_nickname(self._selected_url_for_note)
+        current_note = self._history.get_note(self._selected_url_for_note)
 
         # 创建输入对话框
         dialog = QDialog(self)
@@ -2088,10 +2058,7 @@ class MainWindow(QMainWindow):
         if result == QDialog.Accepted:
             # 保存备注
             new_note = note_input.text().strip()
-            self._stream_history.set_nickname(self._selected_url_for_note, new_note)
-
-            # 重新加载列表以更新显示
-            self._load_recent_streams()
+            self._history.set_note(self._selected_url_for_note, new_note)
 
             # 显示反馈
             if new_note:
@@ -2110,16 +2077,9 @@ class MainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.Yes:
-            self._stream_history.clear()
-            self._load_recent_streams()
+            self._history.clear()
             self._sync_note_action()
             self.statusBar().showMessage("已清除历史记录")
-
-    def _save_stream_history(self, url: str):
-        """保存连接历史"""
-        nickname = self._nickname_input.text().strip()
-        self._stream_history.add_or_update(url, nickname)
-        self._load_recent_streams()
 
     # ------------------------------------------------------------------
     # 连接 / 断开
@@ -2149,9 +2109,9 @@ class MainWindow(QMainWindow):
         self._url_input.setEnabled(False)
         self.statusBar().showMessage(f"正在解析直播间: {url}")
 
-        # 添加到历史记录（不带备注）
-        self._stream_history.add_or_update(url, "")
-        self._load_recent_streams()
+        # 历史记录在**成功进入直播间**后才写入（_handle_connect_success），
+        # 失败的链接不进历史 —— 这里只记住本次目标 URL。
+        self._pending_history_url = url
 
         self._connect_worker = _ConnectWorker(
             live_url=url,
@@ -2177,6 +2137,13 @@ class MainWindow(QMainWindow):
             info.room_id, info.protocol, len(info.candidates or ()),
             (info.url or "")[:80],
         )
+
+        # 成功进入直播间：写入历史（需求：失败链接不进历史）。
+        # 记录的是用户输入的 URL（可重新进入），room_id 用解析结果。
+        if self._pending_history_url:
+            self._history.record_success(self._pending_history_url,
+                                         info.room_id or "")
+            self._pending_history_url = None
 
         # Phase 2.5：本次会话的候选迭代器。候选顺序**完全由平台适配器给出**
         # （适配器里已按平台自己的偏好排好序），这里只负责"按顺序逐个试"，
@@ -2251,6 +2218,10 @@ class MainWindow(QMainWindow):
                 use_cuda=True,
                 http_headers=media_headers,
                 timing=timing,
+                audio_enabled=True,
+                audio_pcm_callback=self._audio.feed,
+                audio_sample_rate=self._audio.sample_rate,
+                audio_channels=self._audio.channels,
             )
             reader.start()
             logger.info("[FFMPEG] reader.start() called, use_cuda=True")
@@ -2270,6 +2241,12 @@ class MainWindow(QMainWindow):
             return False
 
         self._reader = reader
+
+        # 音频随视频一起启动（同一 FFmpeg 实例的第二路输出）。
+        # 音频任何失败都在 service 内部消化，不会影响之后的视频初始化。
+        self._audio.start()
+        logger.info("[AUDIO] service.start() called (with reader attempt=%d)",
+                    self._attempt_id)
 
         # 创建 LatestFrameBuffer
         self._frame_buffer = LatestFrameBuffer()
@@ -2489,6 +2466,9 @@ class MainWindow(QMainWindow):
         if self._reader is not None:
             self._reader.stop()
             self._reader = None
+
+        # 停止音频（跟随播放生命周期；failover 换候选时同样拆除重建）
+        self._audio.stop()
 
         # 清空 buffer
         if self._frame_buffer is not None:
@@ -2733,7 +2713,19 @@ class MainWindow(QMainWindow):
         self._ocr_worker.game_mismatch.connect(self._on_ocr_game_mismatch)
         self._ocr_worker.error_occurred.connect(self._on_ocr_error)
         self._ocr_worker.started.connect(self._on_ocr_started)
+        # 引擎就绪 / 会话就绪：只驱动状态芯片的三态显示，不参与 OCR 启停流程。
+        self._ocr_worker.engine_ready.connect(self._on_ocr_engine_ready)
+        self._ocr_worker.session_ready.connect(self._on_ocr_session_ready)
         self._ocr_worker.finished.connect(self._on_ocr_finished)
+
+        # 后端是否走「会话」三态：必须在启动线程**之前**定下来 ——
+        # _on_ocr_started 触发时引擎还没构造，那时无法探测。
+        # 选择器报错时按「非会话后端」处理、退回原有芯片时序；真正的配置错误
+        # 由 worker 的初始化路径权威上报（会走 error_occurred），GUI 不抢这个职责。
+        try:
+            self._ocr_session_backend = (_selected_engine_kind() == "onnx")
+        except Exception:  # noqa: BLE001 - 配置错误交给 worker 报
+            self._ocr_session_backend = False
 
         # 启动识别
         self._ocr_worker.start_recognition()
@@ -2758,7 +2750,13 @@ class MainWindow(QMainWindow):
         """OCR 线程启动回调"""
         self._ocr_running = True
         self._ocr_btn.setText("识别中")
-        self._set_ocr_state(True)
+        # ONNX 后端：线程已起、引擎还在工作线程里加载 → 芯片显示「加载中」，
+        # 之后由 engine_ready / session_ready 推进到「等待 ROI」→「运行中」。
+        # Paddle/Tesseract 保持原有行为：启动即「运行中」，不引入加载中态。
+        # 按钮文案仍由 _update_ocr_button_state 独占（本方法里的 setText 一字未动）。
+        self._set_ocr_state(
+            True, phase="loading" if self._ocr_session_backend else ""
+        )
         self._sync_ocr_button_variant()
         self._update_diag_controls()          # 运行期间锁定「全 PSM 观测」
         self.statusBar().showMessage("OCR 识别已启动")
@@ -2768,6 +2766,36 @@ class MainWindow(QMainWindow):
         spotlight = self._guide_spotlight
         if spotlight is not None and spotlight.step_index == 3:
             spotlight.notify_completed()
+
+    def _on_ocr_engine_ready(self):
+        """引擎加载完成（运行时 + 模型 + 字典已就绪，引擎对象可用）。
+
+        与帧、ROI 无关，由 worker 在初始化成功后无条件发出一次。
+        这是三态的中间一步：
+          * 需要会话的后端（ONNX/DirectML）此刻**还没建 session** —— 它的输入
+            shape 要等 ROI 才能定，所以停在「等待 ROI」；
+          * 不需要会话的后端（Paddle/Tesseract）此刻已经能 OCR，直接进「运行中」，
+            与新增该信号之前的表现一致。
+        """
+        if self._ocr_worker is None:
+            return
+        # 只有「会话」后端（ONNX）在会话建好之前还不能真正 OCR；
+        # 其它后端此刻已经能跑，维持原有「运行中」，不引入新状态。
+        self._set_ocr_state(
+            True, phase="waiting_roi" if self._ocr_session_backend else ""
+        )
+
+    def _on_ocr_session_ready(self):
+        """引擎的会话已建立并完成 warmup —— 此刻才真的可以 OCR。
+
+        ROI 变化会让 worker 重建会话并再次发出该信号，因此这里也会再次确认
+        「运行中」。只有提供会话能力的后端（ONNX）会发，其它后端从不触发。
+        """
+        # 迟到的排队信号可能落在停止之后：那时 worker 已被丢弃，
+        # 不能让它把芯片从「未运行」重新点亮成「运行中」。
+        if self._ocr_worker is None or not self._ocr_running:
+            return
+        self._set_ocr_state(True)
 
     def _on_ocr_finished(self):
         """OCR 线程结束回调"""

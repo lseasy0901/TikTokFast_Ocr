@@ -29,6 +29,7 @@ FFmpeg 低延迟读取模块 (Phase 1 - Step 3, 延迟优化)
 import collections
 import logging
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -58,6 +59,20 @@ _PROBE_SKIP_REASON = "分辨率已知，无需探测"
 _PROBE_TIMEOUT_S = 5
 _FALLBACK_WIDTH = 1920
 _FALLBACK_HEIGHT = 1080
+
+# ---- 音频第二路输出（AudioService，默认关闭） ----
+# 传输通道选型说明（Windows 实测，2026-09）：
+#   pipe:3 自定义句柄 —— 本项目自带的 ffmpeg 5.x 在 fd 3 未映射 CRT 时直接
+#     fastfail 崩溃（0xC0000409），不可用；
+#   Windows 命名管道 —— CreateNamedPipeW 在部分用户机器上被安全软件 hook 拦截，
+#     不可依赖；
+#   127.0.0.1 回环 TCP —— 零依赖、跨平台、延迟 <1ms，ffmpeg 作为客户端主动
+#     连出，本层作为监听方。故选此通道。
+#: 音频 PCM 输出参数：48kHz / 16bit / 双声道（固定，消费端 audio/ 按此解析）
+_AUDIO_SAMPLE_RATE = 48000
+_AUDIO_CHANNELS = 2
+#: 音频监听 accept 轮询间隔（秒），同时保证 stop() 能及时让 accept 退出
+_AUDIO_ACCEPT_TIMEOUT_S = 0.5
 
 # ---- 管道数据可用性检查（跨平台） ----
 _IS_WINDOWS = os.name == "nt"
@@ -100,7 +115,9 @@ class FFmpegReader:
     """FFmpeg 低延迟视频帧读取器"""
 
     def __init__(self, stream_url, width=None, height=None, use_cuda=True,
-                 http_headers=None, timing=None):
+                 http_headers=None, timing=None,
+                 audio_enabled=False, audio_pcm_callback=None,
+                 audio_sample_rate=None, audio_channels=None):
         """
         构造**不做任何网络探测**：尺寸要么是调用方给的确定值，要么是显式
         None（= 尺寸未知，留到读取线程里解析，见 :meth:`_resolve_pending_size`）。
@@ -118,9 +135,25 @@ class FFmpegReader:
                           输出汇总（它还要记录 GUI 侧的首帧时刻）；未传入时本层
                           自己持有，并在首帧到达后输出一条汇总，供命令行自测使用。
                           计时对象不改变任何播放行为。
+        :param audio_enabled: True 时同一 FFmpeg 实例增加第二路输出：音频解码为
+                          48kHz/16bit/双声道 PCM 写入 127.0.0.1 回环 TCP（本层
+                          监听）。视频 stdout 的命令与字节流完全不变。
+                          流无音频轨时：ffmpeg 在配置输出阶段即报错退出（不会
+                          打开网络），本层据此**去掉音频输出重启一次**（纯进程
+                          重启，无网络等待），并通过 audio_pcm_callback(None)
+                          通知调用方"无音频轨"。
+        :param audio_pcm_callback: 音频 PCM 回调，签名 callback(data)：
+                          data 为非空 bytes = PCM 块；b"" = 音频流结束（EOF）；
+                          None = 流无音频轨。只读语义，本层不关心消费方是谁，
+                          异常由调用方自理（本层会在回调抛异常时记录并继续读）。
         """
         self.stream_url = stream_url
         self._http_headers = dict(http_headers) if http_headers else {}
+        self._audio_enabled = bool(audio_enabled)
+        self._audio_pcm_callback = audio_pcm_callback
+        # 音频输出格式（None = 模块默认 48000/2）。音质对比测试 A/B/C 用。
+        self._audio_sample_rate = int(audio_sample_rate or _AUDIO_SAMPLE_RATE)
+        self._audio_channels = int(audio_channels or _AUDIO_CHANNELS)
 
         self._owns_timing = timing is None
         self._timing = timing if timing is not None else StartupTiming()
@@ -177,6 +210,14 @@ class FFmpegReader:
         self._pipe_samples = collections.deque(maxlen=300)
         self._pipe_bytes_last = 0
         self._pipe_bytes_max = 0
+
+        # ---- 音频第二路输出状态 ----
+        self._audio_server: socket.socket | None = None   # 回环监听 socket
+        self._audio_conn = None                            # ffmpeg 连入后的会话
+        self._audio_port = 0                               # 监听端口（0=未就绪）
+        self._audio_accepted = False                       # ffmpeg 是否已连入
+        self._audio_thread = None                          # 音频读取线程
+        self._audio_thread_started = False
 
     def _resolve_pending_size(self) -> bool:
         """尺寸未知时，在**读取线程内**解析它（构造器不再探测）。
@@ -302,6 +343,20 @@ class FFmpegReader:
         self._start_time = time.perf_counter()
         self._first_frame_time = None
 
+        # 音频监听 socket：bind/listen 在调用方线程（快，微秒级），ffmpeg 在
+        # 转码开始前作为客户端连入。失败只禁用音频，绝不影响视频。
+        if self._audio_enabled:
+            try:
+                self._audio_server = socket.socket()
+                self._audio_server.bind(("127.0.0.1", 0))
+                self._audio_server.listen(1)
+                self._audio_server.settimeout(_AUDIO_ACCEPT_TIMEOUT_S)
+                self._audio_port = self._audio_server.getsockname()[1]
+            except Exception as e:  # noqa: BLE001 - 音频监听失败不影响视频
+                logger.warning("[FFMPEG] 音频监听创建失败，本次禁用音频: %s", e)
+                self._close_audio_server()
+                self._audio_enabled = False
+
         logger.info(
             "视频尺寸: %s",
             "待读取线程探测" if self._size_pending else f"{self.width}x{self.height}",
@@ -347,6 +402,14 @@ class FFmpegReader:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
+
+        # 音频通道：先关 socket（accept/recv 会立刻失败退出线程），再等线程
+        self._close_audio_server()
+        thread = self._audio_thread
+        if thread is not None and thread.is_alive() \
+                and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        self._audio_thread = None
 
         self._cleanup_process(proc)
 
@@ -412,54 +475,85 @@ class FFmpegReader:
             self._running = False
             return
 
-        # 1. 启动 FFmpeg 进程
+        # 1+2. 启动 FFmpeg 并确认连接（含"无音频轨重启一次"重试）
+        # 音频输出用非可选 -map 0:a：流无音频轨时 ffmpeg 在配置输出阶段（尚未
+        # 打开网络）立即退出、stdout EOF、音频端口从未被连入 —— 这三个事实
+        # 合起来就是确定性的"无音频轨"判据，此时去掉音频输出重启一次即可。
+        proc = None
+        frame_bytes = None
         try:
-            proc = self._spawn_ffmpeg()
+            for _ in range(2):
+                proc = self._spawn_ffmpeg() if proc is None else self._spawn_ffmpeg(False)
+
+                self._process = proc
+                # 独立线程排空 stderr，防止管道写满阻塞FFmpeg，同时保留错误日志尾部
+                threading.Thread(
+                    target=self._drain_stderr,
+                    args=(proc,),
+                    name="ffmpeg-stderr",
+                    daemon=True,
+                ).start()
+
+                if self._audio_enabled and not self._audio_thread_started:
+                    self._start_audio_thread()
+
+                # 阻塞读取第一帧，确认连接是否成功
+                try:
+                    frame_bytes = proc.stdout.read(self._frame_size)
+                except Exception as e:
+                    if self._running:
+                        self._set_error(f"读取首帧异常: {e}")
+                    self._cleanup_process(proc)
+                    self._running = False
+                    return
+
+                if not self._running:
+                    self._cleanup_process(proc)
+                    return
+
+                if frame_bytes:
+                    break  # 正常拿到首帧，进入持续读取
+
+                # stdout EOF：进程已退出。若音频输出还没被连入过，最可能是
+                # "流无音频轨"（配置阶段即失败）。注意 stdout 管道关闭与进程
+                # 对象 signaled 之间有竞态，必须用带超时的 wait() 而不是 poll()。
+                if self._audio_enabled and not self._audio_accepted:
+                    try:
+                        proc.wait(timeout=1.5)
+                        exited = True
+                    except subprocess.TimeoutExpired:
+                        exited = False
+                    if exited:
+                        logger.info("[FFMPEG] 音频输出导致启动失败（流可能无音频轨），"
+                                    "去掉音频输出重启")
+                        self._audio_enabled = False
+                        self._close_audio_server()
+                        self._notify_audio(None)   # None = 无音频轨
+                        self._cleanup_process(proc)
+                        continue
+
+                # 与改动前一致的失败路径
+                self._cleanup_process(proc)
+                self._running = False
+                self._set_error(
+                    "连接失败：FFmpeg未返回任何数据（请检查直播流地址/网络，见下方FFmpeg输出）"
+                )
+                return
+
+            if not frame_bytes or len(frame_bytes) < self._frame_size:
+                self._cleanup_process(proc)
+                self._running = False
+                self._set_error(
+                    "数据长度错误：首帧数据不完整（实际视频尺寸与配置 width/height 不符？）"
+                )
+                return
         except FileNotFoundError:
             self._set_error("[FFMPEG] ffmpeg not found: please install FFmpeg and add to PATH")
             self._running = False
             return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - 启动路径异常必须转为 reader 错误
             self._set_error(f"启动FFmpeg失败: {e}")
             self._running = False
-            return
-
-        self._process = proc
-        # 独立线程排空 stderr，防止管道写满阻塞FFmpeg，同时保留错误日志尾部
-        threading.Thread(
-            target=self._drain_stderr,
-            args=(proc,),
-            name="ffmpeg-stderr",
-            daemon=True,
-        ).start()
-
-        # 2. 阻塞读取第一帧，确认连接是否成功
-        try:
-            frame_bytes = proc.stdout.read(self._frame_size)
-        except Exception as e:
-            if self._running:
-                self._set_error(f"读取首帧异常: {e}")
-            self._cleanup_process(proc)
-            self._running = False
-            return
-
-        if not self._running:
-            self._cleanup_process(proc)
-            return
-
-        if not frame_bytes:
-            self._cleanup_process(proc)
-            self._running = False
-            self._set_error(
-                "连接失败：FFmpeg未返回任何数据（请检查直播流地址/网络，见下方FFmpeg输出）"
-            )
-            return
-        if len(frame_bytes) < self._frame_size:
-            self._cleanup_process(proc)
-            self._running = False
-            self._set_error(
-                "数据长度错误：首帧数据不完整（实际视频尺寸与配置 width/height 不符？）"
-            )
             return
 
         # 首帧成功 -> 连接状态确认
@@ -633,8 +727,13 @@ class FFmpegReader:
             self._frame_id += 1
         self.frames_read += 1
 
-    def _build_ffmpeg_cmd(self):
-        """构造 FFmpeg 极低延迟参数（CUDA 按需追加）"""
+    def _build_ffmpeg_cmd(self, with_audio: bool | None = None):
+        """构造 FFmpeg 极低延迟参数（CUDA 按需追加）
+
+        :param with_audio: 是否追加音频第二路输出；None = 跟随 self._audio_enabled
+        """
+        if with_audio is None:
+            with_audio = self._audio_enabled
         cmd = [resolve_ffmpeg_path(), "-hide_banner", "-loglevel", "warning"]
 
         # ---- 输入侧：极致低延迟参数 ----
@@ -679,11 +778,24 @@ class FFmpegReader:
         cmd += ["-pix_fmt", "bgr24"]              # 输出 BGR 24bit（与numpy匹配）
         cmd += ["-f", "rawvideo", "pipe:1"]       # 原始视频写 stdout
 
+        # ---- 音频第二路输出（同一实例，stdout 选项不受影响）----
+        # -map 0:a 刻意不用 0:a?（可选映射）：流无音频轨时"可选映射"会让该输出
+        # 零流而使整个 ffmpeg 报错退出（连累视频）；非可选映射则是在**配置输出
+        # 阶段**（尚未打开网络）就报 "matches no streams" 退出，读取线程据此
+        # 去掉音频输出重启一次。回环 TCP 的连接发生在输入打开之后，因此
+        # "进程秒退 + 从未连入音频端口" 是可靠的"无音频轨"判据。
+        if with_audio and self._audio_port:
+            cmd += ["-map", "0:a", "-vn", "-sn",
+                    "-f", "s16le",
+                    "-ar", str(self._audio_sample_rate),
+                    "-ac", str(self._audio_channels),
+                    f"tcp://127.0.0.1:{self._audio_port}"]
+
         return cmd
 
-    def _spawn_ffmpeg(self):
+    def _spawn_ffmpeg(self, with_audio: bool | None = None):
         """启动 FFmpeg 子进程（ffmpeg 不存在时抛出 FileNotFoundError）"""
-        cmd = self._build_ffmpeg_cmd()
+        cmd = self._build_ffmpeg_cmd(with_audio)
         logger.info("FFmpeg启动参数: %s", " ".join(cmd))
 
         # Windows 下不弹出黑色控制台窗口（后续由 GUI 调用时需要）
@@ -710,6 +822,85 @@ class FFmpegReader:
                     self._stderr_tail.append(text)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # 音频第二路输出（回环 TCP）：监听 -> ffmpeg 连入 -> 逐块回调
+    # ------------------------------------------------------------------
+    def _start_audio_thread(self):
+        """启动音频读取线程（仅读取线程内调用一次）"""
+        self._audio_thread_started = True
+        self._audio_thread = threading.Thread(
+            target=self._audio_loop,
+            name="ffmpeg-audio",
+            daemon=True,
+        )
+        self._audio_thread.start()
+
+    def _audio_loop(self):
+        """音频线程入口：accept ffmpeg 的连接，把 PCM 逐块交给回调。
+
+        消费端停滞时 TCP 发送缓冲会反压到 ffmpeg 的音频输出，进而可能拖住
+        整个转码进程 —— 所以本线程绝不缓冲，读到就交，把背压控制交给
+        消费方（AudioService 用不阻塞的队列 + 丢块策略）。
+        """
+        conn = None
+        try:
+            # 等待 ffmpeg 连入（配置失败时永远不会来，随 stop() 退出）
+            while self._running:
+                try:
+                    conn, _ = self._audio_server.accept()
+                    break
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+            if not self._running:
+                return
+            self._audio_conn = conn
+            self._audio_accepted = True
+            conn.settimeout(None)
+            logger.info("[FFMPEG] 音频通道已连入 (127.0.0.1:%d)", self._audio_port)
+
+            while self._running:
+                try:
+                    chunk = conn.recv(8192)
+                except (OSError, ConnectionResetError):
+                    chunk = b""
+                if not chunk:
+                    break
+                self._notify_audio(chunk)
+        finally:
+            self._audio_accepted = False
+            conn = self._audio_conn
+            self._audio_conn = None
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            if self._running:
+                # ffmpeg 侧断开（正常退出 / 崩溃）：通知消费方流已结束
+                self._notify_audio(b"")
+
+    def _notify_audio(self, data):
+        """把音频数据交给回调；回调异常绝不外溢（不得影响视频读取）"""
+        cb = self._audio_pcm_callback
+        if cb is None:
+            return
+        try:
+            cb(data)
+        except Exception:  # noqa: BLE001 - 消费方异常与视频链路隔离
+            logger.warning("[FFMPEG] 音频回调异常（已忽略）", exc_info=True)
+
+    def _close_audio_server(self):
+        """关闭音频监听 socket（幂等）"""
+        server = self._audio_server
+        self._audio_server = None
+        if server is not None:
+            try:
+                server.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _set_error(self, message):
         """记录错误并输出 FFmpeg 诊断日志"""
