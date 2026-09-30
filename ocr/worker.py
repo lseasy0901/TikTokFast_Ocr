@@ -17,6 +17,7 @@ OCR 工作线程 (Phase 2.3)
 """
 
 import logging
+import os
 import threading
 import time
 from typing import Optional
@@ -25,6 +26,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from .engine import OCREngine, OCREngineError
+from .onnx_engine import ONNXEngine
 from .ppocr_engine import PPOCREngine
 from .profiles import AUTO, get_profile
 from .roi_manager import ROI, ROIManager
@@ -35,6 +37,47 @@ from .temporal import TemporalResolver
 logger = logging.getLogger("DouyinLowLatencyViewer.ocr.worker")
 
 __all__ = ["OCRWorker"]
+
+#: OCR engine 选择器（与 DLV_OCR_BACKEND / DLV_PPOCR_MODEL_DIR 同一命名模式）。
+#: 注意：这是**新**的选择器，语义比 DLV_OCR_BACKEND 更严格 —— 见下。
+_ENV_ENGINE = "DLV_OCR_ENGINE"
+
+#: 可选值。
+#: 默认是 **onnx**：旧的 NVIDIA-only Paddle 模型资源
+#: （runtime/ppocr/PP-OCRv6_medium_rec_infer/）已在 Step 2 验收通过后删除，
+#: ppocr 不再是一个可用的默认后端。
+#: 显式写 DLV_OCR_ENGINE=ppocr 仍会照做（兼容分支保留），但**不会**为了让它
+#: 「继续可用」而保留旧模型；也**不存在**任何从 onnx 静默回落到 ppocr 的路径。
+_ENGINE_PPOCR = "ppocr"
+_ENGINE_ONNX = "onnx"
+_ENGINE_DEFAULT = _ENGINE_ONNX
+
+
+def _selected_engine_kind() -> str:
+    """决定构造哪种 OCR 引擎：``"onnx"``（默认）或 ``"ppocr"``（兼容分支）。
+
+    未知取值**硬报错**，不静默回落。理由：这是一次明确的 backend 选择，
+    用户显式写了 onnx 却因拼写错误悄悄跑在 Paddle 上，会制造
+    「程序看起来一切正常、实际根本没走 ONNX」的假象 —— 那是最难查的一类问题。
+    （`DLV_OCR_BACKEND` 的历史语义是 WARNING + 默认值；本函数刻意不沿用，
+     也**不修改** `DLV_OCR_BACKEND` 自身的行为。）
+
+    Tesseract 刻意**不在**可选值里：`_ensure_engine` 的函数体被
+    test_ppocrv6_backend.py [B] 静态扫描，断言其中不得出现 ``OCREngine(``。
+    Tesseract 仍可经 ``OCRWorker(engine=...)`` 显式注入（对照 / 诊断 / 人工回退）。
+
+    异常处理刻意放在这个**模块级函数**里，而不是 `_ensure_engine` 内 ——
+    后者的函数体被静态断言要求「不得出现 except」。
+    """
+    value = (os.environ.get(_ENV_ENGINE) or "").strip().lower()
+    if not value:
+        return _ENGINE_DEFAULT
+    if value in (_ENGINE_PPOCR, _ENGINE_ONNX):
+        return value
+    raise OCREngineError(
+        "未知的 %s=%r：可选 %r / %r（留空即默认 %r）"
+        % (_ENV_ENGINE, value, _ENGINE_PPOCR, _ENGINE_ONNX, _ENGINE_DEFAULT)
+    )
 
 
 def _require_explicit_game(profile):
@@ -86,6 +129,16 @@ class OCRWorker(QThread):
     # 刻意不带任何参数：文案属于 UI，且绝不能把游戏档/位数等内部信息传出去。
     # 本信号只用于提醒——worker 不会因为收到冲突而换档、重启或自动选择。
     game_mismatch = Signal()
+    # 信号：OCR 引擎已构造完成（运行时 + 模型 + 字典都已就绪）。
+    # 与帧、ROI 无关，run() 初始化成功后**无条件**发一次 —— 若把它绑到「首次成功
+    # warmup」，那么流卡住 / ROI 为空 / 裁剪失败都会让 UI 永久停在「加载中」
+    # 且没有任何错误，那正是该信号要消除的谎言。
+    # 由工作线程发出，Qt 跨线程投递到 GUI 线程。
+    engine_ready = Signal()
+    # 信号：引擎的会话已建成/重建并完成 warmup，此刻才**真的**可以 OCR。
+    # 只有提供 ensure_session_for_roi 的引擎（ONNXEngine）会发；
+    # 其它引擎从不发出，行为与今天完全一致。
+    session_ready = Signal()
 
     def __init__(self,
                  frame_buffer_getter,
@@ -200,6 +253,9 @@ class OCRWorker(QThread):
         self._recognition_count: int = 0
         self._error_count: int = 0
         self._last_error: Optional[str] = None
+        # 最近一次见到的引擎 session 世代号（只有 ONNXEngine 有）。
+        # 用它判断「会话刚建成/重建过」，从而准确地发 session_ready。
+        self._last_session_generation: int = 0
 
         logger.info(
             "OCRWorker 初始化: 间隔=%dms, 引擎=%s, 识别器=%s, 缩放=%.1fx",
@@ -269,17 +325,25 @@ class OCRWorker(QThread):
         实测约 2.2s；Tesseract 要定位可执行文件并冷加载 DLL），因此【必须】
         发生在工作线程，而不是点击「识别」的 GUI 线程调用链上。
 
-        默认后端是 PP-OCRv6_medium_rec（GPU）。构造失败会抛 PPOCREngineError
-        ——它是 OCREngineError 的子类，因此 run() 既有的初始化失败路径
-        （报错一次 + error_occurred + 回收 + 结束线程）原样生效：
+        默认后端是 PP-OCRv6_medium_rec（GPU）；可用 DLV_OCR_ENGINE=onnx 切到
+        ONNX（DirectML）后端。两者构造失败都抛 OCREngineError 的子类
+        （PPOCREngineError / ONNXEngineError），因此 run() 既有的初始化失败
+        路径（报错一次 + error_occurred + 回收 + 结束线程）原样生效：
         既不回退 CPU，也不回退 Tesseract。
+
+        ONNX 的 session **不在这里建**：它的 shape 要等 ROI 才能确定，
+        由 _ensure_engine_session() 在首轮拿到 ROI 时建立并 warmup。
 
         Tesseract 引擎仍然可以显式注入（engine= 参数）用于对照、诊断与人工
         回退，但那是一条**显式**路径，不存在任何运行期自动回落。
         """
         if self._engine is None:
-            self._engine = PPOCREngine()
-            logger.info("OCR 引擎（PP-OCRv6）已在工作线程内创建")
+            if _selected_engine_kind() == _ENGINE_ONNX:
+                self._engine = ONNXEngine()
+                logger.info("OCR 引擎（ONNX/DirectML）已在工作线程内创建")
+            else:
+                self._engine = PPOCREngine()
+                logger.info("OCR 引擎（PP-OCRv6）已在工作线程内创建")
         return self._engine
 
     def _ensure_recognizer(self) -> RoomCodeRecognizer:
@@ -301,6 +365,38 @@ class OCRWorker(QThread):
             logger.info("房间号识别器已在工作线程内创建")
         return self._recognizer
 
+    def _ensure_engine_session(self, roi, roi_image) -> None:
+        """让引擎的会话与当前 ROI 对齐（ONNX 后端特有；其它引擎是空操作）。
+
+        鸭子类型能力探测，与 room_code.py:595 的
+        ``getattr(self._engine, "iter_readings", None)`` 同一风格 ——
+        不引入 ABC / 登记表，也不要求既有引擎实现任何新方法。
+
+        对 PPOCREngine / OCREngine：它们没有 ``ensure_session_for_roi``，
+        本方法直接返回，识别链路**一字不变**。
+        对 ONNXEngine：ROI 未变时是廉价 no-op；ROI 真正变化时在**本线程**
+        （工作线程 = 引擎属主线程）关旧 session、按新的 pinned width 重建并
+        warmup。失败抛 ONNXEngineError —— 它是 OCREngineError 的子类，
+        调用点的 ``except OCREngineError`` 既有权路径原样接管。
+
+        调用点必须在 _perform_recognition 的 try **内部**：放在 try 外面的话，
+        异常会绕过 warning 级的 OCREngineError 分支，落进 run() 的 error 级
+        宽处理里，每 300ms 刷一次。
+        """
+        # 读 self._engine（不是 recognizer）：session 状态属于引擎。
+        # 放进 recognizer 会被 set_profile() 的重建静默丢掉。
+        ensure = getattr(self._engine, "ensure_session_for_roi", None)
+        if ensure is None:
+            return
+        ensure(roi, roi_image)
+
+        # 会话刚刚建成/重建过（generation 变了）→ 此刻才真的可以 OCR，如实上报。
+        # 其它引擎没有该属性，也就从不发 session_ready，行为与今天一致。
+        generation = getattr(self._engine, "session_generation", None)
+        if generation is not None and generation != self._last_session_generation:
+            self._last_session_generation = generation
+            self.session_ready.emit()
+
     def run(self) -> None:
         """OCR 识别主循环（在后台线程中执行）"""
         logger.info("OCRWorker 主循环开始")
@@ -318,6 +414,11 @@ class OCRWorker(QThread):
             logger.info("OCRWorker 主循环结束")
             self._shutdown_engine()      # 引擎可能已建好而识别器构造失败：一并回收
             return
+
+        # 引擎已就绪：运行时 + 模型 + 字典都已加载完成。
+        # 与帧、ROI 无关，**无条件**发一次 —— 若绑到「首次成功 warmup」，
+        # 流卡住 / ROI 为空 / 裁剪失败都会让 UI 永久停在「加载中」却不报错。
+        self.engine_ready.emit()
 
         while self._running and not self._stopped_event.is_set():
             try:
@@ -447,6 +548,10 @@ class OCRWorker(QThread):
         elapsed_ms: Optional[float] = None
         diag_note = ""
         try:
+            # ONNX 后端：把会话对齐到当前 ROI（其它引擎无此方法 → 空操作）。
+            # 位置：裁剪之后、识别之前；且必须在 try **内部**，
+            # 理由见 _ensure_engine_session 的 docstring。
+            self._ensure_engine_session(roi, roi_image)
             candidate = self._recognizer.recognize_frame(roi_image)
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             text = candidate.code if candidate is not None else ""
@@ -526,6 +631,12 @@ class OCRWorker(QThread):
             self._last_error = str(e)
             logger.warning("OCR 识别失败: %s", e)
             self.error_occurred.emit(str(e))
+            # 引擎进入不可恢复状态（例如 ONNX session 建不出来）：结束主循环，
+            # 否则每 300ms 会重试一次昂贵且必然失败的初始化。
+            # 其它引擎没有 is_fatal，行为与今天完全一致。
+            if getattr(self._engine, "is_fatal", False):
+                logger.error("OCR 引擎进入致命状态，停止主循环")
+                self._running = False
 
         finally:
             # 无论成功、异常还是提前返回，这次执行都要收尾入库；

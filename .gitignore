@@ -46,6 +46,14 @@ runtime/ffmpeg/*.dll
 # douyin_viewer.spec gates the build on this directory being present.
 runtime/ppocr/
 
+# ONNX backend artifacts - supplied per machine, never versioned.
+# runtime/onnx/ holds exactly two files: PP-OCRv6_medium_rec_fp32.onnx (~73 MB)
+# and charset.txt (exported from the PP-OCRv6 inference.yml by
+# scripts/export_onnx_charset.py). Like runtime/ppocr/, the workspace is
+# checked-out-and-built, so `git add .` must not sweep them in.
+# Only the ONNX source-env backend reads these; nothing frozen depends on them yet.
+runtime/onnx/
+
 # Runtime/generated files
 # Release build directories carry a version suffix (build_v1.0.1/, build_v1.0.2/,
 # dist_v1.0.2/). A bare `dist/` / `build/` rule matches those names only, not the

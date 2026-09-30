@@ -34,6 +34,10 @@ sys.path.insert(0, PROJECT_ROOT)
 
 os.environ["APPDATA"] = tempfile.mkdtemp(prefix="dlv-ocr-startup-test-")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 本用例观察的是 **PP-OCRv6(Paddle) 后端**的构造时机（靠 patch worker_mod.PPOCREngine）。
+# 默认后端已改为 onnx，因此显式选中 ppocr —— 否则 worker 走 ONNX 分支，
+# 这组用例永远看不到自己 patch 的那个类被构造。
+os.environ["DLV_OCR_ENGINE"] = "ppocr"
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 

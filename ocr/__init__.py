@@ -2,6 +2,7 @@
 """OCR 模块（Phase 2 + OCR V2.1 Format-Aware + V2.3 时序裁决）"""
 
 from .engine import OCREngine, OCREngineError
+from .onnx_engine import ONNXEngine, ONNXEngineError
 from .ppocr_engine import PPOCREngine, PPOCREngineError
 from .preprocess import preprocess_for_ocr, preprocess_for_ocr_adaptive
 from .roi_manager import ROI, ROIManager
@@ -28,6 +29,10 @@ __all__ = [
     # OCR 引擎（Tesseract —— 保留用于对照 / 诊断 / 人工回退）
     "OCREngine",
     "OCREngineError",
+
+    # OCR 引擎（ONNX Runtime / DirectML —— 可选后端，DLV_OCR_ENGINE=onnx 启用）
+    "ONNXEngine",
+    "ONNXEngineError",
 
     # OCR 引擎（PP-OCRv6 —— 当前生产后端）
     "PPOCREngine",

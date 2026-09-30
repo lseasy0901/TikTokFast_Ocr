@@ -121,6 +121,10 @@ class _StubOCRWorker:
         self.game_mismatch = _Sig()   # Phase 8.6：选错游戏提醒（无参数）
         self.started = _Sig()
         self.finished = _Sig()
+        # readiness 信号（Task 4）：MainWindow._start_ocr 会连接它们来驱动状态芯片。
+        # 替身不发射 —— 与 Paddle 后端的真实行为一致（真实后端只发 engine_ready）。
+        self.engine_ready = _Sig()
+        self.session_ready = _Sig()
         _StubOCRWorker.instances.append(self)
 
     def start_recognition(self):

@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "ONNX backend artifact integrity manifest.",
+    "runtime/onnx/ is NOT in Git (see .gitignore). This file is, so any",
+    "machine or rebuild can prove it was given the same artifacts.",
+    "charset.txt is exported by scripts/export_onnx_charset.py.",
+    "Recorded by: scripts/verify_onnx_model.py --record",
+    "Verified by: scripts/verify_onnx_model.py",
+    "Do not hand-edit: regenerate with --record after provisioning."
+  ],
+  "model_name": "PP-OCRv6_medium_rec",
+  "relpath": "runtime/onnx",
+  "files": {
+    "PP-OCRv6_medium_rec_fp32.onnx": {
+      "bytes": 76555019,
+      "sha256": "656f8af8f433f91c8441115fdf32a704ea49b243170ac76dafb6af9d4d5173f5"
+    },
+    "charset.txt": {
+      "bytes": 74947,
+      "sha256": "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"
+    }
+  },
+  "total_bytes": 76629966,
+  "charset_entries": 18708,
+  "charset_final_size": 18710,
+  "recorded_at": "2026-09-27"
+}

@@ -32,6 +32,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 本用例集测的是 **PP-OCRv6(Paddle) 后端**：显式选中它。
+# 默认后端已改为 onnx（旧的 Paddle 模型资源随 Step 2 验收删除），不显式选择的话
+# worker 会走 ONNX 分支，本文件靠 monkeypatch worker_mod.PPOCREngine 观察到的
+# 实例数会恒为 0（那不是回归，是用例选错了后端）。
+os.environ["DLV_OCR_ENGINE"] = "ppocr"
+
 import numpy as np
 import cv2
 

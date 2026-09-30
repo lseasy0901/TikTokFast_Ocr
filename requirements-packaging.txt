@@ -8,60 +8,48 @@
 # --------------------------
 # requirements.txt           应用运行基线（PySide6 / OpenCV / 更新客户端 …），
 #                            源码环境与构建环境都要装。本文件**不重复**它的条目。
-# requirements-packaging.txt 构建环境**额外**需要的：PP-OCRv6 生产 OCR 后端的
-#                            Python + CUDA 运行时，以及打包工具本身。
+# requirements-packaging.txt 构建环境**额外**需要的：生产 OCR 后端的运行时，
+#                            以及打包工具本身。
 #
-# 为什么 paddlepaddle-gpu 要单独给索引
-# ------------------------------------
-# 它不在 PyPI 上：官方按 CUDA 版本分索引目录。实测通过的组合对应 cu130
-# （CUDA 13.x；nvidia-* 全部是 cu13 wheel），所以这里显式写死索引，
-# 换机器也能原样重建。下面的 --extra-index-url 是必需的：索引被 --index-url
-# 替换掉之后，paddle 的纯 Python 依赖只能从 PyPI 取。
---index-url https://www.paddlepaddle.org.cn/packages/stable/cu130/
---extra-index-url https://pypi.org/simple
+# 不再有 paddlepaddle-gpu / paddleocr / paddlex，也没有 nvidia-* CUDA wheel。
+# OCR 后端已迁到 ONNX Runtime + DirectML（见 ocr/onnx_engine.py）：DirectML 是
+# GPU 路径、CPUExecutionProvider 是回退，两者都编译在 onnxruntime 自身里，
+# 不需要外部 CUDA 运行时，也不再有 paddle 专用索引。
 
 # ---------------------------------------------------------------------------
-# 1. 应用运行时依赖：PP-OCRv6 生产 OCR 后端
+# 1. 应用运行时依赖：ONNX Runtime（DirectML 版）
 #
-#    这几个包会被 PyInstaller 打进正式包（模型 + Paddle 运行时是生产 OCR 的
-#    全部依赖）。列在本文件而不是 requirements.txt，是因为只有构建环境需要
-#    它们 —— 纯源码环境跑 GUI/视频链路用不到 OCR 后端。
+#    这个包会被 PyInstaller 打进正式包（连同 runtime/onnx/ 下的两个产物，
+#    它们由 douyin_viewer.spec 的 datas 提供）。
 #
-#    不要升级：paddle / paddleocr / paddlex / nvidia-* 是按 CUDA 版本对齐的，
-#    单独动任意一个都会把 OCR 后端推向未验证状态。
+#    为什么是 onnxruntime-directml 而不是 onnxruntime / onnxruntime-gpu：
+#      * onnxruntime-gpu 需要外部 CUDA/cuDNN，正是本次要摆脱的依赖；
+#      * 目标机是 Windows + DirectML，DirectML 版自带 DirectML.dll，
+#        并且**同时**提供 CPUExecutionProvider 作为回退；
+#      * onnxruntime 与 onnxruntime-directml 是同名互斥的两个发行包，
+#        只能装一个。本文件钉的是 DirectML 版。
+#
+#    版本必须钉死，且与 Step 2 验收（107/107 parity、DirectML 实测）用的
+#    是同一个版本：1.24.4。升级前必须重跑 scripts/verify_onnx_model.py 与
+#    冻结自检，并按 scripts/onnx_model_manifest.json 重新核对产物。
 # ---------------------------------------------------------------------------
-paddlepaddle-gpu==3.3.0
-paddleocr==3.7.0
-paddlex==3.7.2
+onnxruntime-directml==1.24.4
 
-# numpy 由应用与 OCR 后端共用，且 paddle 的数值路径依赖它，所以在这里钉死
-# （不钉的话 pip 会解析到更新版本 —— 实测环境是 2.3.5）。
+# numpy 由应用与 ONNX Runtime 共用（ORT 用它做输入/输出的张量桥接），
+# 所以在打包环境里也钉死，避免 pip 解析到不同版本。
 numpy==2.3.5
 
 # ---------------------------------------------------------------------------
 # 2. 仅打包需要的工具（不随正式包发布）
+#
+#    pyinstaller-hooks-contrib 是必需的，不是可选：它自带
+#    hook-onnxruntime.py（collect_dynamic_libs("onnxruntime")），
+#    onnxruntime/capi 下的 onnxruntime.dll / DirectML.dll /
+#    onnxruntime_providers_shared.dll 全靠它收集。缺了它，spec 不会报错，
+#    只会打出一个 OCR 起不来的包。
 #
 #    velopack 不在这里：它是更新客户端的**运行**依赖，已经钉在 requirements.txt
 #    里（velopack==1.2.0），避免同一版本号出现两个来源。
 # ---------------------------------------------------------------------------
 pyinstaller==6.22.2
 pyinstaller-hooks-contrib==2026.7
-
-# ---------------------------------------------------------------------------
-# 3. NVIDIA CUDA 运行库 wheel
-#
-#    paddlepaddle-gpu 的依赖。**必须显式钉版本**：不钉时 pip 会把它们解析到
-#    索引上更新的版本（cu13 已有更新版），实测通过的组合会被悄悄换掉。
-#
-#    这些 wheel 由 ocr/ppocr_engine.py:_ensure_cuda_dlls() 在运行期加进 DLL
-#    搜索路径（它们位于 site-packages/nvidia/*/bin，不在系统 PATH 上），
-#    因此必须随包一起打进正式包。
-# ---------------------------------------------------------------------------
-nvidia-cublas==13.0.2.14
-nvidia-cuda-runtime==13.0.88
-nvidia-cudnn-cu13==9.13.0.50
-nvidia-cufft==12.0.0.61
-nvidia-curand==10.4.0.35
-nvidia-cusolver==12.0.4.66
-nvidia-cusparse==12.6.3.3
-nvidia-nvjitlink==13.1.80
