@@ -76,6 +76,17 @@ def build_probe_cmd(stream_url: str) -> list:
         resolve_ffprobe_path(),
         "-hide_banner",
         "-loglevel", "error",  # 只显示错误
+        # ---- 探测上限（迁移审计 P0-4；与播放路径同档）----
+        # 不设则吃默认 probesize 5MB / analyzeduration 5s：FLV 场景实测中位
+        # 0.32s 但尾部可到 1.4s（启动关键路径上的抖动源）。
+        # analyzeduration 取 0.2s（live-player 抖音档实证值）：0.1s 实测会让
+        # 部分流的音频参数收敛不下（stderr: "Could not find codec parameters
+        # for stream 1 (Audio: aac...)"），0.2s 消除该警告且仍在亚秒级。
+        "-probesize", "32768",
+        "-analyzeduration", "200000",
+        # 网络读超时 8s：低于 get_video_info 的 10s 子进程超时，让卡死的连接
+        # 先以"探测失败返回默认值"的软路径结束，而不是 subprocess 硬杀
+        "-rw_timeout", "8000000",
         "-show_entries", _PROBE_ENTRIES,
         "-select_streams", "v:0",  # 只检测视频流
         "-of", "json",  # JSON 格式输出

@@ -271,35 +271,6 @@ class HuyaAdapter(PlatformAdapter):
                     len(resp.text), _mask_url(resp.url))
         return resp.text
 
-    def _detect_video_resolution(self, stream_url: str):
-        """用 ffprobe 探测选中流的真实分辨率。
-
-        与抖音一致：StreamInfo.width/height 必须是**选中流的实际分辨率**。
-        这一点是必需的 —— MainWindow 在 info.width 为空时会退回 1920x1080
-        并把它当作确定值传给 FFmpegReader，而那会让 FFmpegReader 跳过
-        自动探测，最终按错误尺寸切帧。
-
-        返回 VideoInfo 或 None（探测失败不影响解析结果）。
-        """
-        try:
-            from ..video_info import get_video_info
-
-            info = get_video_info(stream_url)
-            if info and info.width and info.height:
-                logger.info(
-                    "[HUYA][VIDEO INFO] width=%d, height=%d, pix_fmt=%s, fps=%s, codec=%s",
-                    info.width, info.height, info.pix_fmt or "unknown",
-                    f"{info.fps:.2f}" if info.fps else "unknown",
-                    info.codec_name or "unknown",
-                )
-                return info
-            logger.warning("[HUYA][VIDEO INFO] 分辨率探测失败，使用默认值")
-        except ImportError:
-            logger.warning("[HUYA][VIDEO INFO] video_info 模块导入失败")
-        except Exception as e:
-            logger.warning("[HUYA][VIDEO INFO] 分辨率探测异常: %s", e)
-        return None
-
     # ------------------------------------------------------------------
     # 解析
     # ------------------------------------------------------------------
@@ -324,17 +295,13 @@ class HuyaAdapter(PlatformAdapter):
                     len(candidates), selected.metadata.get("cdn"),
                     _mask_url(selected.url))
 
-        # 分辨率只探测选中的那一个候选，其余候选保持 None（页面未给出）
-        width = height = None
-        probed = self._detect_video_resolution(selected.url)
-        if probed:
-            width, height = probed.width, probed.height
-
+        # 分辨率不再在解析层探测（迁移审计刀1）：FFmpegReader 从子进程
+        # stderr 的 dump 行自报，免去对媒体地址的第二次完整连流。
         return StreamInfo(
             platform=self.name,
             room_id=room,
             candidates=candidates,
             selected=selected,
-            width=width,
-            height=height,
+            width=None,
+            height=None,
         )

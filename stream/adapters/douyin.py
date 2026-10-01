@@ -24,16 +24,71 @@
     # result = {"room_id": "123456789", "stream_url": "...", "stream_type": "flv"}
 """
 
+import html as html_mod
 import json
 import logging
+import os
 import re
+import tempfile
+import time
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import requests
 
+from utils.stream_history import default_data_dir
 from ..models import StreamCandidate, StreamInfo, StreamResolveError
 from ..selector import select
 from .base import PlatformAdapter
+
+logger = logging.getLogger("DouyinLowLatencyViewer.stream.douyin")
+
+#: ttwid 等 Cookie 的持久化文件（与 stream_history 同一数据目录）。
+#: ttwid 是长时效的浏览器会话标识：首次首页获取后存盘复用，热启动可整段
+#: 跳过首页请求（迁移审计第 1 步的解析链提速项；基线实测解析 2.2s 中
+#: HTTP 链占 ~1.85s）。失效场景由 get_live_info 的"刷新重试一次"兜底。
+_COOKIE_FILENAME = "douyin_cookies.json"
+
+
+def _cookie_store_path() -> Path:
+    return Path(default_data_dir()) / _COOKIE_FILENAME
+
+
+def _load_cached_cookies() -> dict | None:
+    """读取持久化 Cookie；无文件/损坏/缺 ttwid 一律视为无缓存（不抛）。"""
+    try:
+        path = _cookie_store_path()
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        cookies = data.get("cookies") if isinstance(data, dict) else None
+        if isinstance(cookies, dict) and cookies.get("ttwid"):
+            return {str(k): str(v) for k, v in cookies.items() if v}
+    except Exception as e:  # noqa: BLE001 - 缓存读不出来就当没有，走正常获取
+        logger.debug("[Cookie] 读取持久化 Cookie 失败（忽略）: %s", e)
+    return None
+
+
+def _save_cookies(cookies: dict) -> None:
+    """原子写入持久化 Cookie（写临时文件后 os.replace，防半截文件）。"""
+    if not cookies.get("ttwid"):
+        return
+    try:
+        path = _cookie_store_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"saved_at": time.time(), "cookies": cookies}
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(tmp, path)
+        except Exception:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+        logger.info("[Cookie] 已持久化 %d 枚 Cookie 供后续解析复用", len(cookies))
+    except Exception as e:  # noqa: BLE001 - 持久化失败不影响本次解析
+        logger.debug("[Cookie] Cookie 持久化失败（忽略）: %s", e)
 
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.douyin")
 
@@ -130,12 +185,39 @@ class DouyinStream:
         ("default_pull_url", "flv"),
     ]
 
-    # 清晰度键优先级：HD(720p) 优先于 UHD(1080p)。
-    # 更低分辨率 = 更少数据 = 更低网络+解码+管道延迟。
+    # 清晰度键优先级（迁移审计第 2 步修订）：**原画（FULL_HD1/origin）优先**。
+    #
+    # 旧策略"HD1 优先（低分辨率=低延迟）"对直播是错的：HD1/SD1 是服务端把
+    # 原画**重新转码**出来的梯队，转码+重新打包天生多 1~3 秒延迟，且码率被
+    # 压低；原画是主播推流的原始码流，CDN 直转直发，端到端最低延迟、最高
+    # 码率。live-player（逆向报告 P0-2）正是取 main/origin——同一房间它"又
+    # 快又清楚"的来源。（GUI 实测反馈：同房间我们的画面肉眼可见地比闪 live
+    # 慢且糊，切原画应同时改善两者。）
+    #
+    # 代价与护栏：原画 1080p60 过 BGR 管道约 373MB/s，对读取与 GUI 是真实
+    # 负载——切档后请观察性能面板（FPS 稳定性 / 管道积压 / 跳帧），机器撑
+    # 不住时回退方案是输出限帧（-r 30）或退回本表旧顺序。
     _QUALITY_PRIORITY = (
-        "HD1", "HD", "FHD1", "FHD", "FULL_HD1", "full",
-        "origin", "SD1", "SD2", "SD", "0", "1",
+        "FULL_HD1", "full", "origin", "FHD1", "FHD",
+        "HD1", "HD", "SD1", "SD2", "SD", "0", "1",
     )
+
+    # ---- SDK 线（迁移审计刀 3.5）----
+    # 页面 pace_f 里另嵌一套 live_core_sdk（App 级）拉流数据：变体含
+    # 原画直传（stream-<id>.flv 无后缀）、_or4、_uhd/_hd/_sd/_ld，以及
+    # hiquhd5/hiq* 系（增强 FLV 封装的 H265——本机捆绑的 ffmpeg 5.x 内核
+    # 不支持该封装，实测 "Video: none [12]" 无法解码，因此**跳过 hiq\***）。
+    # App SDK 分发时间线比网页系提前约 1 秒——同房间三方实测
+    # 浏览器 < 本程序(网页线) < 闪live(SDK线) 的根因；闪 live 正取此线。
+    # 顺序即优先级：原画直传在前。
+    _SDK_VARIANT_PRIORITY = (
+        "origin", "or4", "uhd", "hd", "sd", "ld", "md",
+    )
+    _SDK_QUALITY_NAME = {
+        "origin": "原画(SDK)", "or4": "原画(or4)",
+        "uhd": "蓝光(SDK)", "hd": "超清(SDK)",
+        "sd": "高清(SDK)", "ld": "流畅(SDK)", "md": "标清(SDK)",
+    }
 
     def __init__(self, live_url):
         """
@@ -155,6 +237,11 @@ class DouyinStream:
 
         # 使用 Session 自动管理 Cookie（关键：ttwid 等）
         self._session = requests.Session()
+        #: 本次解析是否使用了持久化 Cookie（决定失败后要不要刷新重试）
+        self._used_cached_cookie = False
+        #: 最近一次 _resolve_streams 用的页面 HTML（刀 3.5：SDK 线从同一份
+        #: 页面解出，零额外网络请求；get_stream_info 消费）
+        self._last_page_html: str | None = None
 
         logger.info("初始化: 输入 URL = %s", live_url)
 
@@ -325,6 +412,9 @@ class DouyinStream:
 
         if "ttwid" in cookies:
             logger.info("[Cookie] ttwid = %s...%s", cookies["ttwid"][:8], cookies["ttwid"][-4:])
+            # 首页拿到的 ttwid 是长时效会话标识：持久化后，后续解析可整段
+            # 跳过首页请求（解析链提速项）。失效由 get_live_info 的刷新重试兜底。
+            _save_cookies(cookies)
         else:
             logger.warning("[Cookie] ttwid 未获取，后续请求可能失败")
 
@@ -336,9 +426,11 @@ class DouyinStream:
         请求直播信息，返回流地址结果 dict。
 
         策略（按优先级）：
-            1. 页面 pace_f 数据（当前主流方式）
-            2. 页面 RENDER_DATA（旧版兼容）
-            3. API 接口（最终回退）
+            Cookie：优先复用持久化 Cookie（跳过首页预取，热启动提速）；
+                    持久化 Cookie 下整条链路失败 → 刷新 Cookie 后重试一次。
+            解析：  1. 页面 pace_f 数据（当前主流方式）
+                    2. 页面 RENDER_DATA（旧版兼容）
+                    3. API 接口（最终回退）
 
         :return: {"room_id": ..., "stream_url": ..., "stream_type": ...}
         """
@@ -349,11 +441,38 @@ class DouyinStream:
         # 每次解析重新开始记录候选来源，避免上一次解析的残留数据被复用
         self._last_candidate_source = None
 
-        # 初始化 Session Cookie
+        self._ensure_session_cookies()
+        try:
+            return self._resolve_streams()
+        except DouyinStreamError:
+            if not self._used_cached_cookie:
+                raise
+            # 持久化 Cookie 可能已过期/失效：刷新一次再走整条链路
+            logger.warning("[Cookie] 持久化 Cookie 下解析失败，刷新 Cookie 后重试一次")
+            self._used_cached_cookie = False
+            self._init_session()
+            return self._resolve_streams()
+
+    def _ensure_session_cookies(self):
+        """保证 Session 带有可用 Cookie：优先持久化缓存，否则首页获取。"""
+        cached = _load_cached_cookies()
+        if cached:
+            self._session.cookies.update(cached)
+            self._used_cached_cookie = True
+            logger.info(
+                "[Cookie] 使用持久化 Cookie（%s），跳过首页预取",
+                ", ".join(sorted(cached.keys())),
+            )
+            return
+        self._used_cached_cookie = False
         self._init_session()
 
-        # 获取直播间页面 HTML（多个解析方式共用）
+    def _resolve_streams(self):
+        """原 get_live_info 主体：房间页 → pace_f → RENDER_DATA → 正则 → API。"""
+        # 获取直播间页面 HTML（多个解析方式共用；刀 3.5 的 SDK 线也从这份
+        # 页面解出，见 get_stream_info）
         page_html = self._fetch_room_page()
+        self._last_page_html = page_html
 
         # 方式1: 页面 pace_f 数据
         if page_html:
@@ -1009,19 +1128,8 @@ class DouyinStream:
                 result.get("stream_url", "")[:80] + "...",
             )
 
-            # 检测视频分辨率
-            video_info = self._detect_video_resolution(result.get("stream_url"))
-
-            # 添加视频信息到结果
-            if video_info:
-                result.update({
-                    "video_width": video_info.width,
-                    "video_height": video_info.height,
-                    "video_pix_fmt": video_info.pix_fmt,
-                    "video_fps": video_info.fps,
-                    "video_codec": video_info.codec_name,
-                })
-
+            # 分辨率不再在解析层探测（迁移审计刀1）：FFmpegReader 从子进程
+            # stderr 的 dump 行自报，免去这里对媒体地址的第二次完整连流。
             return result
 
         raise DouyinStreamError(
@@ -1060,6 +1168,60 @@ class DouyinStream:
             raise first_error
         return last_result
 
+    def _extract_sdk_candidates(self, page_html: str) -> list:
+        """从页面 HTML 解出 live_core_sdk（App 级）拉流线候选（刀 3.5）。
+
+        背景：页面里嵌着两套分发体系——网页系 stream_url.flv_pull_url（浏览
+        器梯队）与 App SDK 系 live_core_sdk_data.pull_data.stream_data（变体
+        hiquhd5/... ）。SDK 系的分发时间线比网页系提前约 1 秒（同房间三方实
+        测 浏览器 < 本程序(网页线) < 闪live(SDK线)），闪 live 正取此线。
+
+        实现要点：
+            - 从**已取到的同一份页面**解出，零额外网络请求；
+            - SDK 数据是**多重转义**（HTML 实体 + 反斜杠 u0026/u002F 可能叠
+              多层），用"任意深度反斜杠折叠"清理；
+            - 解析失败/无 SDK 数据返回 []，网页线原样兜底，主流程零风险。
+        """
+        if not page_html:
+            return []
+        out, seen = [], set()
+        idx = 0
+        while True:
+            i = page_html.find('\\"stream_data\\"', idx)
+            if i < 0:
+                break
+            idx = i + 1
+            window = page_html[i: i + 40000]
+            dec = html_mod.unescape(html_mod.unescape(window))
+            dec = re.sub(r"\\+u0026", "&", dec)
+            dec = re.sub(r"\\+u002F", "/", dec)
+            dec = dec.replace("\\/", "/")
+            for u in re.findall(r'https?://[^\s"<>]+?\.flv[^\s"<>]*', dec):
+                # 转义折叠可能留下孤立反斜杠（如 t_id 值尾部的 \\/）——
+                # 正常 URL 不含反斜杠，统一剥掉再入库
+                u = u.replace("\\", "")
+                if u in seen:
+                    continue
+                seen.add(u)
+                fn = u.split("/")[-1].split("?")[0]
+                base = fn[:-4] if fn.lower().endswith(".flv") else fn
+                # stream-<id>.flv（无质量后缀）= 原画直传
+                variant = ("origin" if re.fullmatch(r"stream-\d+", base)
+                           else next((v for v in self._SDK_VARIANT_PRIORITY
+                                      if base == v or base.endswith("_" + v)), None))
+                if variant is None:
+                    continue  # hiq*（H265 增强封装，本运行时不可解）等未知变体跳过
+                out.append(StreamCandidate(
+                    url=u,
+                    protocol="flv",
+                    quality=self._SDK_QUALITY_NAME.get(variant, variant),
+                    metadata={"field": "sdk_stream_data", "variant": variant},
+                ))
+        prio = {v: i for i, v in enumerate(self._SDK_VARIANT_PRIORITY)}
+        out.sort(key=lambda c: prio.get(
+            (c.metadata or {}).get("variant", ""), 99))
+        return out[:10]
+
     def get_stream_info(self):
         """
         解析并返回统一的 StreamInfo（候选流 + 选中流 + 分辨率）。
@@ -1084,50 +1246,30 @@ class DouyinStream:
         if not candidates:
             candidates = [StreamCandidate(url=url, protocol=result["stream_type"])]
 
+        # 刀 3.5：SDK 线候选（App 级分发时间线，快网页线约 1 秒）。
+        # 从同一份页面解出、零额外网络请求。**默认关闭**：SDK 全系是增强
+        # FLV 封装的 H265，当前捆绑的 ffmpeg 5.x 运行时无法解码——开着会让
+        # 每次连接白试 4-8 秒才落到网页线（启动回归）。运行时升级到支持
+        # 增强 FLV 的 ffmpeg（≥7.1）后，设 DLV_SDK_LINE=1 启用。
+        if os.environ.get("DLV_SDK_LINE") == "1":
+            try:
+                sdk = self._extract_sdk_candidates(self._last_page_html or "")
+            except Exception as e:  # noqa: BLE001 - SDK 线解析失败不影响网页线
+                logger.debug("[SDK] SDK 线解析失败（忽略）: %s", e)
+                sdk = []
+            if sdk:
+                web_urls = {c.url for c in candidates}
+                candidates = [c for c in sdk if c.url not in web_urls] + candidates
+
         return StreamInfo(
             platform=DouyinAdapter.name,
             room_id=result["room_id"],
             candidates=candidates,
             selected=select(candidates),
-            width=result.get("video_width"),
-            height=result.get("video_height"),
+            # 分辨率恒 None：解析层不再探测（刀1），由 FFmpegReader 自报
+            width=None,
+            height=None,
         )
-
-    def _detect_video_resolution(self, stream_url: str):
-        """
-        检测视频流的实际分辨率
-
-        参数：
-            stream_url: 流媒体 URL
-
-        返回：
-            VideoInfo 对象，检测失败返回 None
-        """
-        try:
-            from ..video_info import get_video_info, VideoInfo
-
-            video_info = get_video_info(stream_url)
-
-            if video_info.width and video_info.height:
-                logger.info(
-                    "[VIDEO INFO] width=%d, height=%d, pix_fmt=%s, fps=%s, codec=%s",
-                    video_info.width,
-                    video_info.height,
-                    video_info.pix_fmt or "unknown",
-                    f"{video_info.fps:.2f}" if video_info.fps else "unknown",
-                    video_info.codec_name or "unknown"
-                )
-                return video_info
-            else:
-                logger.warning("[VIDEO INFO] 分辨率检测失败，使用默认值")
-                return None
-
-        except ImportError:
-            logger.warning("[VIDEO INFO] video_info 模块导入失败")
-            return None
-        except Exception as e:
-            logger.warning("[VIDEO INFO] 分辨率检测异常: %s", e)
-            return None
 
 
 # ======================================================================

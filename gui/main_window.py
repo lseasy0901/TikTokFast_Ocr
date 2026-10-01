@@ -2188,10 +2188,10 @@ class MainWindow(QMainWindow):
         timing.mark(STAGE_CANDIDATE_SELECTED)
         self._startup_timing = timing
 
-        # 分辨率规则（平台无关）：只有平台真正探测过的那一个候选
-        # （info.selected）才带可信分辨率，其余候选一律交给 FFmpegReader
-        # 自己探测。**绝不能**把未知候选硬编码成 1920x1080 —— 那会让
-        # FFmpegReader 判定"分辨率已知"从而跳过自动探测，最终按错误尺寸切帧。
+        # 分辨率规则（迁移审计刀1后）：解析层不再串行探测分辨率——FFmpegReader
+        # 会从子进程 stderr 的 dump 行自报（同一连接，零额外开销）。info.width
+        # 理论上恒为 None；保留传参通道仅为向后兼容（未来若某平台有免费的
+        # 免连流分辨率来源，可以直接填进来）。
         if candidate is info.selected and info.width and info.height:
             video_width, video_height = info.width, info.height
         else:
@@ -2208,7 +2208,7 @@ class MainWindow(QMainWindow):
         # 适配器给出。这里只转交，不判断平台、不解释字段含义。
         media_headers = candidate.http_headers or None
 
-        # 创建并启动 FFmpegReader
+        # 创建并启动 FFmpegReader（protocol 供 flv 候选强制 live_flv demuxer）
         reader = None
         try:
             reader = FFmpegReader(
@@ -2222,6 +2222,7 @@ class MainWindow(QMainWindow):
                 audio_pcm_callback=self._audio.feed,
                 audio_sample_rate=self._audio.sample_rate,
                 audio_channels=self._audio.channels,
+                protocol=candidate.protocol,
             )
             reader.start()
             logger.info("[FFMPEG] reader.start() called, use_cuda=True")

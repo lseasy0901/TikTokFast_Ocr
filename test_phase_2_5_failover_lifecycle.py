@@ -81,10 +81,18 @@ def pump(seconds=0.6, until=None):
 # 替身
 # ======================================================================
 class FakeReader:
-    """FFmpegReader 的脚本化替身（只实现调用方真正用到的接口）"""
+    """FFmpegReader 的脚本化替身（只实现调用方真正用到的接口）
+
+    签名必须与 _start_playback 的真实构造调用一致：音频第二路（audio_*）
+    参数是后期加入构造调用的，替身不接住的话所有构造都会 TypeError →
+    全部尝试同步失败 → 整个文件退化成"全失败"假象（2026-10-01 修复）。
+    """
 
     def __init__(self, url, width=None, height=None, use_cuda=True,
-                 http_headers=None, timing=None):
+                 http_headers=None, timing=None,
+                 audio_enabled=False, audio_pcm_callback=None,
+                 audio_sample_rate=None, audio_channels=None,
+                 protocol=None):
         self.url = url
         # 记录**调用方传入**的尺寸，用来验证"未探测候选不得硬编码 1920x1080"
         self.requested_width = width

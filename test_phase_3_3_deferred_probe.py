@@ -151,8 +151,8 @@ def test_known_size_no_probe():
 # [B] 未知尺寸：探测不发生在调用方线程，也不阻塞它
 # ----------------------------------------------------------------------
 def test_unknown_size_not_blocking():
-    section("[B] 未知尺寸：探测在读取线程内进行，调用方线程立即返回")
-    spy = ProbeSpy((MEDIA_W, MEDIA_H), delay=0.8)   # 模拟一次慢探测
+    section("[B] 未知尺寸：stderr 自报分辨率（同连接），ffprobe 仅作兜底")
+    spy = ProbeSpy((MEDIA_W, MEDIA_H), delay=0.8)
     with patch_probe(spy):
         t0 = time.perf_counter()
         reader = FFmpegReader(MEDIA, width=None, height=None, use_cuda=False)
@@ -165,25 +165,16 @@ def test_unknown_size_not_blocking():
         t2 = time.perf_counter()
         check((t2 - t1) * 1000 < 200.0,
               "start() 耗时 %.1fms < 200ms（未等待探测）" % ((t2 - t1) * 1000))
-        # 探测要 800ms，而调用方 0.2ms 就回来了：返回时探测必然还在进行 ——
-        # 等待不在调用方线程（这里不能用 spy.calls 判"是否已开始"，线程调度是自由的）
-        check(not spy.done, "start() 返回时探测仍在进行 —— 调用方没有等它")
 
-        check(wait_until(lambda: spy.calls, 5.0), "探测确实开始了", "spy=%s" % spy.threads)
-        check(spy.threads[:1] == ["ffmpeg-reader"],
-              "探测运行在 ffmpeg-reader 线程", repr(spy.threads))
-
-        # 本地文件解码极快、很快到 EOF（connected 会被复位），因此这里看
-        # 单调不退的状态：尺寸、已读帧数、首帧时刻。
+        # 刀1 新契约：分辨率来自同一条连接的 stderr dump 行（open 阶段即出、
+        # 先于首帧）；ffprobe 只在 stderr 解析失败时兜底，成功时完全不触发。
         check(wait_until(lambda: reader.frames_read > 0, 10.0),
-              "探测后仍能正常出帧", "frames=%d" % reader.frames_read)
+              "stderr 自报后仍能正常出帧", "frames=%d" % reader.frames_read)
         check(reader.first_frame_ms is not None, "首帧时刻已记录")
         check((reader.width, reader.height) == (MEDIA_W, MEDIA_H),
-              "用探测到的尺寸切帧", repr((reader.width, reader.height)))
-
-        probe_ms = reader._timing.summary()["segments"].get("probe")
-        check(probe_ms is not None and probe_ms >= 700.0,
-              "探测耗时仍被 Phase 3.2 分段计时记录", "probe=%s ms" % probe_ms)
+              "用自报尺寸切帧", repr((reader.width, reader.height)))
+        check(not spy.calls, "stderr 自报成功 → ffprobe 兜底完全未触发",
+              "spy=%s" % spy.calls)
         reader.stop()
 
 
@@ -286,15 +277,24 @@ def test_ffmpeg_params_unchanged():
     section("[E] FFmpeg 参数逐字未变（golden 列表）")
     reader = FFmpegReader("http://example.com/live.flv", width=1280, height=720)
     cmd = reader._build_ffmpeg_cmd()
+    # Golden 基线 = 迁移审计第 1 步 + 两把启动刀后的命令：
+    #   - -fflags 合并为单次出现（重复出现时 ffmpeg CLI 后者覆盖前者，
+    #     旧基线的 nobuffer/flush_packets 实际从未生效）；
+    #   - rw_timeout + reconnect 三项（断流自愈，仅 http(s) 输入注入）；
+    #   - loglevel info + -nostats：stderr dump 行供 reader 自报分辨率
+    #     （刀1，替代独立 ffprobe 二次连流），nostats 防进度行刷屏。
     expected = [
-        resolve_ffmpeg_path(), "-hide_banner", "-loglevel", "warning",
-        "-fflags", "nobuffer+flush_packets",
+        resolve_ffmpeg_path(), "-hide_banner", "-loglevel", "info", "-nostats",
+        "-fflags", "nobuffer+flush_packets+genpts",
         "-flags", "low_delay",
         "-flags2", "fast",
         "-probesize", "32768",
         "-analyzeduration", "100000",
         "-thread_queue_size", "1",
-        "-fflags", "+genpts",
+        "-rw_timeout", "15000000",
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
         "-hwaccel", "cuda",
         "-i", "http://example.com/live.flv",
         "-an", "-sn",
@@ -304,8 +304,27 @@ def test_ffmpeg_params_unchanged():
         "-pix_fmt", "bgr24",
         "-f", "rawvideo", "pipe:1",
     ]
-    check(cmd == expected, "命令与 Phase 3.2 完全一致",
+    check(cmd == expected, "命令与启动刀后基线完全一致",
           "\n    got=%s\n    exp=%s" % (cmd, expected))
+    # 断流自愈选项是 http 协议私有项：ffmpeg CLI 对不认识的输入选项直接报错
+    # 退出（lavfi/file 实测复现），因此非 http(s) URL 绝不能注入。
+    no_http = FFmpegReader("testsrc=duration=1:s=64x64",
+                           width=64, height=64, use_cuda=False)._build_ffmpeg_cmd()
+    check("非 http 输入不注入自愈选项",
+          not any(x in no_http for x in ("-rw_timeout", "-reconnect",
+                                         "-reconnect_streamed",
+                                         "-reconnect_delay_max")),
+          str(no_http[:16]))
+    # 刀2：flv 协议强制 live_flv demuxer + flv_ignore_prevtag；其他协议不注入
+    flv = FFmpegReader("http://example.com/live.flv", width=1280, height=720,
+                       protocol="flv")._build_ffmpeg_cmd()
+    check("flv 协议注入 live_flv + flv_ignore_prevtag",
+          "-f" in flv and "live_flv" in flv and "-flv_ignore_prevtag" in flv,
+          str(flv[:16]))
+    hls = FFmpegReader("http://example.com/live.m3u8", width=1280, height=720,
+                       protocol="hls")._build_ffmpeg_cmd()
+    check("hls 协议不注入 live_flv",
+          "live_flv" not in hls and "-flv_ignore_prevtag" not in hls)
     no_cuda = FFmpegReader("u", width=1, height=1, use_cuda=False)._build_ffmpeg_cmd()
     check("-hwaccel" not in no_cuda, "use_cuda=False 时不注入 -hwaccel")
 
@@ -314,19 +333,21 @@ def test_ffmpeg_params_unchanged():
 # [F] stop() 不被进行中的探测拖住
 # ----------------------------------------------------------------------
 def test_stop_not_blocked_by_probe():
-    section("[F] stop() 在探测进行中立即返回（探测进程被 kill）")
+    section("[F] stop() 在兜底探测进行中立即返回（探测进程被 kill）")
     import stream.video_info as video_info
 
     orig_cmd = video_info.build_probe_cmd
-    # 用一个"永不返回"的探测进程替代 ffprobe：验证的是 kill/解除等待这条路径，
-    # 与具体是哪个子进程无关（真 ffprobe 在不可达地址上的行为同理）
+    # 用一个"永不返回"的兜底探测进程替代 ffprobe：验证的是 kill/解除等待
+    # 这条路径。前提是子进程先死（不存在的文件 → 秒退）→ stderr 自报不可能
+    # → 读取线程立即走 ffprobe 兜底 → 兜底被换成永不返回的桩。
+    bad = os.path.join(MEDIA_DIR, "missing-for-stop.flv")
     video_info.build_probe_cmd = lambda url: [sys.executable, "-c",
                                               "import time; time.sleep(30)"]
-    reader = FFmpegReader(MEDIA, width=None, height=None, use_cuda=False)
+    reader = FFmpegReader(bad, width=None, height=None, use_cuda=False)
     try:
         reader.start()
         check(wait_until(lambda: reader._probe_process is not None, 5.0),
-              "探测进程已在运行")
+              "兜底探测进程已在运行")
         t0 = time.perf_counter()
         reader.stop()
         dt_ms = (time.perf_counter() - t0) * 1000.0

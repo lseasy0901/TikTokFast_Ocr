@@ -29,6 +29,7 @@ FFmpeg 低延迟读取模块 (Phase 1 - Step 3, 延迟优化)
 import collections
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -59,6 +60,15 @@ _PROBE_SKIP_REASON = "分辨率已知，无需探测"
 _PROBE_TIMEOUT_S = 5
 _FALLBACK_WIDTH = 1920
 _FALLBACK_HEIGHT = 1080
+
+# ---- 输入停滞看门狗（迁移审计第 1.5 步）----
+# 实测（房间 263970540685，pull-q5 节点）：CDN 存在"TCP 存活但静默断供"的
+# 停滞——21 秒零帧且无任何 IO 错误，IO 层 reconnect（只对可检出的断流生效）
+# 覆盖不到。看门狗在帧计数冻结超过 _STALL_TIMEOUT_S 后击杀子进程，读取线程
+# 以"同 URL 重启"响应（新连接即直播边缘），把源端断供造成的冻屏从 20s+ 压到
+# 约 4-5s。连续 _STALL_MAX_RESTARTS 次仍无帧则按真断流上报（防死流死循环）。
+_STALL_TIMEOUT_S = 4.0
+_STALL_MAX_RESTARTS = 5
 
 # ---- 音频第二路输出（AudioService，默认关闭） ----
 # 传输通道选型说明（Windows 实测，2026-09）：
@@ -117,7 +127,8 @@ class FFmpegReader:
     def __init__(self, stream_url, width=None, height=None, use_cuda=True,
                  http_headers=None, timing=None,
                  audio_enabled=False, audio_pcm_callback=None,
-                 audio_sample_rate=None, audio_channels=None):
+                 audio_sample_rate=None, audio_channels=None,
+                 protocol=None):
         """
         构造**不做任何网络探测**：尺寸要么是调用方给的确定值，要么是显式
         None（= 尺寸未知，留到读取线程里解析，见 :meth:`_resolve_pending_size`）。
@@ -201,6 +212,21 @@ class FFmpegReader:
         self._first_frame_time = None   # 首帧到达时间（相对start时间）
         self._start_time = None         # start()调用时间
         self._frames_skipped = 0        # 跳帧总数
+
+        # ---- 输入停滞看门狗状态 ----
+        #: 最近一次完整帧入槽的时刻（monotonic 秒）；None = 尚未有帧
+        self._last_frame_mono: float | None = None
+        #: True = 看门狗已击杀当前子进程、等待读取线程处理重启
+        self._stall_killed = False
+
+        # ---- 协议 / 分辨率自报（迁移审计刀1/刀2）----
+        #: 候选协议映射的强制 demuxer：仅 "flv" → live_flv（跳过格式探测 +
+        #: flv_ignore_prevtag 容错跳读）；hls/rtmp/None → 自动探测
+        self._input_format = "live_flv" if (protocol or "").lower() == "flv" else None
+        #: 子进程 stderr 自报的分辨率 (w, h) 与就绪事件（_size_pending 时使用，
+        #: 替代独立的 ffprobe 二次连流——迁移审计刀1）
+        self._stderr_size: tuple[int, int] | None = None
+        self._stderr_size_event = threading.Event()
 
         # FFmpeg stderr 尾部日志（最多保留20行，用于诊断连接失败）
         self._stderr_tail = collections.deque(maxlen=20)
@@ -342,6 +368,10 @@ class FFmpegReader:
         self._frames_skipped = 0
         self._start_time = time.perf_counter()
         self._first_frame_time = None
+        self._last_frame_mono = None
+        self._stall_killed = False
+        self._stderr_size = None
+        self._stderr_size_event.clear()
 
         # 音频监听 socket：bind/listen 在调用方线程（快，微秒级），ffmpeg 在
         # 转码开始前作为客户端连入。失败只禁用音频，绝不影响视频。
@@ -369,6 +399,12 @@ class FFmpegReader:
             daemon=True,
         )
         self._thread.start()
+        # 停滞看门狗：与读取线程平行的独立哨兵（daemon，stop() 后随 _running 退出）
+        threading.Thread(
+            target=self._stall_watchdog,
+            name="ffmpeg-stall-watchdog",
+            daemon=True,
+        ).start()
         return self
 
     def read_frame(self):
@@ -460,20 +496,10 @@ class FFmpegReader:
     # 内部实现
     # ------------------------------------------------------------------
     def _reader_loop(self):
-        """子线程入口：解析尺寸 -> 启动FFmpeg -> 逐帧读取 -> 跳帧到最新 -> 覆盖单槽"""
-        # 0. 尺寸未知的候选：在本线程内探测（Phase 3.3 —— 绝不在调用方线程等）
-        #    探测阶段的任何异常都必须转成 reader 错误：本线程静默死掉的话，
-        #    GUI 只会一直停在"连接中"，既不会换候选也不会报错。
-        try:
-            size_ready = self._resolve_pending_size()
-        except Exception as e:  # noqa: BLE001 - 探测路径不得让读取线程静默退出
-            self._set_error(f"尺寸探测异常: {e}")
-            self._running = False
-            return
-        if not size_ready:
-            # 已被 stop()：不启动 FFmpeg，也不留下任何待清理的资源
-            self._running = False
-            return
+        """子线程入口：启动FFmpeg -> stderr自报分辨率 -> 逐帧读取 -> 跳帧到最新 -> 覆盖单槽"""
+        # 0. 尺寸解析已并入下方 spawn 之后（迁移审计刀1）：分辨率来自同一条
+        #    连接的 stderr dump 行，不再有独立的 ffprobe 二次连流；解析失败的
+        #    回退路径仍是可中断的 ffprobe（见 _wait_size_from_stderr）。
 
         # 1+2. 启动 FFmpeg 并确认连接（含"无音频轨重启一次"重试）
         # 音频输出用非可选 -map 0:a：流无音频轨时 ffmpeg 在配置输出阶段（尚未
@@ -493,6 +519,25 @@ class FFmpegReader:
                     name="ffmpeg-stderr",
                     daemon=True,
                 ).start()
+
+                # 分辨率自报（刀1）：dump 行在 open 阶段即出现、先于首帧，来自
+                # 同一条连接；失败回退到可中断的 ffprobe（旧行为，stop() 会 kill）
+                if self._size_pending:
+                    if not self._wait_size_from_stderr(proc):
+                        if not self._running:
+                            self._cleanup_process(proc)
+                            return
+                        try:
+                            if not self._resolve_pending_size():
+                                # 期间被 stop()：不留下任何待清理的资源
+                                self._cleanup_process(proc)
+                                self._running = False
+                                return
+                        except Exception as e:  # noqa: BLE001 - 回退探测异常必须转 reader 错误
+                            self._set_error(f"尺寸探测异常: {e}")
+                            self._running = False
+                            self._cleanup_process(proc)
+                            return
 
                 if self._audio_enabled and not self._audio_thread_started:
                     self._start_audio_thread()
@@ -514,9 +559,14 @@ class FFmpegReader:
                 if frame_bytes:
                     break  # 正常拿到首帧，进入持续读取
 
-                # stdout EOF：进程已退出。若音频输出还没被连入过，最可能是
-                # "流无音频轨"（配置阶段即失败）。注意 stdout 管道关闭与进程
-                # 对象 signaled 之间有竞态，必须用带超时的 wait() 而不是 poll()。
+                # stdout EOF：进程已退出。若音频输出还没被连入过，存在两种
+                # 可能，必须用 stderr 证据区分（2026-10-01，"声音没了"修复）：
+                #   a) 真无音频轨：ffmpeg 在配置输出阶段报
+                #      "Stream map '0:a' matches no streams" → 去掉音频重启；
+                #   b) 瞬时连接失败（CDN 抖动/首次 403 等）：此时去掉音频重启
+                #      会造成"视频正常但声音悄悄消失"——必须带音频原样重启。
+                # 注意 stdout 管道关闭与进程对象 signaled 之间有竞态，必须用
+                # 带超时的 wait() 而不是 poll()。
                 if self._audio_enabled and not self._audio_accepted:
                     try:
                         proc.wait(timeout=1.5)
@@ -524,11 +574,20 @@ class FFmpegReader:
                     except subprocess.TimeoutExpired:
                         exited = False
                     if exited:
-                        logger.info("[FFMPEG] 音频输出导致启动失败（流可能无音频轨），"
-                                    "去掉音频输出重启")
-                        self._audio_enabled = False
-                        self._close_audio_server()
-                        self._notify_audio(None)   # None = 无音频轨
+                        no_audio_track = any(
+                            "matches no streams" in line
+                            for line in self._stderr_tail
+                        )
+                        if no_audio_track:
+                            logger.info("[FFMPEG] stderr 证实流无音频轨"
+                                        "（matches no streams），去掉音频输出重启")
+                            self._audio_enabled = False
+                            self._close_audio_server()
+                            self._notify_audio(None)   # None = 无音频轨
+                        else:
+                            logger.warning(
+                                "[FFMPEG] 首次启动失败但 stderr 无'无音频轨'证据"
+                                "（瞬时失败），保留音频输出原样重启")
                         self._cleanup_process(proc)
                         continue
 
@@ -571,42 +630,89 @@ class FFmpegReader:
             # 调用方传入计时对象时不由本层输出 —— 它还要记录 GUI 侧的首帧时刻。
             self._timing.log()
 
-        # 3. 持续逐帧读取（跳帧到最新）
+        # 3. 持续逐帧读取（跳帧到最新；带停滞看门狗的同 URL 自动重启）
+        # 外层 while 的每一次迭代 = 一个子进程生命周期；看门狗击杀后在原地
+        # 重新 spawn（新连接即直播边缘），GUI 与帧缓冲完全无感。
         error = None
-        try:
-            while self._running:
-                frame_bytes = proc.stdout.read(self._frame_size)
-                if not frame_bytes:
-                    if not self._running:
+        stall_restarts = 0
+        while self._running:
+            try:
+                while self._running:
+                    frame_bytes = proc.stdout.read(self._frame_size)
+                    if not frame_bytes:
+                        if self._stall_killed:
+                            # 看门狗击杀（源端静默断供）：走下方重启路径
+                            break
+                        if not self._running:
+                            break
+                        error = "视频断流：FFmpeg已停止输出（直播结束或网络中断）"
                         break
-                    error = "视频断流：FFmpeg已停止输出（直播结束或网络中断）"
-                    break
-                if len(frame_bytes) < self._frame_size:
-                    if not self._running:
+                    if len(frame_bytes) < self._frame_size:
+                        if self._stall_killed:
+                            # 击杀时管道残量不足一帧：半帧属于旧流，丢弃后走重启
+                            break
+                        if not self._running:
+                            break
+                        error = (
+                            "数据长度错误：帧数据不完整"
+                            "（实际视频尺寸与配置 width/height 不符，或视频断流）"
+                        )
                         break
-                    error = (
-                        "数据长度错误：帧数据不完整"
-                        "（实际视频尺寸与配置 width/height 不符，或视频断流）"
-                    )
-                    break
 
-                # Phase B-1：记录"刚读到的这帧之后、管道里还排着多少字节"。
-                # 必须在跳帧之前采样，否则测得的是排空后的残量，反映不出积压。
-                # 这是一次非阻塞 Peek，不读取、不改变读取逻辑。
-                self._sample_pipe_backlog(proc.stdout)
+                    # Phase B-1：记录"刚读到的这帧之后、管道里还排着多少字节"。
+                    # 必须在跳帧之前采样，否则测得的是排空后的残量，反映不出积压。
+                    # 这是一次非阻塞 Peek，不读取、不改变读取逻辑。
+                    self._sample_pipe_backlog(proc.stdout)
 
-                # ★ 延迟优化核心：跳帧读取
-                # 检查管道中是否还有完整帧可读，有则丢弃当前帧、读取更新的帧
-                # 这样确保我们始终持有管道中最新的帧，而非积压的旧帧
-                skipped = self._skip_to_latest(proc.stdout, frame_bytes)
-                if skipped is not None:
-                    # 有更新的帧，用最新的
-                    frame_bytes = skipped
+                    # ★ 延迟优化核心：跳帧读取
+                    # 检查管道中是否还有完整帧可读，有则丢弃当前帧、读取更新的帧
+                    # 这样确保我们始终持有管道中最新的帧，而非积压的旧帧
+                    skipped = self._skip_to_latest(proc.stdout, frame_bytes)
+                    if skipped is not None:
+                        # 有更新的帧，用最新的
+                        frame_bytes = skipped
 
-                self._store_frame(frame_bytes)
-        except Exception as e:
-            if self._running:
-                error = f"读取异常: {e}（FFmpeg进程已退出）"
+                    self._store_frame(frame_bytes)
+                    stall_restarts = 0   # 有帧产出：停滞重启预算重置
+            except Exception as e:
+                # 击杀瞬间的读异常（管道断裂等）同样属于停滞路径，不置错误
+                if self._running and not self._stall_killed:
+                    error = f"读取异常: {e}（FFmpeg进程已退出）"
+
+            # ---- 阶段结算：真错误/用户停止 → 收尾；看门狗击杀 → 重启 ----
+            if error is not None or not self._running:
+                break
+
+            if not self._stall_killed:
+                break   # 无停滞标记的 EOF：直播正常结束（error 已在上面置位）
+
+            self._stall_killed = False
+            stall_restarts += 1
+            if stall_restarts > _STALL_MAX_RESTARTS:
+                error = (f"输入停滞：连续 {stall_restarts - 1} 次自动重启后仍无数据"
+                         "（源端或网络持续不可用）")
+                break
+            logger.warning(
+                "[FFMPEG] 输入停滞，重启子进程回到直播边缘（第 %d/%d 次）",
+                stall_restarts, _STALL_MAX_RESTARTS,
+            )
+            self._cleanup_process(proc)
+            proc = None
+            if self._audio_enabled:
+                # 旧音频线程随连接断开已退出：重新武装，等待新子进程连入同一端口
+                self._audio_accepted = False
+                self._audio_thread_started = False
+            try:
+                proc = self._spawn_ffmpeg()
+            except Exception as e:
+                error = f"停滞重启失败: {e}"
+                break
+            self._process = proc
+            threading.Thread(target=self._drain_stderr, args=(proc,),
+                             name="ffmpeg-stderr", daemon=True).start()
+            if self._audio_enabled and not self._audio_thread_started:
+                self._start_audio_thread()
+            # 回到读帧循环：下一次 read 自然拿到重启后的首帧
 
         # 4. 收尾
         self.connected = False
@@ -726,6 +832,39 @@ class FFmpegReader:
             self._latest_frame = frame
             self._frame_id += 1
         self.frames_read += 1
+        self._last_frame_mono = time.monotonic()
+
+    def _stall_watchdog(self):
+        """输入停滞看门狗（独立线程，只做一件事：发现停滞 → 击杀子进程）。
+
+        连接建立后帧时间戳冻结超过 _STALL_TIMEOUT_S → 击杀当前子进程。读取
+        线程阻塞中的 stdout.read() 会立即以 EOF 返回，据此走"同 URL 重启"
+        路径（新连接即直播边缘）。这覆盖 IO 层 reconnect 触发不到的场景：
+        TCP 存活但 CDN 静默断供/慢滴（实测 21s 零帧无任何 IO 错误）。
+        一次只允许一个在途击杀（_stall_killed 标志），重启预算的计数与上限
+        在读取线程的结算段处理。
+        """
+        while self._running:
+            time.sleep(0.5)
+            if not self._running or not self.connected:
+                continue
+            last = self._last_frame_mono
+            if last is None or self._stall_killed:
+                continue
+            if time.monotonic() - last <= _STALL_TIMEOUT_S:
+                continue
+            proc = self._process
+            if proc is None or proc.poll() is not None:
+                continue
+            self._stall_killed = True
+            logger.warning(
+                "[FFMPEG] 输入停滞超过 %ds（源端静默断供），击杀子进程以重启回直播边缘",
+                int(_STALL_TIMEOUT_S),
+            )
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001 - 已在退出的进程不值得再报错
+                pass
 
     def _build_ffmpeg_cmd(self, with_audio: bool | None = None):
         """构造 FFmpeg 极低延迟参数（CUDA 按需追加）
@@ -734,20 +873,46 @@ class FFmpegReader:
         """
         if with_audio is None:
             with_audio = self._audio_enabled
-        cmd = [resolve_ffmpeg_path(), "-hide_banner", "-loglevel", "warning"]
+        # loglevel info + -nostats：stderr 里会出现一次性的 "Stream #0:0 ...
+        # 1280x720" dump 行，读取线程据此自报分辨率（替代独立的 ffprobe 二次
+        # 连流）；-nostats 压掉周期性进度行，保 stderr_tail 可用于错误诊断。
+        cmd = [resolve_ffmpeg_path(), "-hide_banner", "-loglevel", "info", "-nostats"]
 
         # ---- 输入侧：极致低延迟参数 ----
-        cmd += ["-fflags", "nobuffer+flush_packets"]  # 关闭输入缓冲 + 立即刷出包
+        # 注意：-fflags 只能出现一次。ffmpeg CLI 把 per-file 选项存进
+        # AVDictionary（av_dict_set 默认替换语义），重复的 -fflags 是后者覆盖
+        # 前者——历史上分写的两次导致 nobuffer/flush_packets 被 +genpts 丢掉
+        #（迁移审计 P0-1 修复）。
+        cmd += ["-fflags", "nobuffer+flush_packets+genpts"]  # 关输入缓冲+立即刷包+缺PTS补全
         cmd += ["-flags", "low_delay"]                 # 低延迟解码
         cmd += ["-flags2", "fast"]                     # 快速解码（跳过不重要帧）
         cmd += ["-probesize", "32768"]                 # 32KB探测：快且足够检测FLV+h264
         cmd += ["-analyzeduration", "100000"]          # 0.1s分析：足够检测参数，快速启动
         cmd += ["-thread_queue_size", "1"]             # 输入线程队列只留1包
-        cmd += ["-fflags", "+genpts"]                  # 生成PTS（缺少时补全，避免等待）
+
+        # ---- 断流自愈（仅 http(s) 输入；迁移审计 P0-2，参数取自 live-player 逆向报告）----
+        # 这四项是 http 协议私有选项，而 ffmpeg CLI 对"该输入不认识的选项"
+        # 会直接报错退出（lavfi/file 实测复现 "Option reconnect not found."），
+        # 因此必须按 URL 协议条件注入。
+        # rw_timeout：网络读/写超时，卡死的连接 15s 内必然报错退出，而不是让
+        #   stdout.read() 永久阻塞、界面无休止停在"连接中"。
+        # reconnect 三项：http(s) 层自动重拉同一 URL（FLV 重挂即回直播边缘），
+        #   把秒级网络抖动的恢复成本从"子进程退出→整条重连"降为 IO 层 1~5s 自愈。
+        if str(self.stream_url).lower().startswith(("http://", "https://")):
+            cmd += ["-rw_timeout", "15000000"]
+            cmd += ["-reconnect", "1"]
+            cmd += ["-reconnect_streamed", "1"]
+            cmd += ["-reconnect_delay_max", "5"]
 
         # ---- CUDA 硬件解码 ----
         if self.use_cuda:
             cmd += ["-hwaccel", "cuda"]  # GPU解码，帧自动回传CPU（rawvideo需要CPU内存）
+
+        # ---- 强制 demuxer（迁移审计刀2，live-player 实证参数）----
+        # flv 候选跳过格式探测（省探测开销且不依赖探测收敛），
+        # flv_ignore_prevtag 容错跳读坏 tag；hls/rtmp/未知协议不注入。
+        if self._input_format == "live_flv":
+            cmd += ["-f", "live_flv", "-flv_ignore_prevtag", "1"]
 
         # ---- 平台请求上下文（Phase 2.4）----
         # 必须放在 -i **之前**：这些都是 input option，放到 -i 之后会被当成
@@ -813,15 +978,69 @@ class FFmpegReader:
         self._timing.mark(STAGE_FFMPEG_SPAWN)
         return proc
 
+    #: ffmpeg 对输入的 dump 行：`Stream #0:0...: Video: h264 ..., 1280x720, ...`
+    _STREAM_SIZE_RE = re.compile(r"Stream #\d+.*?: Video: .*?(\d{2,5})x(\d{2,5})[,\s]")
+
     def _drain_stderr(self, proc):
-        """排空 FFmpeg stderr，保留最近若干行用于诊断"""
+        """排空 FFmpeg stderr，保留最近若干行用于诊断；
+        尺寸未知时同步从 dump 行自报分辨率（迁移审计刀1）。"""
         try:
             for line in proc.stderr:
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
                     self._stderr_tail.append(text)
+                    if (self._size_pending
+                            and self._stderr_size is None
+                            and "Video:" in text):
+                        m = self._STREAM_SIZE_RE.search(text)
+                        if m:
+                            self._stderr_size = (int(m.group(1)), int(m.group(2)))
+                            self._stderr_size_event.set()
         except Exception:
             pass
+
+    def _wait_size_from_stderr(self, proc, timeout_s: float = 10.0) -> bool:
+        """等待子进程 stderr 自报分辨率并落到 self.width/height。
+
+        这是刀1 的核心：分辨率来自**同一条流连接**的 dump 行（open 阶段就有，
+        先于首帧），替代独立的 ffprobe 二次连流。
+
+        等待是 stop 感知与子进程死亡感知的：
+            - stop() 置 _running=False → 立即返回 False（不拖住 join）；
+            - 子进程已退出（坏 URL 等）→ dump 永远不会来 → 立即回退，
+              不把 failover 拖满超时。
+
+        :return: True = 尺寸已就绪；False = 超时/停止/子进程已死（调用方回退）
+        """
+        if not self._size_pending:
+            return True
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if not self._running:
+                return False
+            if self._stderr_size_event.wait(0.2):
+                break
+            if proc is not None and proc.poll() is not None:
+                break
+        if self._stderr_size_event.is_set() and self._stderr_size:
+            w, h = self._stderr_size
+            self.width = int(w)
+            self.height = int(h)
+            self._frame_size = self.width * self.height * 3
+            self._size_pending = False
+            self._timing.note(f"size={self.width}x{self.height}(stderr)")
+            # 探测耗时不属于"FFmpeg 启动到首帧"：把计时起点挪到此刻，
+            # 让 first_frame_ms 保持原义（与 _resolve_pending_size 的处理一致）。
+            self._start_time = time.perf_counter()
+            return True
+        if self._running:
+            logger.warning(
+                "[FFMPEG] %.0fs 内未从 stderr 解析到分辨率（子进程存活=%s），"
+                "回退 ffprobe 探测",
+                timeout_s,
+                proc is not None and proc.poll() is None,
+            )
+        return False
 
     # ------------------------------------------------------------------
     # 音频第二路输出（回环 TCP）：监听 -> ffmpeg 连入 -> 逐块回调

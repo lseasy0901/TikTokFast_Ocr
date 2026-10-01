@@ -189,7 +189,7 @@ def t_ffmpeg_cmd():
     check("无 headers 时命令里没有 -headers",
           "-headers" not in base)
     check("仍保留低延迟参数",
-          all(x in base for x in ("-fflags", "nobuffer+flush_packets", "-flags",
+          all(x in base for x in ("-fflags", "nobuffer+flush_packets+genpts", "-flags",
                                   "low_delay", "-probesize", "-analyzeduration",
                                   "-thread_queue_size")),
           str(base[:20]))
@@ -273,8 +273,13 @@ def t_mainwindow_wiring():
     captured = {}
 
     class _SpyReader:
+        # 签名必须与 _start_playback 的真实构造调用一致（含音频第二路参数），
+        # 否则构造即 TypeError → 全部尝试同步失败 → 断言全部失真（2026-10-01 修复）。
         def __init__(self, url, width=None, height=None, use_cuda=True,
-                     http_headers=None, timing=None):
+                     http_headers=None, timing=None,
+                     audio_enabled=False, audio_pcm_callback=None,
+                     audio_sample_rate=None, audio_channels=None,
+                     protocol=None):
             captured.update(url=url, width=width, height=height,
                             use_cuda=use_cuda, http_headers=http_headers,
                             timing=timing)
@@ -299,6 +304,10 @@ def t_mainwindow_wiring():
     mw.FFmpegReader = _SpyReader
     try:
         win = mw.MainWindow()
+        # 压掉"首次进入直播间询问备注"的模态弹窗：record_success 会触发
+        # set_remark_callback 注册的回调，默认实现弹模态对话框，offscreen
+        # 测试环境会永久阻塞（该功能晚于本测试出现；2026-10-01 修复）。
+        win._history.set_remark_callback(lambda url, room_id: None)
 
         # --- 隔离自证：这个真实 MainWindow 只能落在临时目录里 -------------
         # 只改环境变量是不够的 —— 若某个对象在 import 期就把真实路径缓存了
@@ -308,8 +317,10 @@ def t_mainwindow_wiring():
         import utils.stream_history as stream_history
 
         print("   （临时根: %s）" % _TEMP_ROOT)
+        # MainWindow 的历史服务属性是 _history（HistoryService），
+        # 仓库落盘路径在内部的 _repo 上（service/repository 两层结构）。
         for label, path, tmproot in (
-                ("StreamHistory", win._stream_history._file_path,
+                ("StreamHistory", win._history._repo._file_path,
                  _TEMP_LOCALAPPDATA),
                 ("FirstRunStore", win._first_run_store.path, _TEMP_LOCALAPPDATA),
                 ("LicenseStore", win._license_manager.store.path,
@@ -317,7 +328,7 @@ def t_mainwindow_wiring():
             check(f"[隔离] 已构造的 {label} 落在临时目录",
                   under(path, tmproot), str(path))
         for label, path, real_root in (
-                ("StreamHistory", win._stream_history._file_path,
+                ("StreamHistory", win._history._repo._file_path,
                  _SAVED_ENV.get("LOCALAPPDATA")),
                 ("FirstRunStore", win._first_run_store.path,
                  _SAVED_ENV.get("LOCALAPPDATA")),
@@ -339,7 +350,8 @@ def t_mainwindow_wiring():
               license_store.default_data_dir())
 
         # 会话中真实写盘一次，确认落点也只在临时目录里
-        win._stream_history.add_or_update("https://www.huya.com/隔离自证", "")
+        # （HistoryService 的写入口是 record_success："只有成功进入直播间才写"）
+        win._history.record_success("https://www.huya.com/隔离自证", "")
         moved = [p for p in _walk_files(_TEMP_ROOT)
                  if os.path.basename(p) == "stream_history.json"]
         check("[隔离] 运行时写出的 stream_history.json 在临时目录内",

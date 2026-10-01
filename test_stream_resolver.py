@@ -81,6 +81,10 @@ class _FakeSession:
     def get_dict(self):
         return {}
 
+    def update(self, cookies):
+        """Cookie 持久化回灌用（_ensure_session_cookies）；桩无状态，直接忽略"""
+        return None
+
     def get(self, url, **kw):
         if url.rstrip("/") == "https://live.douyin.com":
             return _FakeResp(200, "<html>home</html>", url=url)
@@ -277,7 +281,8 @@ def t_quality_order():
     ds = stub_resolution(new_stream(pace_f_html(
         {"flv_pull_url": {"SD": url_of("sd"), "HD1": url_of("hd1"),
                           "FULL_HD1": url_of("fhd")}})))
-    check("HD1 > FULL_HD1 > SD", ds.get_stream_url()["stream_url"] == url_of("hd1"))
+    check("FULL_HD1 > HD1 > SD（原画优先，第 2 步修订）",
+          ds.get_stream_url()["stream_url"] == url_of("fhd"))
 
     ds = stub_resolution(new_stream(pace_f_html(
         {"flv_pull_url": {"SD": url_of("sd"), "FULL_HD1": url_of("fhd")}})))
@@ -292,9 +297,9 @@ def t_quality_order():
         {"flv_pull_url": {"WEIRD_A": url_of("wa"), "WEIRD_B": url_of("wb")}})))
     check("未知键回退到字典序第一个", ds.get_stream_url()["stream_url"] == url_of("wa"))
 
-    # 完整顺序枚举
-    all_keys = ("HD1", "HD", "FHD1", "FHD", "FULL_HD1", "full",
-                "origin", "SD1", "SD2", "SD", "0", "1")
+    # 完整顺序枚举（第 2 步修订：原画优先，见 _QUALITY_PRIORITY 注释）
+    all_keys = ("FULL_HD1", "full", "origin", "FHD1", "FHD",
+                "HD1", "HD", "SD1", "SD2", "SD", "0", "1")
     info = stub_resolution(new_stream(pace_f_html(
         {"flv_pull_url": {k: url_of(k) for k in all_keys}}))).get_stream_info()
     got = [c.quality for c in info.candidates]
@@ -329,15 +334,17 @@ def t_selection():
 def t_size():
     print("\n[9] 宽高信息传递")
     obj = {"flv_pull_url": {"HD1": FLV_HD1}}
+    # 迁移审计刀1 新契约：解析层不再探测分辨率（FFmpegReader 从子进程
+    # stderr 自报，同一连接零额外开销），StreamInfo.width 恒为 None。
     info = stub_resolution(new_stream(pace_f_html(obj)), 1280, 720).get_stream_info()
-    check("width 传递", info.width == 1280)
-    check("height 传递", info.height == 720)
+    check("width 恒 None（探测已下沉到 reader）", info.width is None)
+    check("height 恒 None", info.height is None)
 
     ds = new_stream(pace_f_html(obj))
-    ds._detect_video_resolution = lambda url: None      # 探测失败
+    ds._detect_video_resolution = lambda url: None      # 旧钩子保留：不应再被调用
     info = ds.get_stream_info()
-    check("探测失败时 width 为 None（由调用方决定兜底）", info.width is None)
-    check("探测失败仍能拿到地址", info.url == FLV_HD1)
+    check("无探测路径下 width 仍为 None", info.width is None)
+    check("仍能拿到地址", info.url == FLV_HD1)
 
 
 # ----------------------------------------------------------------------
@@ -385,9 +392,8 @@ def t_end_to_end():
     page = pace_f_html(obj)
 
     orig_fetch = DouyinStream._fetch_room_page
-    orig_detect = DouyinStream._detect_video_resolution
     DouyinStream._fetch_room_page = lambda self: page
-    DouyinStream._detect_video_resolution = lambda self, url: VideoInfo(1280, 720, "yuv420p", 30.0, "h264")
+    # 刀1 后解析层不再调用 _detect_video_resolution（方法已移除），无需再桩
     try:
         got = {}
 
@@ -414,15 +420,23 @@ def t_end_to_end():
             check("room_id 正确", info.room_id == ROOM_ID)
             check("url 正确", info.url == FLV_HD1)
             check("protocol 正确", info.protocol == "flv")
-            check("width/height 正确", (info.width, info.height) == (1280, 720))
+            check("width/height 恒 None（探测已下沉到 reader）",
+                  (info.width, info.height) == (None, None))
             check("candidates 非空", len(info.candidates) >= 2)
     finally:
         DouyinStream._fetch_room_page = orig_fetch
-        DouyinStream._detect_video_resolution = orig_detect
 
     # 失败路径也要走通
     orig_fetch = DouyinStream._fetch_room_page
+    orig_init_session = DouyinStream._init_session
+    orig_api = DouyinStream._get_stream_from_api
     DouyinStream._fetch_room_page = lambda self: "<html>nothing</html>"
+    # 页面无数据时的 API 兜底改桩：这条测试验证"失败 → error 回调"的接线，
+    # 不应依赖真实抖音接口的可达性（限频/风控会让它挂满超时窗口）
+    def _stub_api(self):
+        raise DouyinStreamError("[API] 桩：接口不可用")
+    DouyinStream._get_stream_from_api = _stub_api
+    DouyinStream._init_session = lambda self: None
     try:
         got = {}
         w = _ConnectWorker(live_url=ROOM_URL, on_success=lambda i: got.setdefault("info", i),
@@ -436,6 +450,8 @@ def t_end_to_end():
         check("失败路径回调 error", "error" in got and "info" not in got, str(got))
     finally:
         DouyinStream._fetch_room_page = orig_fetch
+        DouyinStream._init_session = orig_init_session
+        DouyinStream._get_stream_from_api = orig_api
 
     # registry / resolver 结构
     # Phase 2 起注册表同时包含抖音与虎牙；抖音仍注册在首位，且按主机名互斥，

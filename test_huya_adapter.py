@@ -309,14 +309,16 @@ def t_resolver_integration():
     check("selected 是首个候选", info.selected is info.candidates[0])
     check("StreamInfo.url 来自 selected", info.url == info.candidates[0].url)
     check("StreamInfo.protocol == 'flv'", info.protocol == "flv")
-    check("width/height 来自探测器", (info.width, info.height) == (1280, 720),
+    # 迁移审计刀1 新契约：解析层不再探测分辨率（reader 从子进程 stderr 自报）
+    check("width/height 恒 None（探测已下沉到 reader）",
+          (info.width, info.height) == (None, None),
           f"{info.width}x{info.height}")
-    check("只对选中候选做了一次探测", adapter.probed == info.url)
+    check("解析层不再调用探测", not hasattr(adapter, "probed"))
 
-    # 探测失败时仍应拿到可用地址（与抖音一致）
+    # 无探测路径下同样返回完整结果
     info2 = _StubAdapter(load_fixture(), video_info=None).resolve(HUYA_URL)
-    check("探测失败仍返回地址", bool(info2.url))
-    check("探测失败时 width 为 None（交给调用方兜底）", info2.width is None)
+    check("仍返回地址", bool(info2.url))
+    check("width 为 None", info2.width is None)
 
     # Resolver 抛出的是统一异常类型
     check("无适配器时抛 StreamResolveError",
