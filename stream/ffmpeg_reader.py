@@ -202,6 +202,11 @@ class FFmpegReader:
 
         # 单槽"最新帧"：只保留最近一帧，旧帧直接丢弃
         self._latest_frame = None
+        #: H1 诊断（FIX-5）：与 _latest_frame **同一次加锁**写入的帧号与落槽时刻，
+        #: 保证 frame / seq / t 三者一定属于同一帧——消除"先读 frame_id 再读
+        #: frame"两次独立加锁之间被写入新帧的竞态。
+        self._latest_frame_seq: int | None = None
+        self._latest_frame_t: float = 0.0
         self._frame_id = 0
         self._frame_lock = threading.Lock()
 
@@ -418,6 +423,18 @@ class FFmpegReader:
         with self._frame_lock:
             return self._latest_frame
 
+    def read_frame_with_seq(self):
+        """原子地返回 (frame, seq, t_store)。
+
+        FIX-5：三者在**同一次加锁**内取出，因此一定属于同一帧。调用方不应
+        再用「先读 frame_id 再读 frame」的两步法——那两次加锁之间 reader 线程
+        可能写入新帧，导致帧号与帧内容错位（实测可差 1 帧 ≈16.7ms）。
+
+        :return: (numpy.ndarray|None, int|None, float)；无帧时 (None, None, 0.0)
+        """
+        with self._frame_lock:
+            return self._latest_frame, self._latest_frame_seq, self._latest_frame_t
+
     def stop(self):
         """停止 FFmpeg 并释放资源（可重复调用，线程安全）"""
         self._running = False
@@ -544,14 +561,28 @@ class FFmpegReader:
                     self._start_audio_thread()
 
                 # 阻塞读取第一帧，确认连接是否成功
+                # H1 诊断（FIX-4）：只记录 read() 的阻塞耗时与结果，不改变读取语义。
+                _t_read0 = time.perf_counter() if TRACE.enabled else 0.0
                 try:
                     frame_bytes = proc.stdout.read(self._frame_size)
                 except Exception as e:
+                    if TRACE.enabled:
+                        TRACE.note_read((time.perf_counter() - _t_read0) * 1000.0,
+                                        0, "error")
                     if self._running:
                         self._set_error(f"读取首帧异常: {e}")
                     self._cleanup_process(proc)
                     self._running = False
                     return
+                if TRACE.enabled:
+                    if not frame_bytes:
+                        _oc = "eof"
+                    elif len(frame_bytes) < self._frame_size:
+                        _oc = "partial"
+                    else:
+                        _oc = "ok"
+                    TRACE.note_read((time.perf_counter() - _t_read0) * 1000.0,
+                                    len(frame_bytes or b""), _oc)
 
                 if not self._running:
                     self._cleanup_process(proc)
@@ -639,18 +670,36 @@ class FFmpegReader:
         while self._running:
             try:
                 while self._running:
+                    # H1 诊断（FIX-4）：记录 read() 阻塞耗时与结果（EOF/半帧/异常），
+                    # 与 _store_frame 中的解析耗时分开；不改变任何读取语义。
+                    _t_read0 = time.perf_counter() if TRACE.enabled else 0.0
                     frame_bytes = proc.stdout.read(self._frame_size)
+                    if TRACE.enabled:
+                        if not frame_bytes:
+                            _oc = "eof"
+                        elif len(frame_bytes) < self._frame_size:
+                            _oc = "partial"
+                        else:
+                            _oc = "ok"
+                        TRACE.note_read((time.perf_counter() - _t_read0) * 1000.0,
+                                        len(frame_bytes or b""), _oc)
                     if not frame_bytes:
                         if self._stall_killed:
                             # 看门狗击杀（源端静默断供）：走下方重启路径
+                            if TRACE.enabled:
+                                TRACE.note_event("eof_after_stall_kill")
                             break
                         if not self._running:
                             break
                         error = "视频断流：FFmpeg已停止输出（直播结束或网络中断）"
+                        if TRACE.enabled:
+                            TRACE.note_event("stream_eof")
                         break
                     if len(frame_bytes) < self._frame_size:
                         if self._stall_killed:
                             # 击杀时管道残量不足一帧：半帧属于旧流，丢弃后走重启
+                            if TRACE.enabled:
+                                TRACE.note_event("partial_after_stall_kill")
                             break
                         if not self._running:
                             break
@@ -658,6 +707,8 @@ class FFmpegReader:
                             "数据长度错误：帧数据不完整"
                             "（实际视频尺寸与配置 width/height 不符，或视频断流）"
                         )
+                        if TRACE.enabled:
+                            TRACE.note_event("partial_frame")
                         break
 
                     # Phase B-1：记录"刚读到的这帧之后、管道里还排着多少字节"。
@@ -677,6 +728,8 @@ class FFmpegReader:
                     stall_restarts = 0   # 有帧产出：停滞重启预算重置
             except Exception as e:
                 # 击杀瞬间的读异常（管道断裂等）同样属于停滞路径，不置错误
+                if TRACE.enabled:
+                    TRACE.note_event("read_exception")
                 if self._running and not self._stall_killed:
                     error = f"读取异常: {e}（FFmpeg进程已退出）"
 
@@ -692,11 +745,15 @@ class FFmpegReader:
             if stall_restarts > _STALL_MAX_RESTARTS:
                 error = (f"输入停滞：连续 {stall_restarts - 1} 次自动重启后仍无数据"
                          "（源端或网络持续不可用）")
+                if TRACE.enabled:
+                    TRACE.note_event("restart_budget_exhausted")
                 break
             logger.warning(
                 "[FFMPEG] 输入停滞，重启子进程回到直播边缘（第 %d/%d 次）",
                 stall_restarts, _STALL_MAX_RESTARTS,
             )
+            if TRACE.enabled:
+                TRACE.note_event("stall_restart")
             self._cleanup_process(proc)
             proc = None
             if self._audio_enabled:
@@ -707,6 +764,8 @@ class FFmpegReader:
                 proc = self._spawn_ffmpeg()
             except Exception as e:
                 error = f"停滞重启失败: {e}"
+                if TRACE.enabled:
+                    TRACE.note_event("restart_spawn_failed")
                 break
             self._process = proc
             threading.Thread(target=self._drain_stderr, args=(proc,),
@@ -828,19 +887,28 @@ class FFmpegReader:
 
     def _store_frame(self, frame_bytes):
         """将一帧字节串转为 numpy 视图并写入单槽（覆盖旧帧 = 主动丢帧）"""
+        # H1 诊断（FIX-4）：把"字节 → numpy 帧对象"的解析/构造耗时单独计量，
+        # 与 stdout.read() 的等待耗时区分开。
+        _t_p0 = time.perf_counter() if TRACE.enabled else 0.0
         # np.frombuffer + reshape 为零拷贝视图：不产生 Python 层像素复制
         frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(
             (self.height, self.width, 3)
         )
+        if TRACE.enabled:
+            TRACE.note_parse((time.perf_counter() - _t_p0) * 1000.0)
+        # 统一用 perf_counter：本环境下 time.monotonic() 是 GetTickCount64
+        # （分辨率 15.6ms）且起点与 perf_counter 不同，不足以刻画逐帧时序，
+        # 也不可与其它模块的 perf_counter 相减。
+        _t_store = time.perf_counter()
         with self._frame_lock:
             self._latest_frame = frame
             self._frame_id += 1
             seq = self._frame_id
+            # FIX-5：帧号与落槽时刻与帧本体在同一次加锁内写入
+            self._latest_frame_seq = seq
+            self._latest_frame_t = _t_store
         self.frames_read += 1
-        # H1 诊断：统一用 perf_counter。本环境下 time.monotonic() 是
-        # GetTickCount64（分辨率 15.6ms）且起点与 perf_counter 不同，
-        # 不足以刻画逐帧时序，也不可与其它模块的 perf_counter 相减。
-        self._last_frame_mono = time.perf_counter()
+        self._last_frame_mono = _t_store
         if TRACE.enabled:
             TRACE.note(S_STORE, seq)
             TRACE.bump("c_stored")
