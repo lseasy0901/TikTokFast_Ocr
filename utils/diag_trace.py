@@ -125,6 +125,9 @@ class DiagTrace:
         self.c_events_lost = 0      # 环形缓冲覆盖导致的丢失
         # ---- 关联失败：**累计**，每个事件最多计一次 ----
         self.c_assoc_fail = 0
+        #: 最近若干次关联失败的明细（有界）：(pair 名或 "no_seq", seq)。
+        #: 目的：assoc_fail 不再是"只增黑盒"——失败可归因。
+        self._fail_log: collections.deque = collections.deque(maxlen=64)
         # ---- 只读镜像：由调用方在低频汇总时写入 ----
         self.ext_overwritten = 0
         self.ext_notify = 0
@@ -283,27 +286,39 @@ class DiagTrace:
                 # 无关联事件：每个事件只计一次
                 self.c_assoc_fail += 1
                 window_fail += 1
+                self._fail_log.append(("no_seq:" + stage, None))
                 continue
             slot = self._open.get(seq)
             if slot is None:
-                slot = self._open[seq] = {}
-            slot[stage] = t
+                slot = self._open[seq] = {"t": {}, "done": set()}
+            # 同一 (seq, stage) 保留**首次**观测：后续重复事件（GUI 对同一帧
+            # 的重复 consume / 重复 paint）不覆盖首次时序，也不参与二次配对。
+            slot["t"].setdefault(stage, t)
 
-        # 完成配对 → 喂样本窗（每个 (seq, pair) 只算一次）
+        # 完成配对 → 喂样本窗（每个 (seq, pair) 只配**一次**）
         for seq, slot in list(self._open.items()):
+            times = slot["t"]
+            done = slot["done"]
             for name, a, b in PAIRS:
-                ta = slot.get(a)
-                tb = slot.get(b)
+                if name in done:
+                    continue
+                ta = times.get(a)
+                tb = times.get(b)
                 if ta is None or tb is None:
                     continue
                 delta = tb - ta
-                slot.pop(a, None)          # 已消费，避免下次重复配对
                 if delta < 0:
+                    # 负 delta 同样终结该 (seq,pair)：时序倒挂是结构性事件，
+                    # 重试只会重复计数（契约：每事件最多计一次）。
+                    done.add(name)
                     self.c_assoc_fail += 1
                     window_fail += 1
+                    self._fail_log.append((name, seq))
                     continue
+                done.add(name)             # 该 (seq,pair) 终结，重复事件不再配对
+                times.pop(a, None)         # 起点已消费；终点保留给链上下一对
                 self._samples[name].append(delta * 1000.0)
-            if not slot:
+            if not times and not done:
                 self._open.pop(seq, None)
 
         # 有界：只保留最近的 seq 槽位
@@ -348,6 +363,7 @@ class DiagTrace:
                 "last_event": (self._last_event[0],
                                self._last_event[1] - self._t0)
                 if self._last_event else None,
+                "fail_log": list(self._fail_log),
             },
             "read": {
                 "calls": self.c_read_calls,
