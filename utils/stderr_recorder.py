@@ -270,6 +270,12 @@ class StderrRecorder:
 #: 全局单例。关闭状态下 feed 是一次布尔判断。
 STDERR_RECORDER = StderrRecorder()
 
+# H6 生产采集修复：启用时自动启动落盘（此前 start_output 无人调用，
+# DLV_STDERR_LOG=1 不会产生文件）。路径可用 DLV_STDERR_LOG_FILE 覆盖；
+# 启动失败不抛出：记 last_error，feed 退化为丢弃计数（不影响消费线程）。
+if STDERR_RECORDER.enabled:
+    STDERR_RECORDER.start()
+
 
 def shutdown_stderr_recorder(timeout: float = DEFAULT_STOP_TIMEOUT) -> bool:
     """进程收尾时调用（幂等）；未启用时安全。"""

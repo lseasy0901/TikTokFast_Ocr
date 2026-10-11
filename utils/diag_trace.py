@@ -488,3 +488,11 @@ class DiagTrace:
 
 #: 全局单例。关闭状态下所有方法都是"一次布尔判断 + 返回"。
 TRACE = DiagTrace()
+
+# H6 生产采集修复：启用时自动启动 JSONL 输出。
+# 此前仅 feed/queue 生效而无人调用 start_output()——生产环境设置
+# DLV_DIAG_TRACE=1 不会产生任何文件。输出路径与间隔可用
+# DLV_DIAG_TRACE_FILE / DLV_DIAG_TRACE_INTERVAL 覆盖；
+# 启动失败（路径不可写等）不抛出：记录 last_output_error 并继续采集入内存环形缓冲。
+if TRACE.enabled:
+    TRACE.start_output()
