@@ -908,11 +908,15 @@ class FFmpegReader:
             # FIX-5：帧号与落槽时刻与帧本体在同一次加锁内写入
             self._latest_frame_seq = seq
             self._latest_frame_t = _t_store
+            # H1 竞态修复：store 埋点必须在**锁内**完成。若在锁释放后才
+            # note，桥接线程可能先观察到新 seq 并记下 bridge 时间戳，
+            # 随后 reader 的 store 时间戳才入队 → delta<0 被误判为关联失败
+            # （真实链路实测发生率 ≈1.4%，2008 帧中 133 次）。
+            if TRACE.enabled:
+                TRACE.note(S_STORE, seq)
+                TRACE.bump("c_stored")
         self.frames_read += 1
         self._last_frame_mono = _t_store
-        if TRACE.enabled:
-            TRACE.note(S_STORE, seq)
-            TRACE.bump("c_stored")
 
     def _stall_watchdog(self):
         """输入停滞看门狗（独立线程，只做一件事：发现停滞 → 击杀子进程）。
