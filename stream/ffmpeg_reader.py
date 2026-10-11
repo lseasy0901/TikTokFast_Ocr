@@ -39,6 +39,7 @@ import time
 import numpy as np
 
 from utils.diag_trace import TRACE, S_STORE
+from utils.stderr_recorder import STDERR_RECORDER
 from utils.runtime_paths import resolve_ffmpeg_path
 from utils.startup_timing import (
     STAGE_FFMPEG_SPAWN,
@@ -1062,12 +1063,17 @@ class FFmpegReader:
 
     def _drain_stderr(self, proc):
         """排空 FFmpeg stderr，保留最近若干行用于诊断；
-        尺寸未知时同步从 dump 行自报分辨率（迁移审计刀1）。"""
+        尺寸未知时同步从 dump 行自报分辨率（迁移审计刀1）。
+
+        O-1：每行旁路喂给 STDERR_RECORDER（put_nowait，永不阻塞本线程）；
+        采集关闭时 feed 是一次布尔判断。"""
         try:
             for line in proc.stderr:
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
                     self._stderr_tail.append(text)
+                    if STDERR_RECORDER.enabled:
+                        STDERR_RECORDER.feed(text)
                     if (self._size_pending
                             and self._stderr_size is None
                             and "Video:" in text):
@@ -1075,8 +1081,10 @@ class FFmpegReader:
                         if m:
                             self._stderr_size = (int(m.group(1)), int(m.group(2)))
                             self._stderr_size_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            # 排空线程静默死亡会让 stderr 积压 → FFmpeg 阻塞，必须留下痕迹
+            if self._running:
+                logger.warning("[FFMPEG] stderr 排空线程异常退出: %s", e)
 
     def _wait_size_from_stderr(self, proc, timeout_s: float = 10.0) -> bool:
         """等待子进程 stderr 自报分辨率并落到 self.width/height。
