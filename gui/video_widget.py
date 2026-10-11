@@ -19,6 +19,8 @@ from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QPen
 from PySide6.QtWidgets import QWidget
 
+from utils.diag_trace import TRACE, S_SET, S_PAINT
+
 _vw_logger = logging.getLogger("DouyinLowLatencyViewer.gui.video_widget")
 _set_frame_count = 0
 
@@ -33,6 +35,8 @@ class VideoWidget(QWidget):
         self._frame_data: np.ndarray | None = None
         self._roi_rect: QRect | None = None
         self._video_size: tuple[int, int] = (0, 0)  # (width, height)
+        #: H1 诊断：最近一次提交的帧来源帧号（用于把 set_frame 与 paintEvent 关联到同一帧）
+        self._last_seq: int | None = None
         self.setMinimumSize(320, 180)
         # Phase B-1：可选的耗时观测接收方（只记录，不参与任何渲染决策）
         self._perf = None
@@ -47,14 +51,17 @@ class VideoWidget(QWidget):
         不改变任何渲染行为。仅应在 GUI 线程调用。
         """
         self._perf = perf
-    def set_frame(self, frame: np.ndarray) -> None:
+    def set_frame(self, frame: np.ndarray, seq: int | None = None) -> None:
         """
         设置并显示一帧视频
 
         :param frame: numpy.ndarray, 形状 (H, W, 3), dtype uint8, BGR 通道顺序
+        :param seq:   该帧的来源帧号（FFmpegReader.frame_id）。仅用于 H1 诊断
+                      关联；不参与任何渲染决策。
         """
         if frame is None or frame.size == 0:
             return
+        self._last_seq = seq
 
         # Phase B-1：只计量耗时，不改变下面的转换/绘制顺序
         _t0 = time.perf_counter()
@@ -93,6 +100,11 @@ class VideoWidget(QWidget):
 
         if self._perf is not None:
             self._perf.on_set_frame((time.perf_counter() - _t0) * 1000.0)
+
+        # H1 诊断：set_frame 返回 = QImage/QPixmap 构造完成（尚未绘制）
+        if TRACE.enabled:
+            TRACE.note(S_SET, seq)
+            TRACE.bump("c_set")
 
     def clear_frame(self) -> None:
         """清除当前画面，恢复黑色背景"""
@@ -176,3 +188,11 @@ class VideoWidget(QWidget):
             self._perf.on_paint_event(
                 (time.perf_counter() - _t0) * 1000.0, _drew_frame
             )
+
+        # H1 诊断：本次 paintEvent 绘制的是"最近一次提交的帧"。
+        # 注意：painter.end() 只代表**绘制调用完成**，不代表像素已经上屏
+        # （合成由 DWM 完成，进程内不可观测）——该阶段一律标记为 UNKNOWN。
+        if TRACE.enabled:
+            TRACE.note_paint(self._last_seq)
+            TRACE.note(S_PAINT, self._last_seq)
+            TRACE.bump("c_paint")

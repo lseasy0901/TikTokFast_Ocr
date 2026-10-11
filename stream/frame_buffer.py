@@ -24,6 +24,8 @@ import threading
 
 import numpy as np
 
+from utils.diag_trace import TRACE, S_BRIDGE, S_CONSUME
+
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.frame_buffer")
 
 __all__ = ["LatestFrameBuffer"]
@@ -41,6 +43,8 @@ class LatestFrameBuffer:
     def __init__(self):
         self._lock = threading.Lock()
         self._frame: np.ndarray | None = None
+        #: 当前槽位中帧的来源帧号（FFmpegReader.frame_id），仅用于 H1 诊断关联
+        self._seq: int | None = None
         self._frame_id: int = 0
         self._update_count: int = 0  # [DEBUG]
         #: 单槽覆盖导致被丢掉的帧数：update() 覆盖掉了一帧**从未被 get() 读过**
@@ -52,11 +56,13 @@ class LatestFrameBuffer:
     # ------------------------------------------------------------------
     # 对外接口
     # ------------------------------------------------------------------
-    def update(self, frame: np.ndarray) -> None:
+    def update(self, frame: np.ndarray, seq: int | None = None) -> None:
         """
         写入最新帧（覆盖旧帧 = 主动丢帧）
 
         :param frame: numpy.ndarray (H, W, 3) BGR
+        :param seq:   该帧的来源帧号（FFmpegReader.frame_id）。仅用于 H1 诊断
+                      把同一帧在各阶段关联起来；不参与任何覆盖/丢弃决策。
         """
         with self._lock:
             # 旧帧还没被读走就被这次写入覆盖 => 记一次丢帧。
@@ -64,9 +70,15 @@ class LatestFrameBuffer:
             if self._frame is not None and not self._consumed:
                 self._dropped_count += 1
             self._frame = frame
+            self._seq = seq
             self._frame_id += 1
             self._update_count += 1
             self._consumed = False
+            dropped = self._dropped_count
+        if TRACE.enabled:
+            TRACE.ext_overwritten = dropped
+            TRACE.note(S_BRIDGE, seq)
+            TRACE.bump("c_bridge")
         if self._update_count <= 3 or self._update_count % 100 == 0:
             logger.info(
                 "[BUFFER] frame received: %dx%d update_count=%d",
@@ -84,6 +96,21 @@ class LatestFrameBuffer:
                 self._consumed = True
             return self._frame
 
+    def get_with_seq(self):
+        """读取当前最新帧及其来源帧号。
+
+        :return: (frame, seq)；无帧时 (None, None)
+        """
+        with self._lock:
+            frame = self._frame
+            seq = self._seq
+            if frame is not None:
+                self._consumed = True
+        if TRACE.enabled:
+            TRACE.note(S_CONSUME, seq)
+            TRACE.bump("c_consume")
+        return frame, seq
+
     def clear(self) -> None:
         """清空缓冲，重置帧计数。
 
@@ -92,6 +119,7 @@ class LatestFrameBuffer:
         """
         with self._lock:
             self._frame = None
+            self._seq = None
             self._frame_id = 0
             self._consumed = False
 

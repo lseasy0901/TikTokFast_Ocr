@@ -125,6 +125,13 @@ class PerformanceMonitor:
         self._current_latency_ms: float = 0.0  # 当前延迟（最新帧）
         self._avg_latency_ms: float = 0.0     # 平均延迟（EMA）
         self._has_latency: bool = False        # 是否已有延迟数据
+        #: H1 修正：按来源帧号记录的采集时间（有界，只保留最近若干帧）。
+        #: 修复"单个 _capture_time 标量"的关联缺陷：当某帧在写入后、被 GUI
+        #: 取走前已被后续帧覆盖时，标量读数只能给出"自最近一次写入以来"的
+        #: 时间，**系统性低估**该帧的真实驻留。这里按 seq 精确配对。
+        self._capture_by_seq: "collections.OrderedDict[int, float]" = \
+            collections.OrderedDict()
+        self._capture_seq_capacity: int = 64
 
         # ---- FPS 统计 ----
         self._display_count: int = 0           # 已显示帧总数
@@ -189,12 +196,15 @@ class PerformanceMonitor:
             self._current_latency_ms = 0.0
             self._avg_latency_ms = 0.0
             self._has_latency = False
+            self._capture_time = 0.0
+            self._capture_by_seq.clear()
             self._reset_instrumentation_locked()
 
     def reset(self):
         """重置所有统计（断开连接时调用）"""
         with self._lock:
             self._capture_time = 0.0
+            self._capture_by_seq.clear()
             self._current_latency_ms = 0.0
             self._avg_latency_ms = 0.0
             self._has_latency = False
@@ -208,29 +218,45 @@ class PerformanceMonitor:
     # ------------------------------------------------------------------
     # 数据采集
     # ------------------------------------------------------------------
-    def on_capture(self):
+    def on_capture(self, seq: int | None = None):
         """
         帧采集事件：FrameBridge 写入 buffer 时调用
 
         记录当前时间作为 capture_time，供后续计算延迟
+
+        :param seq: 来源帧号（FFmpegReader.frame_id）。给出时额外按帧号记录，
+                    使 on_display(seq) 能取到**这一帧自己的**采集时间，而不是
+                    被后续帧覆盖后的标量。不传时行为与从前逐字相同。
         """
         now = time.perf_counter()
         with self._lock:
             self._capture_time = now
+            if seq is not None:
+                self._capture_by_seq[seq] = now
+                while len(self._capture_by_seq) > self._capture_seq_capacity:
+                    self._capture_by_seq.popitem(last=False)
 
-    def on_display(self):
+    def on_display(self, seq: int | None = None):
         """
         帧显示事件：GUI 显示帧时调用
 
         计算当前延迟 = display_time - capture_time
         更新 EMA 平均延迟
         累计显示帧数，刷新 FPS
+
+        :param seq: 来源帧号。给出且命中记录时，用**该帧自己的**采集时间计算
+                    驻留（正确的口径）；否则回退到既有标量语义。
         """
         now = time.perf_counter()
         with self._lock:
+            captured = None
+            if seq is not None:
+                captured = self._capture_by_seq.pop(seq, None)
+            if captured is None:
+                captured = self._capture_time if self._capture_time > 0.0 else None
             # 计算延迟
-            if self._capture_time > 0.0:
-                latency_ms = (now - self._capture_time) * 1000.0
+            if captured is not None:
+                latency_ms = (now - captured) * 1000.0
                 # 延迟不应为负（时钟单调），钳位保护
                 latency_ms = max(0.0, latency_ms)
                 self._current_latency_ms = latency_ms

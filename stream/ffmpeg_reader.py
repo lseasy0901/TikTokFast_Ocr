@@ -38,6 +38,7 @@ import time
 
 import numpy as np
 
+from utils.diag_trace import TRACE, S_STORE
 from utils.runtime_paths import resolve_ffmpeg_path
 from utils.startup_timing import (
     STAGE_FFMPEG_SPAWN,
@@ -765,6 +766,9 @@ class FFmpegReader:
 
         if total_skipped > 0:
             self._frames_skipped += total_skipped
+            # H1 诊断：主动跳帧是**预期行为**，单独计数，不计入关联失败。
+            if TRACE.enabled:
+                TRACE.count_skip(total_skipped)
             if total_skipped >= 5 or self._frames_skipped % 100 < total_skipped:
                 logger.debug(
                     "[Latency] skipped %d frames (total_skipped=%d) -> pipeline catching up",
@@ -831,8 +835,15 @@ class FFmpegReader:
         with self._frame_lock:
             self._latest_frame = frame
             self._frame_id += 1
+            seq = self._frame_id
         self.frames_read += 1
-        self._last_frame_mono = time.monotonic()
+        # H1 诊断：统一用 perf_counter。本环境下 time.monotonic() 是
+        # GetTickCount64（分辨率 15.6ms）且起点与 perf_counter 不同，
+        # 不足以刻画逐帧时序，也不可与其它模块的 perf_counter 相减。
+        self._last_frame_mono = time.perf_counter()
+        if TRACE.enabled:
+            TRACE.note(S_STORE, seq)
+            TRACE.bump("c_stored")
 
     def _stall_watchdog(self):
         """输入停滞看门狗（独立线程，只做一件事：发现停滞 → 击杀子进程）。
