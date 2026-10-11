@@ -106,7 +106,9 @@ class LatestFrameBuffer:
             seq = self._seq
             if frame is not None:
                 self._consumed = True
-        if TRACE.enabled:
+        if TRACE.enabled and frame is not None:
+            # 仅记录**真实消费**：空缓冲轮询（frame=None）不是关联事件，
+            # 计入 no_seq 会把 assoc_fail 语义污染成"轮询空转计数"。
             TRACE.note(S_CONSUME, seq)
             TRACE.bump("c_consume")
         return frame, seq

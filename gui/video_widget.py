@@ -192,7 +192,9 @@ class VideoWidget(QWidget):
         # H1 诊断：本次 paintEvent 绘制的是"最近一次提交的帧"。
         # 注意：painter.end() 只代表**绘制调用完成**，不代表像素已经上屏
         # （合成由 DWM 完成，进程内不可观测）——该阶段一律标记为 UNKNOWN。
-        if TRACE.enabled:
+        if TRACE.enabled and self._last_seq is not None:
+            # 仅记录**绘制了帧**的 paintEvent：启动期无帧重绘（_last_seq=None）
+            # 不携带帧关联，计入 no_seq 会污染 assoc_fail 语义。
             TRACE.note_paint(self._last_seq)
             TRACE.note(S_PAINT, self._last_seq)
             TRACE.bump("c_paint")
