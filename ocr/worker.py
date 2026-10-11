@@ -30,6 +30,7 @@ from .onnx_engine import ONNXEngine
 from .ppocr_engine import PPOCREngine
 from .profiles import AUTO, get_profile
 from .roi_manager import ROI, ROIManager
+from utils.diag_trace import TRACE
 from .room_code import DEFAULT_SCALE, RoomCodeRecognizer
 from .temporal import TemporalResolver
 # from .clipboard import ClipboardManager
@@ -421,6 +422,8 @@ class OCRWorker(QThread):
         self.engine_ready.emit()
 
         while self._running and not self._stopped_event.is_set():
+            if TRACE.enabled:
+                TRACE.mark_activity("ocr_infer_start")
             try:
                 self._perform_recognition()
 
@@ -431,6 +434,14 @@ class OCRWorker(QThread):
                 self._last_error = error_msg
                 self.error_occurred.emit(error_msg)
                 self._note_worker_error(error_msg)
+
+            # H6 负载归因：在诊断追踪时间线上标记每轮 OCR 活动边界
+            # （ocr_infer_start → ocr_round 的间隔 ≈ 本轮推理+取帧耗时），
+            # 用于与 GUI 慢帧离群做时间相关性分析。
+            # 纯旁路：TRACE 关闭时是一次布尔判断，绝不影响识别路径。
+            if TRACE.enabled:
+                TRACE.mark_activity("ocr_round")
+                TRACE.bump("c_ocr_rounds")
 
             # 等待间隔：稳态用 interval_ms；有新候选待确认时用更短的间隔
             self._stopped_event.wait(self._interval_for_wait() / 1000.0)

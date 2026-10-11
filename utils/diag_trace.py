@@ -144,6 +144,14 @@ class DiagTrace:
         # 稀有事件，只在发生时自增；dict 读写仅在事件线程上，无热路径开销。
         self._events: dict = {}
         self._last_event: tuple | None = None   # (name, t_perf)
+        # ---- H6 生产负载归因：活动标记 + 慢帧离群记录 ----
+        #: 活动标记（如 OCR 推理轮次结束）：有界时间线，与帧事件共享
+        #: perf_counter 时钟域，用于"OCR 活动 vs GUI 长尾"的时间相关性分析。
+        self._marks: collections.deque = collections.deque(maxlen=512)
+        #: 超过阈值的段耗时离群记录：(pair, seq, ms)。阈值
+        #: DLV_DIAG_TRACE_OUTLIER_MS（默认 100ms）。
+        self.outlier_ms = float(os.environ.get("DLV_DIAG_TRACE_OUTLIER_MS") or 100.0)
+        self._outliers: collections.deque = collections.deque(maxlen=64)
         self._last_painted_seq = None
         # ---- writer 生命周期 ----
         self._writer: threading.Thread | None = None
@@ -239,6 +247,17 @@ class DiagTrace:
         self._events[name] = self._events.get(name, 0) + 1
         self._last_event = (name, time.perf_counter())
 
+    def mark_activity(self, name: str) -> None:
+        """记录一次活动时间标记（H6 负载归因，如 OCR 轮次边界）。
+
+        与 ``note_event`` 的区别：保留**每次发生**的时间戳（有界 512 条），
+        随 snapshot 增量输出，可与慢帧离群记录做时间相关性分析。
+        热路径开销 ≈ 一次 append。
+        """
+        if not self._on:
+            return
+        self._marks.append((name, time.perf_counter()))
+
     # ------------------------------------------------------------------
     # 低频汇总：**增量消费**语义
     # ------------------------------------------------------------------
@@ -318,6 +337,9 @@ class DiagTrace:
                 done.add(name)             # 该 (seq,pair) 终结，重复事件不再配对
                 times.pop(a, None)         # 起点已消费；终点保留给链上下一对
                 self._samples[name].append(delta * 1000.0)
+                if delta * 1000.0 > self.outlier_ms:
+                    self._outliers.append(
+                        (name, seq, round(delta * 1000.0, 2)))
             if not times and not done:
                 self._open.pop(seq, None)
 
@@ -327,8 +349,24 @@ class DiagTrace:
                 self._open.pop(key, None)
 
         window_events = len(batch)
+        # 活动标记 / 慢帧离群：增量消费（drain），与 pending 同语义
+        marks = []
+        while True:
+            try:
+                name, t = self._marks.popleft()
+            except IndexError:
+                break
+            marks.append((name, round(t - self._t0, 4)))
+        outliers = []
+        while True:
+            try:
+                outliers.append(self._outliers.popleft())
+            except IndexError:
+                break
         return {
             "t_rel_s": time.perf_counter() - self._t0,
+            "marks": marks,
+            "outliers_ms": outliers,
             # 本次快照消费到的那一批（分子分母同源）
             "window": {
                 "events": window_events,
