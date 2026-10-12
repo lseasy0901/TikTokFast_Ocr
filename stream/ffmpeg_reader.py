@@ -1006,7 +1006,12 @@ class FFmpegReader:
         cmd += ["-flags2", "fast"]                     # 快速解码（跳过不重要帧）
         cmd += ["-probesize", "32768"]                 # 32KB探测：快且足够检测FLV+h264
         cmd += ["-analyzeduration", "100000"]          # 0.1s分析：足够检测参数，快速启动
-        cmd += ["-thread_queue_size", "1"]             # 输入线程队列只留1包
+        # 输入线程队列只留1包。该选项在 ffmpeg >= 7（外部 ffmpeg7 运行时，
+        # 经 exe_path 注入）被归到 muxer 侧，作为输入选项会被 CLI 直接拒绝
+        # （"cannot be applied to input url"）——整条命令开流失败（B5 实测）。
+        # 生产默认运行时（内置 6.x，exe_path 未传）行为逐字不变，仍注入该项。
+        if not self._exe_path:
+            cmd += ["-thread_queue_size", "1"]
 
         # ---- 断流自愈（仅 http(s) 输入；迁移审计 P0-2，参数取自 live-player 逆向报告）----
         # 这四项是 http 协议私有选项，而 ffmpeg CLI 对"该输入不认识的选项"
