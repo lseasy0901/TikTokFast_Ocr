@@ -330,12 +330,14 @@ def t_resolver_integration():
 # 14. 默认 Registry
 # ----------------------------------------------------------------------
 def t_registry():
-    print("\n[14] 默认 Registry 同时包含 Douyin + Huya")
+    print("\n[14] 默认 Registry 同时包含 Douyin + Huya（MP-01 起含 B 站）")
     reg = build_default_registry()
     names = [type(a).__name__ for a in reg.adapters]
-    check("注册表含 2 个适配器", len(reg.adapters) == 2, str(names))
+    # MP-01 新增 BilibiliAdapter；断言改为"至少含虎牙/抖音"而非写死数量，
+    # 避免每加一个平台就改一次（平台按主机名互斥，互不影响）。
+    check("注册表含 3 个适配器（抖音 + 虎牙 + B 站）", len(reg.adapters) == 3, str(names))
     check("含 DouyinAdapter 与 HuyaAdapter",
-          set(names) == {"DouyinAdapter", "HuyaAdapter"}, str(names))
+          {"DouyinAdapter", "HuyaAdapter"} <= set(names), str(names))
     check("抖音在前（保持既有优先级）", names[0] == "DouyinAdapter", str(names))
 
     # 两个平台按主机名互斥

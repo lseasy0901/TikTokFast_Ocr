@@ -48,15 +48,31 @@ class PlatformRegistry:
 
 
 def build_default_registry() -> PlatformRegistry:
-    """构建内置注册表（抖音 + 虎牙）。
+    """构建内置注册表（抖音 + 虎牙 + B 站）。
 
-    两者按主机名互斥（live.douyin.com / huya.com），因此注册顺序不影响
-    匹配结果；抖音保持在前，维持既有解析路径的优先地位不变。
+    各平台按主机名互斥（live.douyin.com / huya.com / live.bilibili.com），
+    因此注册顺序不影响匹配结果；抖音保持在前，维持既有解析路径的优先地位。
+    新增平台只增强其自身 URL 的处理能力，不改变既有平台的任何行为。
     """
     from .adapters.douyin import DouyinAdapter
     from .adapters.huya import HuyaAdapter
+    from .adapters.bilibili import BilibiliAdapter
 
     reg = PlatformRegistry()
     reg.register(DouyinAdapter())
     reg.register(HuyaAdapter())
+    # B 站为新增平台。可控入口：DLV_PLATFORM_BILIBILI 显式设为 0/false/off
+    # 时不注册（一键回退到"B 站地址报不支持"的旧行为）。
+    if _bilibili_enabled():
+        reg.register(BilibiliAdapter())
     return reg
+
+
+_TRUTHY_OFF = ("0", "false", "no", "off")
+
+
+def _bilibili_enabled() -> bool:
+    """B 站适配器开关（默认开）。设 DLV_PLATFORM_BILIBILI=0 即关闭。"""
+    import os
+    return (os.environ.get("DLV_PLATFORM_BILIBILI") or "").strip().lower() \
+        not in _TRUTHY_OFF
