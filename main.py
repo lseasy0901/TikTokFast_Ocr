@@ -86,6 +86,31 @@ def _start_e2e_autopilot(window) -> None:
     timer.start(200)
 
 
+def _start_autoconnect(window) -> None:
+    """验收用的自动连接 —— 仅当 LIVELENS_AUTOCONNECT 环境变量非空时启用。
+
+    **不是产品功能**：真实用户不会设置这个变量，默认启动路径完全不经过它。
+    它替用户做的只是「把地址粘进输入框并按回车」——等价于手点「连接」按钮，
+    解析 / 候选 / 播放 / 故障回退全程仍走既有接线，不绕过任何一步。
+    存在的原因与 _start_e2e_autopilot 相同：打包/独立实例里外部脚本难以稳定
+    驱动 Qt 窗口，验收需要可复现的自动触发。
+    """
+    from PySide6.QtCore import QTimer
+
+    url = (os.environ.get("LIVELENS_AUTOCONNECT") or "").strip()
+    _log = logging.getLogger("DouyinLowLatencyViewer.autoconnect")
+    _log.info("自动连接已启用: %s", url)
+
+    def go() -> None:
+        try:
+            window._url_input.setText(url)
+            window._on_connect_clicked()
+        except Exception:  # noqa: BLE001 - 验收钩子，失败只记日志
+            _log.exception("自动连接失败")
+
+    QTimer.singleShot(1500, go)
+
+
 def _advance_update_state():
     """读取更新状态并推进状态机（Phase 4B：启动失败自动恢复）。
 
@@ -241,6 +266,10 @@ def main() -> int:
     # 端到端验证用的自动驾驶（只认环境变量，默认不启用）
     if os.environ.get("LIVELENS_E2E_UPDATE"):
         _start_e2e_autopilot(window)
+
+    # 验收用的自动连接（只认环境变量，默认不启用）
+    if os.environ.get("LIVELENS_AUTOCONNECT"):
+        _start_autoconnect(window)
 
     # 进入事件循环
     exit_code = app.exec()
