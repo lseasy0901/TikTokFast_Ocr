@@ -320,10 +320,13 @@ def capture_contact_popup(app, window, out_dir: str, suffix: str):
     return [path]
 
 
-def capture_unactivated_contact(app, window, out_dir: str, suffix: str):
-    """抓未激活界面：遮罩里的两个按钮 + 展开的联系方式卡片。"""
-    from PySide6.QtCore import QPoint, Qt
-    from PySide6.QtGui import QPainter, QPixmap
+def capture_unactivated_overlay(app, window, out_dir: str, suffix: str):
+    """抓未激活界面：遮罩里的两个按钮（立即激活 / 购买授权）。
+
+    RELEASE-01 起遮罩的次要入口已由「联系作者」改为「购买授权」，
+    点击会调用系统浏览器跳转购买页——因此本函数**只截图、不点击**该按钮。
+    """
+    from PySide6.QtGui import QPixmap
 
     window.showNormal()
     window.move(60, 60)
@@ -337,33 +340,12 @@ def capture_unactivated_contact(app, window, out_dir: str, suffix: str):
     if not overlay.isVisible():
         print("  [WARN] 未激活遮罩不可见，跳过截图")
         return []
-    overlay._contact_btn.click()
-    pump(app, 40)
-    popup = window._contact_popup
-    if popup is None or not popup.isVisible():
-        print("  [WARN] 联系作者卡片未弹出，跳过截图")
-        return []
     print(f"  遮罩按钮={[(b.text()) for b in (overlay._activate_btn, overlay._contact_btn)]}")
-    print(f"  卡片位置={popup.geometry()}")
 
-    win_pix = window.grab()
-    card_pix = popup.grab()
-    offset = popup.mapToGlobal(QPoint(0, 0)) - window.mapToGlobal(QPoint(0, 0))
-
-    canvas = QPixmap(win_pix.size())
-    canvas.fill(Qt.transparent)
-    painter = QPainter(canvas)
-    painter.drawPixmap(0, 0, win_pix)
-    painter.drawPixmap(offset, card_pix)
-    painter.end()
-
-    bottom = min(canvas.height(), offset.y() + card_pix.height() + 40)
-    band = canvas.copy(0, 0, canvas.width(), max(1, bottom))
-    path = os.path.join(out_dir, f"unactivated_contact_popup{suffix}.png")
-    band.save(path)
-    print(f"  未激活 + 联系作者卡片 -> {path}")
-
-    popup.close()
+    path = os.path.join(out_dir, f"unactivated_overlay{suffix}.png")
+    overlay.grab().save(path)
+    print(f"  未激活遮罩 -> {path}")
+    return [path]
     pump(app, 20)
     return [path]
 
@@ -424,7 +406,7 @@ def main() -> int:
     written.extend(capture_step3_and_roi(app, window, out_dir, suffix))
     written.extend(capture_review_mode(app, window, out_dir, suffix))
     written.extend(capture_contact_popup(app, window, out_dir, suffix))
-    written.extend(capture_unactivated_contact(app, window, out_dir, suffix))
+    written.extend(capture_unactivated_overlay(app, window, out_dir, suffix))
 
     # 未激活态（呼吸遮罩 + 激活入口）单独一张，便于核对遮罩排版
     window._on_expand_clicked()

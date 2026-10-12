@@ -16,13 +16,14 @@ LiveLens 通用 UI 组件
 
 import math
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -44,7 +45,33 @@ __all__ = [
     "set_tone",
     "enable_mouse_tracking",
     "h_line",
+    "open_external_url",
 ]
+
+
+def open_external_url(url: str, parent=None) -> bool:
+    """用**系统默认浏览器**打开外部链接（不在软件内嵌网页）。
+
+    走 Qt 的 ``QDesktopServices.openUrl``（Windows 上即 ShellExecute），
+    它返回布尔值：仅在系统确认接管时才算成功。**失败时弹出明确提示**并把
+    链接原文给出来（便于手动打开），绝不静默假报成功。
+
+    :return: True = 已交给系统浏览器；False = 打开失败（已提示用户）
+    """
+    if not url:
+        return False
+    ok = False
+    try:
+        ok = bool(QDesktopServices.openUrl(QUrl(url)))
+    except Exception:  # noqa: BLE001 - 平台异常一律按失败处理并提示
+        ok = False
+    if not ok:
+        QMessageBox.warning(
+            parent, "无法打开浏览器",
+            "无法调用系统默认浏览器打开购买链接。\n\n"
+            "请手动在浏览器中访问：\n%s" % url,
+        )
+    return ok
 
 
 # ======================================================================

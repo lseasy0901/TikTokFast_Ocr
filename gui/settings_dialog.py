@@ -41,9 +41,11 @@ from utils.update_source import DEFAULT_UPDATE_SOURCE
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.settings")
 
-#: 联系方式（产品提供，用于关于页展示与复制）
-CONTACT_EMAIL = "1752924057@qq.com"
-CONTACT_WECHAT = "lseasy03"
+#: 作者联系方式（RELEASE-01：统一为 QQ，不再使用微信）
+CONTACT_QQ = "1752924057"
+
+#: 购买授权跳转（未激活界面「购买授权」按钮打开的淘宝链接）
+PURCHASE_URL = "https://m.tb.cn/h.jaMe2gX?tk=CfF8TI9nJew"
 
 
 def website_url() -> str:

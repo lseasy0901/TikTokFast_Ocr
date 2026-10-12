@@ -86,13 +86,14 @@ from gui.widgets import (
     chip_html,
     enable_mouse_tracking,
     h_line,
+    open_external_url,
     set_property,
     set_tone,
 )
 from gui.expired_dialog import ExpiredDialog
 from gui.settings_dialog import (
-    CONTACT_EMAIL,
-    CONTACT_WECHAT,
+    CONTACT_QQ,
+    PURCHASE_URL,
     SettingsDialog,
 )
 from gui.activation_dialog import ActivationDialog, LicenseWorker
@@ -400,7 +401,7 @@ class _ActivationOverlay(QWidget):
     """
 
     activate_clicked = Signal()
-    contact_clicked = Signal()
+    purchase_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -441,16 +442,17 @@ class _ActivationOverlay(QWidget):
         self._activate_btn.clicked.connect(self.activate_clicked.emit)
         row.addWidget(self._activate_btn)
 
-        # 次要入口：尚未激活的人同样需要能找到人，因此放在「立即激活」旁边，
-        # 但保持次要样式 —— 主操作仍然只有激活一个。
-        self._contact_btn = QPushButton("联系作者")
+        # 次要入口：尚未激活的人同样需要能买到授权，因此放在「立即激活」旁边，
+        # 但保持次要样式 —— 主操作仍然只有激活一个。点击直接调系统默认浏览器
+        # 打开购买链接（RELEASE-01）。
+        self._contact_btn = QPushButton("购买授权")
         self._contact_btn.setFixedHeight(34)
         self._contact_btn.setMinimumWidth(120)
         self._contact_btn.setIcon(
             QIcon(icon_pixmap(IconButton.CONTACT, 14, Palette.TEXT_DIM)))
         self._contact_btn.setCursor(Qt.PointingHandCursor)
-        self._contact_btn.setToolTip("联系作者")
-        self._contact_btn.clicked.connect(self.contact_clicked.emit)
+        self._contact_btn.setToolTip("购买授权：用系统默认浏览器打开购买链接")
+        self._contact_btn.clicked.connect(self.purchase_clicked.emit)
         row.addWidget(self._contact_btn)
 
         row.addStretch(1)
@@ -953,8 +955,8 @@ class MainWindow(QMainWindow):
         # 未激活遮罩：与连接提示同为浮层，默认按当前授权状态决定是否显示
         self._activation_overlay = _ActivationOverlay()
         self._activation_overlay.activate_clicked.connect(self._on_license_clicked)
-        self._activation_overlay.contact_clicked.connect(
-            self._on_overlay_contact_clicked)
+        self._activation_overlay.purchase_clicked.connect(
+            self._on_purchase_clicked)
         # interactive=True：遮罩上有「立即激活」按钮，必须收得到点击
         # （默认的鼠标穿透会让按钮连同浮层一起不可点）。
         self._video_container.add_overlay(self._activation_overlay, interactive=True)
@@ -3570,18 +3572,19 @@ class MainWindow(QMainWindow):
         """标题栏「联系作者」：在按钮下方弹出联系方式卡片。"""
         self._open_contact_popup(self._contact_btn)
 
-    def _on_overlay_contact_clicked(self):
-        """未激活遮罩里的「联系作者」：复用同一个卡片，只是换个锚点。
+    def _on_purchase_clicked(self):
+        """未激活遮罩里的「购买授权」：用系统默认浏览器打开购买链接。
 
-        刻意**不**经过 _guard_access：没激活的人同样需要能找到联系人。
+        刻意**不**经过 _guard_access：没激活的人正是要买授权的人；
+        打开失败由 open_external_url 明确提示，绝不假报成功。
         """
-        self._open_contact_popup(self._activation_overlay._contact_btn)
+        open_external_url(PURCHASE_URL, self)
 
     def _open_contact_popup(self, anchor) -> None:
         """在 anchor 下方弹出联系方式卡片（已打开则关闭）。
 
         非模态 —— 不改动直播、OCR 或授权状态，也不发任何网络请求；
-        只是把两条已经写死的联系方式摆出来，方便复制。
+        只是把作者联系方式摆出来，方便复制。
         """
         if self._contact_popup is not None and self._contact_popup.isVisible():
             self._contact_popup.close()
@@ -3590,8 +3593,7 @@ class MainWindow(QMainWindow):
             "联系作者",
             "问题反馈与功能建议",
             (
-                ("微信", CONTACT_WECHAT, "已复制微信号"),
-                ("邮箱", CONTACT_EMAIL, "已复制邮箱"),
+                ("QQ", CONTACT_QQ, "已复制 QQ 号"),
             ),
             self,
         )
