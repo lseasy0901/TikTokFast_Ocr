@@ -456,10 +456,13 @@ def t_end_to_end():
     # registry / resolver 结构
     # Phase 2 起注册表同时包含抖音与虎牙；抖音仍注册在首位，且按主机名互斥，
     # 因此抖音的解析路径不受影响（这里只断言"含抖音"与"抖音优先"）。
+    # MP-01 起再增加 B 站适配器（同样按主机名互斥，不影响既有平台）。
     reg = build_default_registry()
     check("默认注册表含 DouyinAdapter", isinstance(reg.adapters[0], DouyinAdapter))
-    check("注册表含 2 个适配器（抖音 + 虎牙）", len(reg.adapters) == 2,
+    check("注册表含 3 个适配器（抖音 + 虎牙 + B 站）", len(reg.adapters) == 3,
           str([type(a).__name__ for a in reg.adapters]))
+    check("注册表含 HuyaAdapter",
+          any(type(a).__name__ == "HuyaAdapter" for a in reg.adapters))
     check("registry 按 URL 选中 adapter",
           isinstance(StreamResolver().registry.get_adapter(ROOM_URL), DouyinAdapter))
     check("重复注册被忽略",

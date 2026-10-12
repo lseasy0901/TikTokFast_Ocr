@@ -8,6 +8,7 @@
 from .base import PlatformAdapter
 from .douyin import DouyinAdapter, DouyinStream, DouyinStreamError
 from .huya import HuyaAdapter, HuyaStreamError
+from .bilibili import BilibiliAdapter, BilibiliStreamError
 
 __all__ = [
     "PlatformAdapter",
@@ -16,4 +17,6 @@ __all__ = [
     "DouyinStreamError",
     "HuyaAdapter",
     "HuyaStreamError",
+    "BilibiliAdapter",
+    "BilibiliStreamError",
 ]
