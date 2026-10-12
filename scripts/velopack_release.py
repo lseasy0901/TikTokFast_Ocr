@@ -181,14 +181,16 @@ def build_onedir(dist_dir: Path, work_dir: Path) -> Path:
     return onedir
 
 
-def pack(onedir: Path, out_dir: Path, version: str, notes: Path | None) -> None:
-    """vpk pack 生成 Setup.exe / 全量 nupkg / 更新源清单。
+def pack(onedir: Path, out_dir: Path, version: str, notes: Path | None,
+         delta: str = "None") -> None:
+    """vpk pack 生成 Setup.exe / 全量 nupkg / 更新源清单（+可选增量包）。
 
-    刻意固定成「一个版本一个 Full 包」的发布形态，不接受默认值：
-      --delta None   不生成增量包。增量包只有在前一版本仍存在于 feed 里时才有
-                     意义，而我们的发布形态是「索引在 livelen.icu、大文件在
-                     第三方托管」，多一个会变动的中间产物只会让上传与回滚更
-                     复杂。全量包单文件即可覆盖所有旧版本用户。
+    默认固定成「一个版本一个 Full 包」的发布形态（``--delta None``）：
+      不生成增量包。增量包只有在前一版本仍存在于 feed 里时才有意义，而默认
+      发布形态是「索引在 livelen.icu、大文件在第三方托管」，多一个会变动的
+      中间产物只会让上传与回滚更复杂。全量包单文件即可覆盖所有旧版本用户。
+      RELEASE-02 起该值可由 ``--delta``（None/BestSpeed/BestSize）覆盖：只要
+      真实旧版的 full nupkg 与本版本同处一个 outputDir，vpk 即会据此算出增量包。
       --noPortable   不生成 Portable.zip。便携包是给「解压即用」场景的，而
                      LiveLens 只走 Setup.exe 安装 + 自动更新这条路径，多打一个
                      250MB 的包纯属浪费带宽与存储。
@@ -209,7 +211,7 @@ def pack(onedir: Path, out_dir: Path, version: str, notes: Path | None) -> None:
         "--mainExe", MAIN_EXE,
         "--packTitle", PACK_TITLE,
         "--packAuthors", PACK_AUTHORS,
-        "--delta", "None",
+        "--delta", delta,
         "--noPortable",
     ]
     if notes is not None:
@@ -237,6 +239,9 @@ def archive_installer(feed_dir: Path, release_root: Path, version: str) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description="LiveLens Velopack 发布")
     parser.add_argument("--version", help="覆盖版本号（默认取 utils/version.py）")
+    parser.add_argument("--delta", default="None",
+                        help="增量包生成模式 None/BestSpeed/BestSize（默认 None，"
+                             "即沿用既有「一版一 Full」形态）")
     parser.add_argument("--skip-build", action="store_true", help="复用现有 dist 里的 onedir，不重新构建")
     parser.add_argument("--release-root", default=str(DEFAULT_RELEASE_ROOT),
                         help="发布根目录（默认在源码目录之外）")
@@ -282,7 +287,7 @@ def main() -> int:
             % len(failures))
 
     notes = Path(args.notes).resolve() if args.notes else None
-    pack(onedir, feed_dir, version, notes)
+    pack(onedir, feed_dir, version, notes, delta=args.delta)
     archived = archive_installer(feed_dir, release_root, version)
     log(f"安装器已归档：{archived}")
 
