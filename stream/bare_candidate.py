@@ -26,8 +26,20 @@ _DERIVABLE_VARIANTS = {"uhd", "hd", "sd", "ld", "md"}
 
 
 def bare_stream_enabled() -> bool:
-    """DLV_BARE_STREAM 门禁（默认关闭）。"""
-    return (os.environ.get("DLV_BARE_STREAM") or "").strip().lower() in _TRUTHY
+    """DLV_BARE_STREAM 门禁（默认关闭）。
+
+    开启还需 DLV_FFMPEG7_EXE 指向可执行的 FFmpeg 7 二进制——
+    裸流为增强 FLV HEVC，默认 6.x 运行时不可解；未配置 = 无法执行 → 不派生。
+    """
+    if (os.environ.get("DLV_BARE_STREAM") or "").strip().lower() not in _TRUTHY:
+        return False
+    exe = os.environ.get("DLV_FFMPEG7_EXE") or ""
+    return bool(exe.strip()) and os.path.isfile(exe.strip())
+
+
+def ffmpeg7_exe() -> str:
+    """返回 DLV_FFMPEG7_EXE（调用方需已确认 bare_stream_enabled）。"""
+    return (os.environ.get("DLV_FFMPEG7_EXE") or "").strip()
 
 
 def derive_bare_url(url: str) -> str | None:

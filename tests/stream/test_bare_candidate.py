@@ -49,6 +49,8 @@ class TestGate:
 
     def test_gate_on_derives_with_runtime(self, monkeypatch):
         monkeypatch.setenv("DLV_BARE_STREAM", "1")
+        monkeypatch.setenv("DLV_FFMPEG7_EXE",
+                           r"D://TikTok_Ocr_Rebuild//runtime//ffmpeg7//ffmpeg.exe")
         b = bare_candidate_from(_cand())
         assert b is not None
         assert b.url == "https://pull-flv-q1.douyincdn.com/x/stream-123.flv?k=1&x=2"
