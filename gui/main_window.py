@@ -118,6 +118,7 @@ from stream.models import StreamInfo, StreamResolveError
 from stream.resolver import StreamResolver
 from stream.failover import CandidateFailover
 from stream.ffmpeg_reader import FFmpegReader
+from stream.bare_source import video_bare_url_for, ffmpeg7_exe
 from stream.frame_buffer import LatestFrameBuffer
 from audio import AudioService
 from gui.audio_panel import AudioPanel
@@ -2213,19 +2214,46 @@ class MainWindow(QMainWindow):
         # 创建并启动 FFmpegReader（protocol 供 flv 候选强制 live_flv demuxer）
         reader = None
         try:
-            reader = FFmpegReader(
-                candidate.url,
-                width=video_width,
-                height=video_height,
-                use_cuda=True,
-                http_headers=media_headers,
-                timing=timing,
-                audio_enabled=True,
-                audio_pcm_callback=self._audio.feed,
-                audio_sample_rate=self._audio.sample_rate,
-                audio_channels=self._audio.channels,
-                protocol=candidate.protocol,
-            )
+            # B5 裸流灰度：DLV_BARE_STREAM=1 且 DLV_FFMPEG7_EXE 已配置时，
+            # 首选视频版裸流（外部 ffmpeg7 运行时），失败自动回退到原候选
+            # （默认运行时）。门禁关闭 / 非 FLV / 取不到裸流时，行为与改动前
+            # 完全一致。裸流 URL 从直播间页面直取（不能从转码档后缀派生——
+            # 实测剥离后 sign 失效 403）。
+            bare_url = None
+            if (candidate.protocol or "").lower() == "flv":
+                bare_url = video_bare_url_for(info.platform, info.room_id)
+            if bare_url:
+                logger.info("[FFMPEG] 裸流模式：尝试 ffmpeg7 裸流，回退 %s",
+                            (candidate.url or "")[:60])
+                reader = FFmpegReader(
+                    bare_url,
+                    width=video_width,
+                    height=video_height,
+                    use_cuda=True,
+                    http_headers=media_headers,
+                    timing=timing,
+                    audio_enabled=True,
+                    audio_pcm_callback=self._audio.feed,
+                    audio_sample_rate=self._audio.sample_rate,
+                    audio_channels=self._audio.channels,
+                    protocol=candidate.protocol,
+                    exe_path=ffmpeg7_exe(),
+                    fallback=(candidate.url, None),
+                )
+            else:
+                reader = FFmpegReader(
+                    candidate.url,
+                    width=video_width,
+                    height=video_height,
+                    use_cuda=True,
+                    http_headers=media_headers,
+                    timing=timing,
+                    audio_enabled=True,
+                    audio_pcm_callback=self._audio.feed,
+                    audio_sample_rate=self._audio.sample_rate,
+                    audio_channels=self._audio.channels,
+                    protocol=candidate.protocol,
+                )
             reader.start()
             logger.info("[FFMPEG] reader.start() called, use_cuda=True")
         except Exception as e:
