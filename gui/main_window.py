@@ -116,11 +116,11 @@ from utils import ffmpeg7_runtime
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
-from stream.models import StreamInfo, StreamResolveError
+from stream.models import StreamCandidate, StreamInfo, StreamResolveError
 from stream.resolver import StreamResolver
 from stream.failover import CandidateFailover
 from stream.ffmpeg_reader import FFmpegReader
-from stream.bare_source import bare_stream_applicable, video_bare_url_for
+from stream.bare_source import bare_stream_applicable, probe_video_bare, reason_message
 from stream.frame_buffer import LatestFrameBuffer
 from audio import AudioService
 from gui.audio_panel import AudioPanel
@@ -203,24 +203,29 @@ class _ConnectWorker:
 # ======================================================================
 @dataclass(frozen=True)
 class _BareResolveResult:
-    """一次裸流解析的结论（由后台线程产出，经 Signal 回到 GUI 线程）。
+    """一次取流解析的结论（由后台线程产出，经 Signal 回到 GUI 线程）。
 
-    :param url:          视频版裸流 URL；None = 本次取不到（正常降级）
-    :param exe:          已通过校验的 FFmpeg7 运行时路径；None = 不可用
-    :param runtime_ok:   运行时是否可用（False → 需要给用户可见提示）
-    :param reason:       运行时不可用时的稳定枚举（供 GUI 映射人话）
-    :param detail:       给日志的技术细节（不进 UI）
+    RELEASE-02-B5-CLEANUP：这是**唯一**取流入口的结论。失败时不存在"降级到
+    旧路径"的分支 —— 只有明确原因，由 GUI 给用户一句人话并结束会话。
+
+    :param url:         视频版裸流 URL；None = 本次取不到
+    :param exe:         已通过校验的 FFmpeg7 运行时路径；None = 不可用
+    :param runtime_ok:  运行时是否可用（False → 需要给用户可见提示）
+    :param live:        页面是否显示该房间正在直播（用于区分"未开播"与"取不到"）
+    :param reason:      稳定枚举（运行时或取流），供 GUI 映射人话
+    :param detail:      给日志的技术细节（不进 UI）
     """
 
     url: str | None = None
     exe: str | None = None
     runtime_ok: bool = False
+    live: bool = False
     reason: str | None = None
     detail: str = ""
 
 
 class _BareResolveWorker:
-    """后台线程：校验 FFmpeg7 运行时并解析本次会话的裸流 URL。
+    """后台线程：校验 FFmpeg7 运行时并取本次会话的裸流 URL。
 
     与 `_ConnectWorker` 同一模式（普通类 + daemon 线程 + 回调），不引入
     新的线程模型：线程只做阻塞 IO（运行时探测、页面 GET），结果通过
@@ -266,18 +271,17 @@ class _BareResolveWorker:
                 )
             else:
                 # 2) 页面直取裸流 URL（有界超时的阻塞请求）
-                url = video_bare_url_for(self._platform, self._room_id)
+                probe = probe_video_bare(self._platform, self._room_id)
                 result = _BareResolveResult(
-                    url=url, exe=st.path, runtime_ok=True,
-                    reason=None if url else "bare_not_found",
-                    detail="页面直取成功" if url else "页面未找到视频版裸流",
+                    url=probe.url, exe=st.path, runtime_ok=True,
+                    live=probe.live, reason=probe.reason, detail=probe.detail,
                 )
-        except Exception as e:  # noqa: BLE001 - 裸流是增强项，失败不阻断主链路
-            logger.exception("[BARE] 裸流解析线程异常")
+        except Exception as e:  # noqa: BLE001 - 取流失败转结构化原因，不抛出
+            logger.exception("[BARE] 取流线程异常")
             result = _BareResolveResult(
                 url=None, exe=None, runtime_ok=False,
                 reason=ffmpeg7_runtime.REASON_PROBE_FAILED,
-                detail=f"解析线程异常: {e}",
+                detail=f"取流线程异常: {e}",
             )
 
         if self._cancelled:
@@ -609,17 +613,15 @@ class MainWindow(QMainWindow):
         # 当前连接的帧到达通知器（随 FrameBridge 一同创建/废弃）
         self._frame_notifier: _FrameNotifier | None = None
         self._connect_worker: _ConnectWorker | None = None
-        # ---- RELEASE-02-B5：裸流主路径状态 ----
-        # 裸流 URL 与 FFmpeg7 运行时在**会话开始时**于后台线程解析一次，
-        # 会话内所有候选尝试复用同一份结果（裸流是 per-room，不是 per-candidate）。
+        # ---- RELEASE-02-B5-CLEANUP：唯一取流入口的会话状态 ----
+        # 裸流 URL 与 FFmpeg7 运行时在**会话开始时**于后台线程解析一次。
+        # 抖音会话的唯一候选就是该裸流 URL（旧 `_uhd` 候选已整体移除）。
         self._bare_url: str | None = None
         self._bare_exe: str | None = None
-        #: 裸流请求代号。每次开始新解析 / 断开 / 关闭都递增，迟到的回调
+        #: 取流请求代号。每次开始新解析 / 断开 / 关闭都递增，迟到的回调
         #: 凭此判定自己属于旧请求并放弃——旧结果绝不覆盖新一轮会话。
         self._bare_req_id: int = 0
         self._bare_worker: _BareResolveWorker | None = None
-        #: 运行时不可用的用户提示只在本会话提示一次（避免反复刷状态栏）
-        self._bare_notice_shown: bool = False
         #: 窗口正在关闭：此后不再向 GUI 投递任何更新
         self._closing: bool = False
         # 平台解析统一入口：MainWindow 只认识 StreamResolver 和 StreamInfo，
@@ -2260,25 +2262,26 @@ class MainWindow(QMainWindow):
         # Phase 2.5：本次会话的候选迭代器。候选顺序**完全由平台适配器给出**
         # （适配器里已按平台自己的偏好排好序），这里只负责"按顺序逐个试"，
         # 不重排、不评分、不测速，也不认识任何具体平台。
+        # 抖音会话的候选集由取流结果决定（唯一候选 = 裸流本身），见
+        # _on_bare_resolved()；虎牙 / B 站直接使用适配器给出的候选。
         self._failover = CandidateFailover(info)
         self._playback_info = info
-        self._bare_notice_shown = False
 
-        # RELEASE-02-B5：裸流是**默认正常路径**。运行时校验与裸流 URL 页面直取
-        # 都在后台线程完成（不阻塞 GUI），拿到结果后才开始候选尝试 ——
-        # 因此全程只有一条播放管线，不存在"裸流与 _uhd 同时跑"。
+        # RELEASE-02-B5-CLEANUP：唯一取流入口。运行时校验与裸流页面直取都在
+        # 后台线程完成（不阻塞 GUI），拿到结果后才开始播放 —— 全程只有一条
+        # 播放管线，不存在第二路解码，也不存在任何旧路径回退。
         self._begin_bare_resolution(info)
 
     # ------------------------------------------------------------------
-    # RELEASE-02-B5：裸流主路径解析（后台）+ 会话启动
+    # RELEASE-02-B5-CLEANUP：唯一取流入口（后台）+ 会话启动
     # ------------------------------------------------------------------
     def _begin_bare_resolution(self, info: StreamInfo) -> None:
-        """开始本次会话的裸流解析（后台线程），完成后才启动候选尝试。
+        """开始本次会话的取流解析（后台线程），完成后才启动播放。
 
-        - 非抖音 / 总开关显式关闭 → 立即走标准路径，不请求页面、不等运行时；
-        - 抖音但候选路径下完全没有运行时文件 → 立即给一次用户提示并走标准
-          路径（廉价 isfile 检查，不拉起探测进程）；
-        - 其余情况 → 后台 worker：运行时校验（带缓存）→ 页面直取裸流 URL。
+        - 非抖音（虎牙 / B 站）/ 总开关显式关闭 → 立即用适配器给的候选启动，
+          不请求页面、不等运行时探测；
+        - 抖音 → 后台 worker：运行时校验（带缓存）→ 页面直取裸流 URL。
+          取不到或运行时不可用 → **明确提示并结束会话**（不切换任何旧路径）。
         """
         self._bare_url = None
         self._bare_exe = None
@@ -2286,14 +2289,8 @@ class MainWindow(QMainWindow):
         req_id = self._bare_req_id
 
         if not bare_stream_applicable(info.platform):
-            logger.info("[BARE] 平台/开关不适用裸流，直接走标准路径 (platform=%s)",
+            logger.info("[BARE] 平台/开关不适用裸流，直接使用平台候选 (platform=%s)",
                         info.platform)
-            self._start_session_failover()
-            return
-
-        # 廉价前置：一个运行时文件都没有 → 不必拉起探测进程、不必请求页面
-        if not ffmpeg7_runtime.find_existing_candidates():
-            self._notify_bare_unavailable(ffmpeg7_runtime.REASON_NOT_FOUND)
             self._start_session_failover()
             return
 
@@ -2304,7 +2301,7 @@ class MainWindow(QMainWindow):
             on_done=self._on_bare_done,
         )
         self._bare_worker.start()
-        logger.info("[BARE] 已启动后台裸流解析 (req=%d room=%s)",
+        logger.info("[BARE] 已启动后台取流解析 (req=%d room=%s)",
                     req_id, info.room_id)
 
     def _on_bare_done(self, request_id: int, result) -> None:
@@ -2312,7 +2309,11 @@ class MainWindow(QMainWindow):
         self._bare_resolved_sig.emit(request_id, result)
 
     def _on_bare_resolved(self, request_id: int, result) -> None:
-        """在 GUI 线程处理裸流解析结果（含迟到回调保护）。"""
+        """在 GUI 线程处理取流结果（含迟到回调保护）。
+
+        RELEASE-02-B5-CLEANUP：这里**没有**"失败就降级到旧路径"的分支 ——
+        取不到流或运行时不可用都只有一条出路：给用户一句明确的话并结束会话。
+        """
         # 会话已切换（新解析已开始）/ 已断开 / 正在关闭 → 丢弃旧结果
         if request_id != self._bare_req_id:
             logger.info("[BARE] 丢弃过期结果 (req=%d 当前=%d)",
@@ -2323,23 +2324,33 @@ class MainWindow(QMainWindow):
             return
 
         self._bare_worker = None
-        self._bare_url = result.url
         self._bare_exe = result.exe
 
         if not result.runtime_ok:
-            # 运行时缺失 / 无效：明确告知用户，并按设计回退标准路径
-            self._notify_bare_unavailable(result.reason, result.detail)
-        elif result.url:
-            logger.info("[BARE] 本次会话使用裸流主路径 (exe=%s)", result.exe)
-        else:
-            # 取不到裸流属正常降级（页面结构变化等），不打扰用户
-            logger.info("[BARE] 本次未取到裸流，使用标准路径 (room=%s)",
-                        self._playback_info.room_id)
+            self._abort_session(
+                f"{ffmpeg7_runtime.reason_message(result.reason or '')}，无法播放直播流",
+                result.reason, result.detail)
+            return
+        if not result.url:
+            self._abort_session(reason_message(result.reason or ""),
+                                result.reason, result.detail)
+            return
 
+        self._bare_url = result.url
+        logger.info("[BARE] 本次会话使用裸流 (exe=%s)", result.exe)
+
+        # 唯一候选 = 裸流本身。旧 `_uhd` 转码档候选已整体移除，因此抖音会话
+        # 的候选集恒为 1 个；`CandidateFailover` 退化为"单候选迭代"，
+        # 但虎牙 / B 站的多候选能力不受影响（它们不走这里）。
+        info = self._playback_info
+        cand = StreamCandidate(url=result.url, protocol="flv")
+        self._failover = CandidateFailover(StreamInfo(
+            platform=info.platform, room_id=info.room_id,
+            candidates=[cand], selected=cand))
         self._start_session_failover()
 
     def _start_session_failover(self) -> None:
-        """启动本次会话的候选尝试（裸流解析完成后的唯一入口）。"""
+        """启动本次会话的候选尝试（取流解析完成后的唯一入口）。"""
         if self._closing or self._playback_info is None:
             return
         if not self._failover_next():
@@ -2347,19 +2358,17 @@ class MainWindow(QMainWindow):
             return
         self._apply_connected_ui()
 
-    def _notify_bare_unavailable(self, reason: str | None,
-                                 detail: str = "") -> None:
-        """运行时不可用：给用户一句人话 + 给日志技术细节（每个会话一次）。
+    def _abort_session(self, message: str, reason: str | None,
+                       detail: str = "") -> None:
+        """本会话无法建立播放：给用户一句明确的话并结束。
 
         刻意**不**把路径 / 环境变量 / 底层错误码放进 UI —— 那些只进日志。
+        也**不**静默切换到任何旧路径（唯一拉流架构）。
         """
-        logger.warning("[BARE] 运行时不可用: reason=%s detail=%s", reason, detail)
-        if self._bare_notice_shown:
-            return
-        self._bare_notice_shown = True
-        self.statusBar().showMessage(
-            f"{ffmpeg7_runtime.reason_message(reason or '')}，已使用标准播放路径"
-        )
+        logger.warning("[BARE] 会话终止: reason=%s detail=%s", reason, detail)
+        self._disconnect()
+        # 写在 _disconnect() 之后：否则会被它结尾的"已断开"覆盖
+        self.statusBar().showMessage(message)
 
     def _start_runtime_probe(self) -> None:
         """启动时在后台探测一次 FFmpeg7 运行时（仅日志 + 预热缓存）。
@@ -2438,46 +2447,29 @@ class MainWindow(QMainWindow):
         # 创建并启动 FFmpegReader（protocol 供 flv 候选强制 live_flv demuxer）
         reader = None
         try:
-            # RELEASE-02-B5：裸流是**默认主路径**。裸流 URL 与 FFmpeg7 运行时
-            # 已在会话开始时于后台线程解析并校验（self._bare_url/_bare_exe）；
-            # 这里只消费结果，不做任何网络或进程探测——不阻塞 GUI。
-            # 取不到裸流 / 运行时不可用 → bare_url 为 None → 走标准 _uhd 路径。
-            bare_url = None
-            if (self._bare_url and self._bare_exe
-                    and (candidate.protocol or "").lower() == "flv"):
-                bare_url = self._bare_url
-            if bare_url:
-                logger.info("[FFMPEG] 裸流主路径：尝试 ffmpeg7 裸流，失败回退 %s",
+            # RELEASE-02-B5-CLEANUP：抖音会话的唯一候选**就是**裸流本身
+            # （旧 `_uhd` 转码档候选已整体移除）。裸流由外部 FFmpeg 7 运行时
+            # 解码（会话开始时已在后台线程定位并校验）；失败**不再回退任何
+            # 旧路径** —— reader 内部只有有界重启。
+            # 虎牙 / B 站不走裸流，候选由各自适配器给出（exe_path 为 None）。
+            is_bare = bool(self._bare_url and candidate.url == self._bare_url)
+            if is_bare:
+                logger.info("[FFMPEG] 裸流播放（ffmpeg7 运行时），url=%s",
                             (candidate.url or "")[:60])
-                reader = FFmpegReader(
-                    bare_url,
-                    width=video_width,
-                    height=video_height,
-                    use_cuda=True,
-                    http_headers=media_headers,
-                    timing=timing,
-                    audio_enabled=True,
-                    audio_pcm_callback=self._audio.feed,
-                    audio_sample_rate=self._audio.sample_rate,
-                    audio_channels=self._audio.channels,
-                    protocol=candidate.protocol,
-                    exe_path=self._bare_exe,
-                    fallback=(candidate.url, None),
-                )
-            else:
-                reader = FFmpegReader(
-                    candidate.url,
-                    width=video_width,
-                    height=video_height,
-                    use_cuda=True,
-                    http_headers=media_headers,
-                    timing=timing,
-                    audio_enabled=True,
-                    audio_pcm_callback=self._audio.feed,
-                    audio_sample_rate=self._audio.sample_rate,
-                    audio_channels=self._audio.channels,
-                    protocol=candidate.protocol,
-                )
+            reader = FFmpegReader(
+                candidate.url,
+                width=video_width,
+                height=video_height,
+                use_cuda=True,
+                http_headers=media_headers,
+                timing=timing,
+                audio_enabled=True,
+                audio_pcm_callback=self._audio.feed,
+                audio_sample_rate=self._audio.sample_rate,
+                audio_channels=self._audio.channels,
+                protocol=candidate.protocol,
+                exe_path=self._bare_exe if is_bare else None,
+            )
             reader.start()
             logger.info("[FFMPEG] reader.start() called, use_cuda=True")
         except Exception as e:
@@ -2639,22 +2631,10 @@ class MainWindow(QMainWindow):
         # 从未成功 → 该候选不可用：结算它、清理它，再试下一个
         self._failover.note_failure()
 
-        # RELEASE-02-B5：若本次失败已用掉"裸流 → 回退"切换，或观测到解码器
-        # 不支持证据，说明**本会话的裸流不可用**（裸流是 per-room，不是
-        # per-candidate）。丢弃它，让后续候选直接走标准 _uhd 路径 ——
-        # 避免对每个候选重复"裸流失败 → 回退"的无效循环（重复回退）。
-        # getattr 兜底：既有测试用脚本化替身 reader，只实现被用到的接口。
-        if reader is not None:
-            fb_used = bool(getattr(reader, "fallback_used", False))
-            dec_failed = bool(getattr(reader, "decode_failed", False))
-            if fb_used or dec_failed:
-                if self._bare_url is not None:
-                    logger.warning(
-                        "[BARE] 本会话裸流已判定不可用 (fallback_used=%s "
-                        "decode_failed=%s)，后续候选直接走标准路径",
-                        fb_used, dec_failed,
-                    )
-                self._bare_url = None
+        # RELEASE-02-B5-CLEANUP：这里原为"裸流已失败 → 丢弃裸流、后续候选走
+        # 旧 _uhd 路径"的会话级抑制。旧路径整体移除后已无意义：
+        # 抖音会话只有 1 个候选（裸流本身），它失败即候选耗尽，由下方
+        # _failover_next() 返回 False 走到明确的失败提示。
 
         t0 = time.perf_counter()
         self._teardown_playback()

@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
-"""RELEASE-02-B5: 裸流主路径的会话流程测试（GUI 线程不阻塞 / 取消 / 会话隔离）。
+"""RELEASE-02-B5-CLEANUP: 唯一取流入口的会话流程测试。
 
-覆盖任务书 Phase 3.A + 3.B 与 Phase 4「回退与生命周期」的关键断言：
+覆盖（对应任务书 Phase 4 的断言清单）：
 
-  1. 抖音 + 运行时可用 + 取到裸流 → reader 用裸流 URL + 解析出的 exe_path
-     + fallback=(原候选, None)；会话内只有 1 个 reader（单管线）。
-  2. 抖音 + 运行时可用 + 取不到裸流 → 走标准路径（无 exe_path），不打扰用户。
-  3. 抖音 + 运行时文件完全缺失 → 立即（同步）走标准路径 + 用户可见提示。
-  4. 抖音 + 运行时探测失败 → 后台 worker 判定 → 提示 + 标准路径。
-  5. 非抖音（虎牙 / B 站）→ 不请求页面、不起 worker、立即走标准路径。
-  6. 显式关闭开关（DLV_BARE_STREAM=0）→ 同上。
-  7. **页面直取不在 GUI 线程执行**（Phase 3.A 核心）。
-  8. 断开后到达的迟到结果被丢弃（不启动 reader、不崩溃）。
-  9. 新一轮会话的结果不被旧一轮覆盖（req_id 隔离）。
- 10. 窗口关闭后到达的结果被丢弃（_closing 守卫）。
+  1. 抖音 + 运行时可用 + 取到裸流 → reader 用**裸流 URL** + 解析出的 exe_path；
+     会话内只有 1 个 reader（单管线）；抖音候选集恒为 1（旧 `_uhd` 候选已移除）。
+  2. 抖音 + 运行时不可用 → **明确提示 + 会话结束**，不启动任何 reader，
+     不切换任何旧路径。
+  3. 抖音 + 未开播 → 提示"主播未开播" + 会话结束。
+  4. 抖音 + 页面取不到（网络失败）→ 提示 + 会话结束。
+  5. 非抖音（虎牙 / B 站）/ 显式关闭 → 用适配器候选，不请求页面、不起 worker。
+  6. **取流不在 GUI 线程执行**（Phase 3.A 核心）。
+  7. 断开后到达的迟到结果被丢弃（不启动 reader、不崩溃）。
+  8. 新一轮会话的结果不被旧一轮覆盖（req_id 隔离）。
+  9. 窗口关闭后到达的结果被丢弃（_closing 守卫）。
+ 10. 抖音会话候选集为 1，且候选 URL == 裸流 URL（唯一路径）。
+ 11. 不存在旧 `_uhd` 回退：`FFmpegReader` 构造**不传 fallback**。
 
-全程离线：FFmpegReader / _FrameBridge / 运行时探测 / 页面直取 全部被替换。
+全程离线：FFmpegReader / _FrameBridge / 运行时探测 / 页面取流 全部被替换。
 """
 import os
 import sys
@@ -30,29 +32,31 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import gui.main_window as mw
+from stream.bare_source import (BareProbe, REASON_FETCH_FAILED, REASON_NO_BARE,
+                                REASON_OFFLINE)
 from utils import ffmpeg7_runtime as RUNTIME
 from stream.models import StreamCandidate, StreamInfo
 
 app = QApplication.instance() or QApplication(sys.argv)
 
 BARE = "https://pull-flv-l1.douyincdn.com/stage/stream-111.flv?unique_id=stream-111&t_id=x"
-UHD = "https://pull-flv-l1.douyincdn.com/stage/stream-111_uhd.flv?k=1"
+HUYA_URL = "https://al-game.flv.huya.com/src/1-2-3-4.flv"
 FAKE_EXE = r"D:\fake\runtime\ffmpeg7\ffmpeg.exe"
 
 CREATED = []
+READER_KWARGS = []
 
 
 class FakeReader:
-    """记录构造参数的 reader 替身（必须接住 exe_path / fallback）。"""
+    """记录构造参数的 reader 替身（必须接住 exe_path；**不得**有 fallback）。"""
 
     def __init__(self, url, width=None, height=None, use_cuda=True,
                  http_headers=None, timing=None,
                  audio_enabled=False, audio_pcm_callback=None,
                  audio_sample_rate=None, audio_channels=None,
-                 protocol=None, exe_path=None, fallback=None):
+                 protocol=None, exe_path=None):
         self.url = url
         self.exe_path = exe_path
-        self.fallback = fallback
         self.protocol = protocol
         self.startup_timing = timing
         self.width = width or 1280
@@ -66,6 +70,8 @@ class FakeReader:
         self._frame_id = 0
         self._frame = None
         CREATED.append(self)
+        READER_KWARGS.append(dict(url=url, exe_path=exe_path,
+                                  protocol=protocol))
 
     def start(self):
         self.is_running = True
@@ -112,16 +118,22 @@ def pump(seconds=1.5, until=None):
 
 @pytest.fixture(autouse=True)
 def _fakes(monkeypatch):
-    """替换 reader/bridge，并默认把运行时探测设为"不可用"，逐用例再覆盖。"""
+    """替换 reader/bridge；默认运行时不可用，逐用例再覆盖。
+
+    同时**停用启动期许可证校验**：`_start_license_load()` 会在后台线程里
+    拉起 `susi_helper.exe` 子进程，而本文件会创建/销毁大量 MainWindow；
+    子进程与 Qt 对象 GC 并发时会触发既有的堆竞争（0xc0000374）。许可证
+    路径有自己的专项测试，这里与裸流流程无关，故隔离掉。
+    """
     del CREATED[:]
+    del READER_KWARGS[:]
     monkeypatch.setattr(mw, "FFmpegReader", FakeReader)
     monkeypatch.setattr(mw, "_FrameBridge", RecordingBridge)
+    monkeypatch.setattr(mw.MainWindow, "_start_license_load", lambda self: None)
     monkeypatch.delenv("DLV_BARE_STREAM", raising=False)
-    # 启动探测线程：给一个确定的不可用结论，避免真实拉起进程
     monkeypatch.setattr(RUNTIME, "status",
                         lambda refresh=False: RUNTIME.Ffmpeg7Status(
                             False, RUNTIME.REASON_NOT_FOUND, detail="test"))
-    monkeypatch.setattr(RUNTIME, "find_existing_candidates", lambda: [])
     monkeypatch.setattr(RUNTIME, "resolved_exe", lambda: None)
     yield
     mw.FFmpegReader = _real_reader
@@ -155,68 +167,85 @@ def _runtime_ok(monkeypatch):
                         lambda refresh=False: RUNTIME.Ffmpeg7Status(
                             True, RUNTIME.REASON_OK, path=FAKE_EXE,
                             version="N-test", avcodec_major=63, gpl=True))
-    monkeypatch.setattr(RUNTIME, "find_existing_candidates",
-                        lambda: [FAKE_EXE])
+
+
+def _probe(monkeypatch, probe: BareProbe):
+    monkeypatch.setattr(mw, "probe_video_bare", lambda p, r: probe)
 
 
 # ======================================================================
-# 1. 抖音 + 运行时可用 + 取到裸流 → 裸流主路径
+# 1. 抖音 + 运行时可用 + 取到裸流 → 唯一候选 = 裸流
 # ======================================================================
-def test_douyin_bare_success_uses_bare_url_and_runtime(monkeypatch):
+def test_douyin_bare_success_single_candidate_with_runtime(monkeypatch):
     _runtime_ok(monkeypatch)
-    monkeypatch.setattr(mw, "video_bare_url_for", lambda p, r: BARE)
+    _probe(monkeypatch, BareProbe(url=BARE, live=True, reason="ok"))
     w = _build_window()
     try:
-        _connect(w, [UHD])
+        _connect(w, [])
         assert pump(2.0, lambda: len(CREATED) >= 1), "应创建 reader"
         r = CREATED[0]
-        assert r.url == BARE, "默认走裸流主路径"
-        assert r.exe_path == FAKE_EXE, "使用解析出的外部运行时"
-        assert r.fallback == (UHD, None), "回退到原候选 + 默认运行时"
+        assert r.url == BARE, "播放地址必须是裸流本身"
+        assert r.exe_path == FAKE_EXE, "必须使用外部 FFmpeg7 运行时"
         assert len(CREATED) == 1, "单管线：只创建一个 reader"
-        assert w._bare_worker is None, "worker 完成后应释放引用"
+        # 抖音会话候选集恒为 1（旧 _uhd 转码档候选已整体移除）
+        assert w._failover.total == 1
+        assert w._failover.candidate.url == BARE
     finally:
         w._disconnect()
         w.close()
 
 
-# ======================================================================
-# 2. 抖音 + 运行时可用 + 取不到裸流 → 标准路径（不提示）
-# ======================================================================
-def test_douyin_bare_not_found_falls_back_silently(monkeypatch):
+def test_reader_never_receives_fallback_kwarg(monkeypatch):
+    """旧 `_uhd` 回退已移除：构造 reader 时不得再传 fallback。"""
     _runtime_ok(monkeypatch)
-    monkeypatch.setattr(mw, "video_bare_url_for", lambda p, r: None)
+    _probe(monkeypatch, BareProbe(url=BARE, live=True, reason="ok"))
     w = _build_window()
     try:
-        _connect(w, [UHD])
+        _connect(w, [])
         assert pump(2.0, lambda: len(CREATED) >= 1)
-        r = CREATED[0]
-        assert r.url == UHD and r.exe_path is None and r.fallback is None
-        assert w._bare_url is None
+        import inspect
+        sig = inspect.signature(FakeReader.__init__)
+        assert "fallback" not in sig.parameters, \
+            "FFmpegReader 不应再接受 fallback（旧 _uhd 回退已移除）"
+        assert "fallback" not in READER_KWARGS[0]
     finally:
         w._disconnect()
         w.close()
 
 
 # ======================================================================
-# 3. 抖音 + 运行时文件完全缺失 → 同步回退 + 用户可见提示
+# 2/3/4. 抖音失败路径：明确提示 + 会话结束，绝不切旧路径
 # ======================================================================
-def test_douyin_runtime_missing_immediate_fallback_with_notice(monkeypatch):
-    fetched = []
-    monkeypatch.setattr(mw, "video_bare_url_for",
-                        lambda p, r: fetched.append(1) or BARE)
+@pytest.mark.parametrize("probe_kwargs,expect_text", [
+    (dict(url=None, live=False, reason=REASON_OFFLINE), "主播未开播"),
+    (dict(url=None, live=True, reason=REASON_NO_BARE), "未找到可用的直播流"),
+    (dict(url=None, live=False, reason=REASON_FETCH_FAILED), "无法获取直播间信息"),
+])
+def test_douyin_bare_failure_aborts_with_message(monkeypatch, probe_kwargs,
+                                                expect_text):
+    _runtime_ok(monkeypatch)
+    _probe(monkeypatch, BareProbe(**probe_kwargs))
     w = _build_window()
     try:
-        _connect(w, [UHD])
-        # 同步路径：不需要 pump 就应已创建 reader
-        assert len(CREATED) == 1, "运行时缺失时应立即启动标准路径"
-        r = CREATED[0]
-        assert r.url == UHD and r.exe_path is None
-        assert fetched == [], "运行时缺失时不得请求页面"
-        assert w._bare_worker is None
+        _connect(w, [])
+        assert pump(2.0, lambda: w._bare_worker is None), "worker 应已结束"
+        assert CREATED == [], "取流失败时不得启动任何 reader（不切旧路径）"
+        assert expect_text in w.statusBar().currentMessage()
+        assert w._connected is False, "会话应已结束"
+    finally:
+        w._disconnect()
+        w.close()
+
+
+def test_runtime_unavailable_aborts_with_message(monkeypatch):
+    _probe(monkeypatch, BareProbe(url=BARE, live=True, reason="ok"))
+    w = _build_window()
+    try:
+        _connect(w, [])
+        assert pump(2.0, lambda: w._bare_worker is None)
+        assert CREATED == [], "运行时不可用时不得启动 reader"
         msg = w.statusBar().currentMessage()
-        assert "低延迟播放组件" in msg, f"应有用户可见提示，实际={msg!r}"
-        # 提示文案不得泄漏技术细节
+        assert "低延迟播放组件" in msg, f"应有明确提示，实际={msg!r}"
         for leak in ("DLV_", "ffmpeg.exe", "\\", "/", "Traceback"):
             assert leak not in msg
     finally:
@@ -225,76 +254,51 @@ def test_douyin_runtime_missing_immediate_fallback_with_notice(monkeypatch):
 
 
 # ======================================================================
-# 4. 抖音 + 运行时探测失败（后台判定）→ 提示 + 标准路径
-# ======================================================================
-def test_douyin_runtime_invalid_worker_reports_and_falls_back(monkeypatch):
-    monkeypatch.setattr(RUNTIME, "find_existing_candidates", lambda: [FAKE_EXE])
-    monkeypatch.setattr(RUNTIME, "status",
-                        lambda refresh=False: RUNTIME.Ffmpeg7Status(
-                            False, RUNTIME.REASON_VERSION_UNREADABLE,
-                            path=FAKE_EXE, detail="banner stripped"))
-    called = []
-    monkeypatch.setattr(mw, "video_bare_url_for",
-                        lambda p, r: called.append(1) or BARE)
-    w = _build_window()
-    try:
-        _connect(w, [UHD])
-        assert pump(2.0, lambda: len(CREATED) >= 1)
-        r = CREATED[0]
-        assert r.url == UHD and r.exe_path is None, "运行时无效 → 标准路径"
-        assert called == [], "运行时无效时不应再请求页面"
-        assert "低延迟播放组件" in w.statusBar().currentMessage()
-    finally:
-        w._disconnect()
-        w.close()
-
-
-# ======================================================================
-# 5/6. 非抖音 / 显式关闭 → 不请求页面、不起 worker
+# 5. 非抖音 / 显式关闭 → 用适配器候选，不请求页面
 # ======================================================================
 @pytest.mark.parametrize("platform,env", [
     ("huya", None),
     ("bilibili", None),
     ("douyin", "0"),
 ])
-def test_not_applicable_goes_straight_to_standard(monkeypatch, platform, env):
+def test_not_applicable_uses_platform_candidates(monkeypatch, platform, env):
     if env is not None:
         monkeypatch.setenv("DLV_BARE_STREAM", env)
 
     def _boom(*a, **kw):
-        raise AssertionError("不该请求页面")
-    monkeypatch.setattr(mw, "video_bare_url_for", _boom)
+        raise AssertionError("不该取裸流")
+    monkeypatch.setattr(mw, "probe_video_bare", _boom)
     w = _build_window()
     try:
-        _connect(w, [UHD], platform=platform)
-        assert len(CREATED) == 1, "应同步立即启动标准路径"
-        assert CREATED[0].url == UHD and CREATED[0].exe_path is None
+        _connect(w, [HUYA_URL], platform=platform)
+        assert len(CREATED) == 1, "应同步立即启动平台候选"
+        assert CREATED[0].url == HUYA_URL
+        assert CREATED[0].exe_path is None, "非抖音不走裸流运行时"
         assert w._bare_worker is None
-        assert w.statusBar().currentMessage() != ""
     finally:
         w._disconnect()
         w.close()
 
 
 # ======================================================================
-# 7. 页面直取不得在 GUI 线程执行
+# 6. 取流不得在 GUI 线程执行
 # ======================================================================
-def test_page_fetch_runs_off_gui_thread(monkeypatch):
+def test_bare_probe_runs_off_gui_thread(monkeypatch):
     _runtime_ok(monkeypatch)
     seen = {}
 
     def _record(p, r):
         seen["thread"] = threading.current_thread().name
         seen["is_main"] = threading.current_thread() is threading.main_thread()
-        return BARE
-    monkeypatch.setattr(mw, "video_bare_url_for", _record)
+        return BareProbe(url=BARE, live=True, reason="ok")
+    monkeypatch.setattr(mw, "probe_video_bare", _record)
 
     w = _build_window()
     try:
-        _connect(w, [UHD])
-        assert pump(2.0, lambda: "thread" in seen), "worker 应执行页面直取"
+        _connect(w, [])
+        assert pump(2.0, lambda: "thread" in seen), "worker 应执行取流"
         assert seen["is_main"] is False, \
-            f"页面直取不得在 GUI 主线程执行（实际={seen['thread']}）"
+            f"取流不得在 GUI 主线程执行（实际={seen['thread']}）"
         assert seen["thread"] == "bare-resolve-worker"
     finally:
         w._disconnect()
@@ -302,7 +306,7 @@ def test_page_fetch_runs_off_gui_thread(monkeypatch):
 
 
 # ======================================================================
-# 8. 断开后到达的迟到结果被丢弃
+# 7. 断开后到达的迟到结果被丢弃
 # ======================================================================
 def test_late_result_after_disconnect_is_discarded(monkeypatch):
     _runtime_ok(monkeypatch)
@@ -310,19 +314,17 @@ def test_late_result_after_disconnect_is_discarded(monkeypatch):
 
     def _slow(p, r):
         gate.wait(timeout=5.0)
-        return BARE
-    monkeypatch.setattr(mw, "video_bare_url_for", _slow)
+        return BareProbe(url=BARE, live=True, reason="ok")
+    monkeypatch.setattr(mw, "probe_video_bare", _slow)
 
     w = _build_window()
     try:
-        _connect(w, [UHD])
+        _connect(w, [])
         assert w._bare_worker is not None, "应已启动 worker"
         w._disconnect()
-        n_after_disconnect = len(CREATED)
-        gate.set()                       # 放行迟到结果
+        gate.set()
         pump(1.5)
-        assert len(CREATED) == n_after_disconnect, \
-            "断开后不得再启动任何 reader"
+        assert CREATED == [], "断开后不得再启动任何 reader"
         assert w._bare_url is None
     finally:
         w._disconnect()
@@ -330,31 +332,29 @@ def test_late_result_after_disconnect_is_discarded(monkeypatch):
 
 
 # ======================================================================
-# 9. 新一轮会话不被旧结果覆盖
+# 8. 新一轮会话不被旧结果覆盖
 # ======================================================================
 def test_stale_result_does_not_override_new_session(monkeypatch):
     _runtime_ok(monkeypatch)
     gate = threading.Event()
-    BARE_NEW = "https://pull-flv-l1.douyincdn.com/stage/stream-222.flv" \
-               "?unique_id=stream-222&t_id=y"
+    BARE_NEW = ("https://pull-flv-l1.douyincdn.com/stage/stream-222.flv"
+                "?unique_id=stream-222&t_id=y")
 
     def _fetch(p, r):
         if r == "111":
             gate.wait(timeout=5.0)
-            return BARE
-        return BARE_NEW
-    monkeypatch.setattr(mw, "video_bare_url_for", _fetch)
+            return BareProbe(url=BARE, live=True, reason="ok")
+        return BareProbe(url=BARE_NEW, live=True, reason="ok")
+    monkeypatch.setattr(mw, "probe_video_bare", _fetch)
 
     w = _build_window()
     try:
-        _connect(w, [UHD], room="111")
+        _connect(w, [], room="111")
         w._disconnect()
-        # 第二轮会话（新房间）：worker 立即返回
-        _connect(w, [UHD], room="222")
+        _connect(w, [], room="222")
         assert pump(2.0, lambda: len(CREATED) >= 1)
         r_new = CREATED[-1]
-        assert r_new.url == BARE_NEW, "新会话必须用自己的裸流结果"
-        # 放行第一轮的迟到结果
+        assert r_new.url == BARE_NEW, "新会话必须用自己的取流结果"
         gate.set()
         pump(1.0)
         assert r_new.url == BARE_NEW, "旧结果不得覆盖新会话"
@@ -365,51 +365,35 @@ def test_stale_result_does_not_override_new_session(monkeypatch):
 
 
 # ======================================================================
-# 10. 窗口关闭后到达的结果被丢弃
+# 9. 窗口关闭后到达的结果被丢弃
 # ======================================================================
 def test_result_after_close_is_discarded(monkeypatch):
     _runtime_ok(monkeypatch)
     gate = threading.Event()
-    monkeypatch.setattr(mw, "video_bare_url_for",
-                        lambda p, r: (gate.wait(timeout=5.0), BARE)[1])
+
+    def _slow(p, r):
+        gate.wait(timeout=5.0)
+        return BareProbe(url=BARE, live=True, reason="ok")
+    monkeypatch.setattr(mw, "probe_video_bare", _slow)
 
     w = _build_window()
-    _connect(w, [UHD])
+    _connect(w, [])
     assert w._bare_worker is not None
-    w.close()                             # 触发 closeEvent → _closing = True
-    n = len(CREATED)
+    w.close()
     gate.set()
-    pump(1.5)                             # 不得崩溃、不得启动 reader
+    pump(1.5)
     assert w._closing is True
-    assert len(CREATED) == n
+    assert CREATED == []
 
 
 # ======================================================================
-# 11. 每次会话最多一次回退（会话级裸流失败抑制）
+# 10. 抖音适配器不再产出任何流候选（唯一路径的结构性证据）
 # ======================================================================
-def test_bare_failure_marks_session_and_stops_retrying(monkeypatch):
-    """reader 报 fallback_used 后，后续候选不得再尝试裸流。"""
-    _runtime_ok(monkeypatch)
-    monkeypatch.setattr(mw, "video_bare_url_for", lambda p, r: BARE)
-    w = _build_window()
-    try:
-        _connect(w, [UHD, "https://x/stream-111_hd.flv"])
-        assert pump(2.0, lambda: len(CREATED) >= 1)
-        first = CREATED[0]
-        assert first.url == BARE
-        # 模拟：裸流失败并已回退（fallback_used=True），且从未出帧
-        first.frames_read = 0
-        first.first_frame_ms = None
-        first.error = "连接失败"
-        first.is_running = False
-        monkeypatch.setattr(type(first), "fallback_used",
-                            property(lambda self: True), raising=False)
-        w._frame_timer.stop()
-        w._on_frame_timeout()
-        w._frame_timer.stop()
-        assert w._bare_url is None, "本会话裸流应被判定不可用"
-        assert len(CREATED) >= 2, "应继续尝试下一个候选"
-        assert CREATED[-1].url != BARE, "后续候选不得再走裸流"
-    finally:
-        w._disconnect()
-        w.close()
+def test_douyin_adapter_returns_no_candidates():
+    """适配器层：抖音 resolve() 不再产出任何转码档候选。"""
+    from stream.adapters.douyin import DouyinStream
+    info = DouyinStream("https://live.douyin.com/123456789").get_stream_info()
+    assert info.platform == "douyin"
+    assert info.room_id == "123456789"
+    assert info.candidates == [], "抖音适配器不得再枚举任何流候选"
+    assert info.selected is None

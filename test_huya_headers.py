@@ -19,7 +19,6 @@
 （User-Agent / Referer / Origin 是公开常量，允许显示）。
 """
 
-import json
 import logging
 import os
 import shutil
@@ -149,26 +148,19 @@ def t_huya_headers():
 
 
 # ----------------------------------------------------------------------
-def _fake_douyin_page():
-    """构造一个让 DouyinStream 能解析出候选的桩页面（与既有测试同构）"""
-    obj = {"flv_pull_url": {"HD1": "http://pull-flv-l1.douyincdn.com/a/hd1.flv?x=1"}}
-    js = json.dumps(obj, separators=(",", ":")).replace('"', '\\"')
-    return ('<html><script>self.__pace_f.push([1,"prefix\\"stream_url\\":%s"]);'
-            "</script></html>" % js)
-
-
 def t_douyin_headers():
-    print("\n[3] Douyin candidate 不包含 Huya headers")
+    print("\n[3] Douyin 不产出候选 → 不可能混入 Huya headers")
     ds = DouyinStream(DOUYIN_URL)
-    ds._fetch_room_page = lambda: _fake_douyin_page()
-    ds._detect_video_resolution = lambda url: VideoInfo(1280, 720, "yuv420p", 30.0, "h264")
     info = ds.get_stream_info()
-    check("抖音解析出候选", len(info.candidates) >= 1, str(len(info.candidates)))
-    check("所有抖音候选 http_headers 为空",
-          all(c.http_headers == {} for c in info.candidates),
-          str([c.http_headers for c in info.candidates]))
-    check("抖音候选未混入 HYSDK UA",
-          not any("HYSDK" in str(c.http_headers) for c in info.candidates))
+    # RELEASE-02-B5-CLEANUP：抖音适配器不再枚举任何流候选（旧 `_uhd` 转码档
+    # 候选整体移除），唯一取流来源是裸流页面直取。因此"抖音候选是否混入
+    # 虎牙 headers"这一风险在结构上已不存在 —— 这里断言该结构。
+    check("抖音适配器不产出候选（结构上无 headers 污染面）",
+          info.candidates == [], str(info.candidates))
+    check("抖音 selected 恒为 None", info.selected is None)
+    check("DouyinStream 不再有旧页面解析入口",
+          not hasattr(ds, "_extract_from_pace_f")
+          and not hasattr(ds, "_fetch_room_page"))
 
 
 # ----------------------------------------------------------------------
@@ -273,16 +265,17 @@ def t_mainwindow_wiring():
     captured = {}
 
     class _SpyReader:
-        # 签名必须与 _start_playback 的真实构造调用一致（含音频第二路参数），
-        # 否则构造即 TypeError → 全部尝试同步失败 → 断言全部失真（2026-10-01 修复）。
+        # 签名必须与 _start_playback 的真实构造调用一致（含音频第二路参数与
+        # RELEASE-02-B5 加入的 exe_path），否则构造即 TypeError → 全部尝试同步
+        # 失败 → 断言全部失真（2026-10-01、2026-10-13 各出现过一次）。
         def __init__(self, url, width=None, height=None, use_cuda=True,
                      http_headers=None, timing=None,
                      audio_enabled=False, audio_pcm_callback=None,
                      audio_sample_rate=None, audio_channels=None,
-                     protocol=None):
+                     protocol=None, exe_path=None):
             captured.update(url=url, width=width, height=height,
                             use_cuda=use_cuda, http_headers=http_headers,
-                            timing=timing)
+                            timing=timing, exe_path=exe_path)
             self.width, self.height = width, height
             self.error = None
             self.frames_skipped = 0

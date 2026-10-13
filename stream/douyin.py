@@ -26,10 +26,10 @@ if __name__ == "__main__":
     live_url = input("请输入抖音直播间URL: ").strip()
     douyin = DouyinStream(live_url)
     try:
-        result = douyin.get_stream_url()
+        info = douyin.get_stream_info()
     except DouyinStreamError as e:
-        print(f"[解析失败] {e}")
+        print(f"[识别失败] {e}")
     else:
-        print(f"room_id:     {result['room_id']}")
-        print(f"stream_type: {result['stream_type']}")
-        print(f"stream_url:  {result['stream_url']}")
+        print(f"platform: {info.platform}")
+        print(f"room_id:  {info.room_id}")
+        print("流地址由裸流页面直取提供（stream/bare_source.py）")

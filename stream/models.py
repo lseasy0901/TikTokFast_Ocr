@@ -31,18 +31,10 @@ class StreamCandidate:
     :param width/height/fps: 已知时填写，未知为 None
     :param metadata:  平台附加信息（CDN 名等），核心层不解释
     :param http_headers: 播放该地址所需的 HTTP 请求头（平台提供，核心层执行）
-    :param runtime: 期望执行该候选的 FFmpeg 运行时标记（B4 裸流："ffmpeg7"）；
-                     None = 默认运行时。核心层不解释具体版本，仅用于选择 exe。
-                     **RELEASE-02-B5 起保留但生产链路不再消费**：裸流不再是
-                     "派生候选"，而是由 GUI 在会话开始时经
-                     `utils.ffmpeg7_runtime` 定位并校验外部运行时后，直接以
-                     `exe_path=` 传给 FFmpegReader。此字段仅为兼容旧
-                     `stream/bare_candidate.py`（已弃用）与既有测试而保留。
     """
 
     url: str
     protocol: str
-    runtime: str | None = None
     quality: str | None = None
     bitrate: int | None = None
     width: int | None = None

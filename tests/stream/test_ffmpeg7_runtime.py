@@ -30,9 +30,16 @@ BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 
 
 @pytest.fixture(autouse=True)
-def _clean(monkeypatch):
-    """每个用例前后清缓存 / 清环境覆盖，避免相互污染。"""
+def _clean(monkeypatch, tmp_path):
+    """每个用例前后清缓存 / 清环境覆盖，避免相互污染。
+
+    同时把 ``LOCALAPPDATA`` 指到临时目录：真实机器上可能**已经装好**用户级
+    运行时（``%LOCALAPPDATA%/LiveLens/runtime/ffmpeg7/``），若不隔离，
+    `find_existing_candidates()` 会带上它，使"候选集恰好等于某个列表"的断言
+    依赖机器状态。隔离后用例只反映被显式构造的条件。
+    """
     monkeypatch.delenv(R._ENV_OVERRIDE, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     R.reset_cache()
     yield
     R.reset_cache()

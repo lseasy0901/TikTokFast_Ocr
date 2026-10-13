@@ -130,7 +130,7 @@ class FFmpegReader:
                  http_headers=None, timing=None,
                  audio_enabled=False, audio_pcm_callback=None,
                  audio_sample_rate=None, audio_channels=None,
-                 protocol=None, exe_path=None, fallback=None):
+                 protocol=None, exe_path=None):
         """
         构造**不做任何网络探测**：尺寸要么是调用方给的确定值，要么是显式
         None（= 尺寸未知，留到读取线程里解析，见 :meth:`_resolve_pending_size`）。
@@ -161,12 +161,12 @@ class FFmpegReader:
                           异常由调用方自理（本层会在回调抛异常时记录并继续读）。
         """
         self.stream_url = stream_url
-        #: B4 裸流回退：exe_path 覆盖 FFmpeg 可执行文件（None=默认解析）；
-        #: fallback = (回退URL, 回退exe路径) —— 主 URL 的重启预算耗尽或
-        #: stderr 出现解码器不支持证据时，切换到回退组合（默认关闭）。
+        #: exe_path 覆盖 FFmpeg 可执行文件（None = 默认解析）。
+        #: RELEASE-02-B5-CLEANUP：旧 `_uhd` 回退组合（fallback）已整体移除 ——
+        #: 唯一拉流架构下失败不再切换到任何旧路径，而是有界重启或明确报错。
         self._exe_path = exe_path
-        self._fallback = tuple(fallback) if fallback else None
-        self._fallback_used = False
+        #: stderr 出现"解码器不支持"证据时置位，供看门狗提前击杀
+        #: （随后走有界重启路径，而非切换旧路径）。
         self._stderr_decode_fail = False
         self._http_headers = dict(http_headers) if http_headers else {}
         self._audio_enabled = bool(audio_enabled)
@@ -512,20 +512,11 @@ class FFmpegReader:
         return self._frames_skipped
 
     @property
-    def fallback_used(self):
-        """B4/B5 回退：本实例是否已从主 URL 切换到回退 URL（只读）。
-
-        供上层判定"裸流主路径本会话已失败"——避免对后续每个候选重复
-        "裸流失败 → 回退" 的无效循环。
-        """
-        return self._fallback_used
-
-    @property
     def decode_failed(self):
         """是否观测到解码器不支持证据（stderr "not implemented"，只读）。
 
-        裸流（增强 FLV HEVC）遇到不支持解码器的运行时即此信号，用于快速
-        判定该运行时不适合裸流。
+        裸流（增强 FLV HEVC）遇到不支持解码器的运行时即此信号：看门狗据此
+        提前击杀子进程，随后走**有界重启**路径（不再切换任何旧路径）。
         """
         return self._stderr_decode_fail
 
@@ -649,12 +640,9 @@ class FFmpegReader:
                         self._cleanup_process(proc)
                         continue
 
-                # B4: 回退可用 → 切换到回退流继续启动流程（不置 error）
-                if self._switch_to_fallback(proc):
-                    proc = None
-                    continue
-
-                # 与改动前一致的失败路径
+                # RELEASE-02-B5-CLEANUP：此处原为"切换到回退流（旧 _uhd）"。
+                # 唯一拉流架构下不存在可切换的旧路径 —— 直接走失败路径，
+                # 由上层给出明确错误提示（不静默降级）。
                 self._cleanup_process(proc)
                 self._running = False
                 self._set_error(
@@ -769,20 +757,14 @@ class FFmpegReader:
                 break
 
             if not self._stall_killed:
-                if self._switch_to_fallback(proc):
-                    proc = self._spawn_ffmpeg()
-                    continue
-                break   # 无停滞标记的 EOF：直播正常结束（error 已在上面置位）
+                # RELEASE-02-B5-CLEANUP：此处原为"切换到回退流（旧 _uhd）"。
+                # 无停滞标记的 EOF = 直播正常结束/连接被对端关闭，直接收尾。
+                break
 
             self._stall_killed = False
             stall_restarts += 1
             if stall_restarts > _STALL_MAX_RESTARTS:
-                # B4 裸流回退：主 URL 预算耗尽且配置了回退组合 → 切换后
-                # 重置预算继续（同一读取循环/看门狗/资源管理，无第二套模型）
-                if self._switch_to_fallback(proc):
-                    stall_restarts = 0
-                    proc = self._spawn_ffmpeg()
-                    continue
+                # 有界重启预算耗尽：明确报错，**不切换任何旧路径**
                 error = (f"输入停滞：连续 {stall_restarts - 1} 次自动重启后仍无数据"
                          "（源端或网络持续不可用）")
                 if TRACE.enabled:
@@ -977,7 +959,7 @@ class FFmpegReader:
                     self._stall_killed = True
                     logger.warning(
                         "[FFMPEG] stderr 证实解码器不支持当前流，击杀子进程"
-                        "以进入回退路径")
+                        "以进入有界重启路径")
                     try:
                         proc.kill()
                     except Exception:  # noqa: BLE001
@@ -1099,28 +1081,6 @@ class FFmpegReader:
 
         return cmd
 
-    def _switch_to_fallback(self, proc) -> bool:
-        """B4: 切换到回退流 (fallback_url, fallback_exe)。
-
-        在主 URL 的重启预算耗尽、或主 URL 快速 EOF（连接失败）时调用。
-        成功切换返回 True（调用方继续读取循环），未配置/已用过返回 False。
-        资源规则：旧子进程先 kill+wait，再 spawn 新进程。"""
-        if not self._fallback or self._fallback_used:
-            return False
-        fb_url, fb_exe = self._fallback
-        logger.warning("[FFMPEG] 主 URL 不可用，切换回退流: %s", fb_url[:80])
-        if TRACE.enabled:
-            TRACE.note_event("fallback_to_primary")
-        self.stream_url = fb_url
-        self._exe_path = fb_exe
-        self._fallback_used = True
-        self._stderr_decode_fail = False
-        self._cleanup_process(proc)
-        if self._audio_enabled:
-            self._audio_accepted = False
-            self._audio_thread_started = False
-        return True
-
     def _spawn_ffmpeg(self, with_audio: bool | None = None):
         """启动 FFmpeg 子进程（ffmpeg 不存在时抛出 FileNotFoundError）"""
         cmd = self._build_ffmpeg_cmd(with_audio)
@@ -1155,11 +1115,11 @@ class FFmpegReader:
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
                     self._stderr_tail.append(text)
-                    # B4: 裸流经不支持的解码器时，ffmpeg 逐帧报
-                    # "Video codec ... not implemented" —— 立即标记，
-                    # 看门狗据此快速击杀并回退，无需等满停滞超时。
-                    if ("not implemented" in text
-                            and self._fallback and not self._fallback_used):
+                    # 运行时不支持当前流的编解码封装时，ffmpeg 逐帧报
+                    # "Video codec ... not implemented" —— 立即标记，看门狗
+                    # 据此快速击杀子进程（随后走**有界重启**，不再切换旧路径），
+                    # 无需等满停滞超时。
+                    if "not implemented" in text:
                         self._stderr_decode_fail = True
                     if STDERR_RECORDER.enabled:
                         STDERR_RECORDER.feed(text)

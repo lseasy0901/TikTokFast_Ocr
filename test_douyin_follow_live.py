@@ -27,7 +27,6 @@ anchor_id / r_id / r_player 等与房间号无关的参数一律忽略。
 直接 ``python test_douyin_follow_live.py`` 运行，不依赖 pytest。
 """
 
-import json
 import logging
 import os
 import sys
@@ -37,11 +36,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 logging.disable(logging.CRITICAL)
 
-from stream.adapters.douyin import (  # noqa: E402
-    DouyinAdapter,
-    DouyinStream,
-    DouyinStreamError,
-)
+from stream.adapters.douyin import DouyinAdapter, DouyinStream  # noqa: E402
 from stream.models import StreamResolveError  # noqa: E402
 from stream.registry import build_default_registry  # noqa: E402
 
@@ -68,73 +63,6 @@ def check(condition, message: str) -> bool:
 
 def section(title: str) -> None:
     print(f"\n=== {title} ===")
-
-
-# ======================================================================
-# 桩网络
-# ======================================================================
-class _FakeResp:
-    def __init__(self, status_code, text, payload=None, url=""):
-        self.status_code = status_code
-        self.text = text
-        self.url = url
-        self._payload = payload
-
-    def json(self):
-        if self._payload is None:
-            raise ValueError("no json")
-        return self._payload
-
-
-class _FakeSession:
-    """按 room_id 分发的会话桩，记录每一次请求。
-
-    :param streams: {room_id: 播放地址}；不在表里的 room_id 视为"无可播放地址"
-    :param errors:  {room_id: 异常}；命中时该候选直接抛错（模拟未开播等）
-    """
-
-    def __init__(self, streams=None, errors=None, status_code=0):
-        self.streams = streams or {}
-        self.errors = errors or {}
-        self.status_code = status_code
-        self.cookies = self
-        self.requested_room_ids: list[str] = []
-
-    def get_dict(self):
-        return {}
-
-    def get(self, url, **kw):
-        # 首页取 Cookie / 直播间页面：一律返回空页面，
-        # 让解析链落到 API 分支，由房间号决定成败
-        return _FakeResp(200, "<html></html>", url=url)
-
-    def post(self, url, **kw):
-        room_id = str((kw.get("params") or {}).get("room_id", ""))
-        self.requested_room_ids.append(room_id)
-
-        if room_id in self.errors:
-            raise self.errors[room_id]
-
-        stream_url = self.streams.get(room_id)
-        if stream_url is None:
-            # 接口正常，但这个 id 换不出房间
-            return _FakeResp(200, "", {"status_code": 0,
-                                       "data": {"data": []}}, url=url)
-        return _FakeResp(200, "", {
-            "status_code": self.status_code,
-            "data": {"data": [{
-                "status": 2,
-                "stream_url": {"flv_pull_url": {"FULL_HD1": stream_url}},
-            }]},
-        }, url=url)
-
-
-def new_stream(url, **session_kw):
-    """构造一个网络被完全桩住的 DouyinStream，并跳过分辨率探测。"""
-    ds = DouyinStream(url)
-    ds._session = _FakeSession(**session_kw)
-    ds._detect_video_resolution = lambda u: None
-    return ds
 
 
 # ======================================================================
@@ -216,132 +144,107 @@ def test_url_parsing() -> None:
 
 
 # ======================================================================
-# B. 关注页解析流程（桩网络）
+# B. 关注页链接的解析结果（RELEASE-02-B5-CLEANUP 后的新契约）
 # ======================================================================
 def test_follow_resolution() -> None:
-    section("B. 关注页链接的解析流程（桩网络）")
+    section("B. 关注页链接的解析结果（新契约：只给房间标识，不发请求）")
 
-    # B1. 主候选（路径 id）就能换出流 —— 不该再去试 anchor_id
-    ds = new_stream(FOLLOW_URL, streams={FOLLOW_ID: "http://x/a.flv"})
+    # B1. room_id 来自路径 id，不是 anchor_id
+    info = DouyinStream(FOLLOW_URL).get_stream_info()
+    check(info.room_id == FOLLOW_ID, "room_id 来自路径里的 live 段")
+    check(info.room_id != ANCHOR_ID, "anchor_id 绝不被当作房间号")
+
+    # B2. 唯一拉流架构：适配器不再枚举任何流候选
+    check(info.candidates == [], "candidates 恒为空（旧 _uhd 候选已整体移除）")
+    check(info.selected is None, "selected 恒为 None")
+    check(info.url is None, "适配器层不产出可播放地址（取流交给裸流页面直取）")
+
+    # B3. 解析过程**不发任何网络请求**（旧实现在这里会请求页面/API）
+    class _NoNet:
+        """任何网络调用都视为失败：新架构下 resolve 应当纯本地。"""
+
+        def __init__(self):
+            self.calls = []
+
+        def get(self, *a, **kw):
+            self.calls.append(("get", a[:1]))
+            raise AssertionError("新架构下 resolve 不应发起网络请求")
+
+        def post(self, *a, **kw):
+            self.calls.append(("post", a[:1]))
+            raise AssertionError("新架构下 resolve 不应发起网络请求")
+
+    ds = DouyinStream(FOLLOW_URL)
+    ds._session = _NoNet()
     info = ds.get_stream_info()
-    check(info.room_id == FOLLOW_ID, "主候选成功时 room_id 来自该候选")
-    check(ds._session.requested_room_ids == [FOLLOW_ID],
-          f"主候选成功时只请求一次（实际 {ds._session.requested_room_ids}）")
-    check(len(info.candidates) >= 1, "仍然走既有的候选流/选流逻辑")
+    check(info.room_id == FOLLOW_ID, "纯本地解析出 room_id")
+    check(ds._session.calls == [], "解析过程零网络请求")
 
-    # B2. 关键：路径 id 换不出房间时，**不允许**拿 anchor_id 当房间号去试
-    ds = new_stream(FOLLOW_URL, streams={ANCHOR_ID: "http://x/b.flv"})
+    # B4. 非法房间号如实报错，不拿 anchor_id 顶替
+    bad = ("https://www.douyin.com/follow/live/abc"
+           "?anchor_id=111122930648")
     try:
-        ds.get_stream_info()
-        check(False, "路径 id 取不到流时应当报错，而不是拿 anchor_id 顶替")
-    except StreamResolveError:
-        check(True, "路径 id 取不到流时如实报错")
-    check(ds._session.requested_room_ids == [FOLLOW_ID],
-          f"anchor_id 绝不被当作房间号请求（实际 {ds._session.requested_room_ids}）")
-
-    # B3. 取不到流 → 报错，错误里的 room_id 就是路径 id
-    ds = new_stream(FOLLOW_URL, streams={})
-    try:
-        ds.get_stream_info()
-        check(False, "取不到流时应当抛错")
+        DouyinStream(bad).get_stream_info()
+        check(False, "路径 id 非法时应当报错，而不是拿 anchor_id 顶替")
     except StreamResolveError as e:
-        check(bool(str(e)), f"报错信息可读：{e}")
-        check(ds.room_id == FOLLOW_ID, "失败后 room_id 仍是路径 id（便于排查）")
-    check(ds._session.requested_room_ids == [FOLLOW_ID], "只请求了路径 id")
+        check("URL格式错误" in str(e), f"报错为 URL 格式错误：{e}")
 
-    # B4. 路径 id 抛"未开播"之类的明确错误 → 如实抛出，不拿 anchor_id 顶替
-    ds = new_stream(
-        FOLLOW_URL,
-        streams={ANCHOR_ID: "http://x/c.flv"},
-        # 用生产代码真正会抛的那个类型：直播信息链对明确的 DouyinStreamError
-        # 是"原样上抛"，对其它异常才会吞掉并落到"所有解析方式均失败"
-        errors={FOLLOW_ID: DouyinStreamError("房间未开播")},
-    )
-    try:
-        ds.get_stream_info()
-        check(False, "明确错误应当抛出")
-    except StreamResolveError as e:
-        check("未开播" in str(e), f"原样抛出路径 id 的错误：{e}")
-    check(ds._session.requested_room_ids == [FOLLOW_ID],
-          "明确错误后也不再尝试 anchor_id")
-
-    # B5. 抛出的错误里带的就是路径 id（用户给的那个 id）
-    ds = new_stream(
-        FOLLOW_URL,
-        errors={FOLLOW_ID: StreamResolveError("房间未开播"),
-                ANCHOR_ID: StreamResolveError("主播不存在")},
-    )
-    try:
-        ds.get_stream_info()
-        check(False, "抛错时应当抛出异常")
-    except StreamResolveError as e:
-        check(FOLLOW_ID in str(e), f"抛出的是路径 id 的失败信息：{e}")
-    check(ANCHOR_ID not in ds._session.requested_room_ids,
-          "anchor_id 从未被请求过")
-
-    # B6. 请求失败（网络层异常）不被吞掉
-    ds = new_stream(FOLLOW_URL, errors={
-        FOLLOW_ID: ConnectionError("连接超时"),
-        ANCHOR_ID: StreamResolveError("主播不存在"),
-    })
-    try:
-        ds.get_stream_info()
-        check(False, "网络失败应当向上报告，不能静默返回空")
-    except Exception as e:  # noqa: BLE001
-        check(isinstance(e, (ConnectionError, StreamResolveError)),
-              f"网络失败被如实抛出：{type(e).__name__}: {e}")
+    # B5. anchor_id 从未出现在任何 room_id 位置
+    for url in (FOLLOW_URL,
+                f"https://www.douyin.com/follow/live/{FOLLOW_ID}"
+                f"?anchor_id=abc",
+                f"https://www.douyin.com/follow/live/{FOLLOW_ID}"):
+        got = DouyinStream._parse_room_id_candidates(url)
+        check(got == [FOLLOW_ID] and ANCHOR_ID not in got,
+              f"anchor_id 不作为房间号：{url}")
 
 
 # ======================================================================
-# C. 标准链接行为不变
+# C. 标准链接行为
 # ======================================================================
 def test_standard_url_unchanged() -> None:
-    section("C. 标准直播链接行为不变")
+    section("C. 标准直播链接行为")
 
-    ds = new_stream(ROOM_URL, streams={"123456789": "http://x/d.flv"})
-    info = ds.get_stream_info()
+    info = DouyinStream(ROOM_URL).get_stream_info()
     check(info.room_id == "123456789", "标准链接仍能解析")
-    check(ds._session.requested_room_ids == ["123456789"],
-          f"标准链接只请求一次（实际 {ds._session.requested_room_ids}）")
-
-    ds = new_stream(ROOM_URL, streams={})
-    try:
-        ds.get_stream_info()
-        check(False, "标准链接无流时应当报错")
-    except StreamResolveError:
-        check(True, "标准链接无流时报错行为不变")
+    check(info.candidates == [], "标准链接同样不产出流候选")
+    check(info.platform == "douyin", "platform 标识不变")
 
     # 非法 URL 仍然报 URL 格式错误，而不是"平台不支持"
-    ds = new_stream("https://live.douyin.com/")
     try:
-        ds.get_room_id()
+        DouyinStream("https://live.douyin.com/").get_room_id()
         check(False, "缺少房间号的标准链接应当报错")
     except StreamResolveError as e:
         check("URL格式错误" in str(e), f"报错为 URL 格式错误：{e}")
 
 
 # ======================================================================
-# D. 真实网络（默认跳过）
+# D. 真实网络（默认跳过）—— 验证房间识别 + 裸流取流
 # ======================================================================
 def test_live_network(url: str) -> None:
     section("D. 真实网络验证（会真的访问抖音）")
     print(f"  目标 URL: {url}")
     ds = DouyinStream(url)
     try:
-        candidates = DouyinStream._parse_room_id_candidates(url)
-        print(f"  候选 id: {candidates}")
         room_id = ds.get_room_id()
-        print(f"  主候选 room_id: {room_id}")
-        info = ds.get_stream_info()
-        print(f"  成功: room_id={info.room_id} 候选数={len(info.candidates)}")
-        print(f"  选中地址: {info.selected.url[:100]}")
-        check(True, "真实网络解析成功")
+        print(f"  room_id: {room_id}")
+        check(True, "真实网络下房间识别成功")
     except Exception as e:  # noqa: BLE001
-        print(f"  失败阶段: 候选={ds._room_id_candidates or '(未解析)'} "
-              f"当前 room_id={ds.room_id}")
         print(f"  异常类型: {type(e).__name__}")
         print(f"  异常内容: {e}")
-        check(False, f"真实网络解析失败（不是模拟问题）：{type(e).__name__}")
+        check(False, f"真实网络房间识别失败：{type(e).__name__}")
+        return
+
+    # 唯一取流入口的真实网络验证（页面直取裸流）
+    try:
+        from stream.bare_source import probe_video_bare
+        probe = probe_video_bare("douyin", room_id)
+        print(f"  取流结论: reason={probe.reason} live={probe.live} "
+              f"url={(probe.url or '')[:80]}")
+        check(probe.reason in ("ok", "offline", "no_bare_url", "fetch_failed"),
+              f"取流返回结构化结论：{probe.reason}")
+    except Exception as e:  # noqa: BLE001
+        check(False, f"真实网络取流异常：{type(e).__name__}: {e}")
 
 
 def main() -> int:
@@ -356,8 +259,7 @@ def main() -> int:
     else:
         section("D. 真实网络验证")
         print("  [SKIP] 默认不跑真实网络。加 --live [URL] 才会真的访问抖音。")
-        print("         上面的 A/B/C 全部是桩网络 —— 只能证明判断逻辑正确，")
-        print("         不能证明线上接口现在就是这个响应。")
+        print("         A/B/C 全部是纯本地断言（新架构下 resolve 不发请求）。")
 
     print(f"\n{'=' * 52}")
     print(f"通过 {_PASSED} 项，失败 {_FAILED} 项")

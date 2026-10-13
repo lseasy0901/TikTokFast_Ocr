@@ -126,15 +126,21 @@ class TestExtractVideoBare:
 
 
 # ======================================================================
-# 4. video_bare_url_for 的边界（离线）
+# 4. probe_video_bare 的边界（离线）—— 唯一取流入口
 # ======================================================================
-class TestVideoBareUrlFor:
+_LIVE_PAGE_MARKER = "<html>live_core_sdk_data ... %s</html>" % _VIDEO_BARE
+
+
+class TestProbeVideoBare:
     def test_non_douyin_never_touches_network(self, monkeypatch):
         def _boom(*a, **kw):
             raise AssertionError("非抖音平台不得请求页面")
         monkeypatch.setattr(B, "_fetch_page", _boom)
-        assert B.video_bare_url_for("huya", "123") is None
-        assert B.video_bare_url_for("bilibili", "123") is None
+        p1 = B.probe_video_bare("huya", "123")
+        p2 = B.probe_video_bare("bilibili", "123")
+        assert p1.url is None and p2.url is None
+        assert p1.reason == B.REASON_UNSUPPORTED
+        assert p2.reason == B.REASON_UNSUPPORTED
 
     def test_switch_off_never_touches_network(self, monkeypatch):
         monkeypatch.setenv("DLV_BARE_STREAM", "0")
@@ -142,28 +148,33 @@ class TestVideoBareUrlFor:
         def _boom(*a, **kw):
             raise AssertionError("总开关关闭时不得请求页面")
         monkeypatch.setattr(B, "_fetch_page", _boom)
-        assert B.video_bare_url_for("douyin", "123") is None
+        assert B.probe_video_bare("douyin", "123").reason == B.REASON_DISABLED
 
     def test_empty_room_id(self, monkeypatch):
         def _boom(*a, **kw):
             raise AssertionError("房间号为空时不得请求页面")
         monkeypatch.setattr(B, "_fetch_page", _boom)
-        assert B.video_bare_url_for("douyin", "") is None
+        assert B.probe_video_bare("douyin", "").reason == B.REASON_NO_BARE
 
-    def test_fetch_failure_returns_none(self, monkeypatch):
+    def test_fetch_failure_is_reported_not_silent(self, monkeypatch):
         monkeypatch.setattr(B, "_fetch_page", lambda url: None)
-        assert B.video_bare_url_for("douyin", "123") is None
+        probe = B.probe_video_bare("douyin", "123")
+        assert probe.url is None
+        assert probe.reason == B.REASON_FETCH_FAILED
+        assert probe.live is False
 
     def test_success_and_cache(self, monkeypatch):
         calls = []
 
         def fake_fetch(url):
             calls.append(url)
-            return _VIDEO_BARE
+            return _LIVE_PAGE_MARKER
         monkeypatch.setattr(B, "_fetch_page", fake_fetch)
 
-        assert B.video_bare_url_for("douyin", "123") == _VIDEO_BARE
-        assert B.video_bare_url_for("douyin", "123") == _VIDEO_BARE
+        p1 = B.probe_video_bare("douyin", "123")
+        p2 = B.probe_video_bare("douyin", "123")
+        assert p1.url == _VIDEO_BARE and p1.reason == B.REASON_OK and p1.live
+        assert p2.url == _VIDEO_BARE
         assert len(calls) == 1, "45s TTL 内应命中缓存，不重复请求页面"
 
     def test_different_rooms_not_shared(self, monkeypatch):
@@ -171,28 +182,65 @@ class TestVideoBareUrlFor:
 
         def fake_fetch(url):
             calls.append(url)
-            return _VIDEO_BARE
+            return _LIVE_PAGE_MARKER
         monkeypatch.setattr(B, "_fetch_page", fake_fetch)
-        B.video_bare_url_for("douyin", "111")
-        B.video_bare_url_for("douyin", "222")
+        B.probe_video_bare("douyin", "111")
+        B.probe_video_bare("douyin", "222")
         assert len(calls) == 2
 
-    def test_cache_negative_result_too(self, monkeypatch):
+    def test_offline_room_reported_as_offline(self, monkeypatch):
+        """页面无直播标志 → 明确报"未开播"，而不是含糊的"取不到"。"""
+        monkeypatch.setattr(B, "_fetch_page",
+                            lambda url: "<html>room is offline</html>")
+        probe = B.probe_video_bare("douyin", "123")
+        assert probe.url is None
+        assert probe.live is False
+        assert probe.reason == B.REASON_OFFLINE
+        assert B.reason_message(probe.reason) == "主播未开播"
+
+    def test_live_but_no_bare_reported_distinctly(self, monkeypatch):
+        """页面在播但判据未命中 → 与"未开播"区分开（页面结构可能已变化）。"""
+        page = "<html>live_core_sdk_data stream-999.flv?only_audio=1</html>"
+        monkeypatch.setattr(B, "_fetch_page", lambda url: page)
+        probe = B.probe_video_bare("douyin", "123")
+        assert probe.url is None
+        assert probe.live is True
+        assert probe.reason == B.REASON_NO_BARE
+
+    def test_negative_result_is_cached(self, monkeypatch):
         calls = []
 
         def fake_fetch(url):
             calls.append(url)
-            return None
+            return "<html>offline</html>"
         monkeypatch.setattr(B, "_fetch_page", fake_fetch)
-        assert B.video_bare_url_for("douyin", "123") is None
-        assert B.video_bare_url_for("douyin", "123") is None
+        B.probe_video_bare("douyin", "123")
+        B.probe_video_bare("douyin", "123")
         assert len(calls) == 1, "取不到也应缓存，避免反复打页面"
 
 
 # ======================================================================
-# 5. 有界超时
+# 5. 用户可见文案
+# ======================================================================
+class TestReasonMessage:
+    @pytest.mark.parametrize("reason", [
+        B.REASON_OFFLINE, B.REASON_NO_BARE, B.REASON_FETCH_FAILED,
+        B.REASON_UNSUPPORTED, B.REASON_DISABLED,
+    ])
+    def test_message_is_human_and_leaks_nothing(self, reason):
+        msg = B.reason_message(reason)
+        assert msg
+        for leak in ("DLV_", "http", "Traceback", "Errno", "0x", "/"):
+            assert leak not in msg, f"{reason} 的文案泄漏了技术细节: {msg}"
+
+    def test_unknown_reason_has_default(self):
+        assert B.reason_message("something_new") == "无法获取直播流"
+
+
+# ======================================================================
+# 6. 有界超时
 # ======================================================================
 class TestTimeoutBound:
     def test_fetch_timeout_is_bounded(self):
-        """正式接入后页面请求必须有界（B5 原实现为 20s，已收紧）。"""
+        """页面请求必须有界（B5 原实现为 20s，已收紧）。"""
         assert 0 < B.FETCH_TIMEOUT_S <= 10.0
