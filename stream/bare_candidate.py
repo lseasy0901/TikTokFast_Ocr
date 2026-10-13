@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
-"""B4: 裸流候选派生（DLV_BARE_STREAM 门控，默认关闭）。
+"""B4: 裸流候选派生（**已弃用** —— RELEASE-02-B5 起不再进入生产链路）。
+
+.. deprecated::
+    本模块的"从 `_uhd` 后缀**剥离派生**裸流 URL"方案已被实测证否：
+    剥离后 URL 签名失效（**403 Forbidden**，sign 绑定 path）。
+    正式方案是 `stream/bare_source.py` 的**页面直取**
+    （`video_bare_url_for`），生产链路（`gui/main_window.py`）只使用后者。
+    本模块仅为兼容既有单元测试保留，**请勿在新代码中引用**。
+
+保留原因：`tests/stream/test_bare_candidate.py` 覆盖 `derive_bare_url` 的
+纯函数边界；这些用例仍有效，删除模块会一并删除用例，超出本次改动范围。
 
 从已选中的 `_uhd`/`_hd` 等 FLV 候选派生同主机的裸流 URL：
     https://host/.../stream-<id>_<variant>.flv?query
       → https://host/.../stream-<id>.flv?query
-裸流 = 增强 FLV HEVC（ffmpeg 7+ 可解，6.x 不可解——H7-B1 实测），
-故派生候选携带 runtime="ffmpeg7"。
+裸流 = 增强 FLV HEVC（需 FFmpeg 7 级运行时；内置运行时不可解）。
 
 安全约束：
   - 门禁关闭（默认）时恒返回 None，零行为变化；

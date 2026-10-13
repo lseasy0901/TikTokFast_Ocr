@@ -41,6 +41,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
@@ -111,6 +112,7 @@ from gui.onboarding import (
     RoiHelpDialog,
 )
 from utils import update_state
+from utils import ffmpeg7_runtime
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
@@ -118,7 +120,7 @@ from stream.models import StreamInfo, StreamResolveError
 from stream.resolver import StreamResolver
 from stream.failover import CandidateFailover
 from stream.ffmpeg_reader import FFmpegReader
-from stream.bare_source import video_bare_url_for, ffmpeg7_exe
+from stream.bare_source import bare_stream_applicable, video_bare_url_for
 from stream.frame_buffer import LatestFrameBuffer
 from audio import AudioService
 from gui.audio_panel import AudioPanel
@@ -194,6 +196,94 @@ class _ConnectWorker:
         except Exception as e:
             logger.exception("连接过程未知异常")
             self._on_error(f"连接异常: {e}")
+
+
+# ======================================================================
+# 后台裸流解析线程：FFmpeg7 运行时校验 + 裸流 URL 页面直取（不阻塞 GUI）
+# ======================================================================
+@dataclass(frozen=True)
+class _BareResolveResult:
+    """一次裸流解析的结论（由后台线程产出，经 Signal 回到 GUI 线程）。
+
+    :param url:          视频版裸流 URL；None = 本次取不到（正常降级）
+    :param exe:          已通过校验的 FFmpeg7 运行时路径；None = 不可用
+    :param runtime_ok:   运行时是否可用（False → 需要给用户可见提示）
+    :param reason:       运行时不可用时的稳定枚举（供 GUI 映射人话）
+    :param detail:       给日志的技术细节（不进 UI）
+    """
+
+    url: str | None = None
+    exe: str | None = None
+    runtime_ok: bool = False
+    reason: str | None = None
+    detail: str = ""
+
+
+class _BareResolveWorker:
+    """后台线程：校验 FFmpeg7 运行时并解析本次会话的裸流 URL。
+
+    与 `_ConnectWorker` 同一模式（普通类 + daemon 线程 + 回调），不引入
+    新的线程模型：线程只做阻塞 IO（运行时探测、页面 GET），结果通过
+    MainWindow 的 Signal 回到 GUI 线程，绝不直接触碰任何 QWidget。
+
+    **可取消**：`cancel()` 置位后，线程在发出结果前检查并放弃——
+    因此"快速切换房间 / 重复点击 / 关闭窗口"场景下，旧请求的结果不会
+    被应用（在途 HTTP 请求会在 `bare_source.FETCH_TIMEOUT_S` 内自行结束，
+    其返回值被丢弃）。
+    """
+
+    def __init__(self, request_id: int, platform: str, room_id: str, on_done):
+        self._request_id = request_id
+        self._platform = platform
+        self._room_id = room_id
+        self._on_done = on_done
+        self._cancelled = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name="bare-resolve-worker",
+            daemon=True,
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def is_running(self) -> bool:
+        return self._thread.is_alive()
+
+    def cancel(self):
+        """放弃本次结果（在途请求自行结束，结果被丢弃）。"""
+        self._cancelled = True
+
+    def _run(self):
+        result = _BareResolveResult()
+        try:
+            # 1) 运行时校验（带缓存；首次会拉起子进程探测，故必须在后台线程）
+            st = ffmpeg7_runtime.status()
+            if not st.ok:
+                result = _BareResolveResult(
+                    url=None, exe=None, runtime_ok=False,
+                    reason=st.reason, detail=st.detail,
+                )
+            else:
+                # 2) 页面直取裸流 URL（有界超时的阻塞请求）
+                url = video_bare_url_for(self._platform, self._room_id)
+                result = _BareResolveResult(
+                    url=url, exe=st.path, runtime_ok=True,
+                    reason=None if url else "bare_not_found",
+                    detail="页面直取成功" if url else "页面未找到视频版裸流",
+                )
+        except Exception as e:  # noqa: BLE001 - 裸流是增强项，失败不阻断主链路
+            logger.exception("[BARE] 裸流解析线程异常")
+            result = _BareResolveResult(
+                url=None, exe=None, runtime_ok=False,
+                reason=ffmpeg7_runtime.REASON_PROBE_FAILED,
+                detail=f"解析线程异常: {e}",
+            )
+
+        if self._cancelled:
+            logger.info("[BARE] 请求 %d 已取消，丢弃结果", self._request_id)
+            return
+        self._on_done(self._request_id, result)
 
 
 # ======================================================================
@@ -500,6 +590,7 @@ class MainWindow(QMainWindow):
     _license_loaded_sig = Signal(object)  # 启动时许可证校验结果
     _heartbeat_done_sig = Signal(object)  # 心跳上报结果
     _update_check_done_sig = Signal(object)  # 更新检查结果（Velopack UpdateInfo 或 None）
+    _bare_resolved_sig = Signal(int, object)  # 裸流解析结果 (request_id, _BareResolveResult)
 
     def __init__(self):
         super().__init__()
@@ -518,6 +609,19 @@ class MainWindow(QMainWindow):
         # 当前连接的帧到达通知器（随 FrameBridge 一同创建/废弃）
         self._frame_notifier: _FrameNotifier | None = None
         self._connect_worker: _ConnectWorker | None = None
+        # ---- RELEASE-02-B5：裸流主路径状态 ----
+        # 裸流 URL 与 FFmpeg7 运行时在**会话开始时**于后台线程解析一次，
+        # 会话内所有候选尝试复用同一份结果（裸流是 per-room，不是 per-candidate）。
+        self._bare_url: str | None = None
+        self._bare_exe: str | None = None
+        #: 裸流请求代号。每次开始新解析 / 断开 / 关闭都递增，迟到的回调
+        #: 凭此判定自己属于旧请求并放弃——旧结果绝不覆盖新一轮会话。
+        self._bare_req_id: int = 0
+        self._bare_worker: _BareResolveWorker | None = None
+        #: 运行时不可用的用户提示只在本会话提示一次（避免反复刷状态栏）
+        self._bare_notice_shown: bool = False
+        #: 窗口正在关闭：此后不再向 GUI 投递任何更新
+        self._closing: bool = False
         # 平台解析统一入口：MainWindow 只认识 StreamResolver 和 StreamInfo，
         # 不 import 也不判断任何具体平台。
         self._resolver = StreamResolver()
@@ -678,6 +782,7 @@ class MainWindow(QMainWindow):
         # 连接跨线程 Signal（后台线程 emit → GUI 线程 slot）
         self._connect_success_sig.connect(self._handle_connect_success)
         self._connect_error_sig.connect(self._handle_connect_error)
+        self._bare_resolved_sig.connect(self._on_bare_resolved)
 
         self._init_ui()
 
@@ -686,6 +791,10 @@ class MainWindow(QMainWindow):
 
         # 启动时恢复已保存的许可证（读盘 + 本地验签在后台线程完成）
         self._start_license_load()
+
+        # RELEASE-02-B5：启动时后台探测一次 FFmpeg7 运行时可用性 —— 只记日志、
+        # 不阻塞启动、不弹 UI；同时预热缓存，使首次连接的裸流解析不必再等探测。
+        self._start_runtime_probe()
 
         # 注意：启动心跳刻意不在这里发起，由应用入口 main.py 显式调用
         # start_heartbeat()。原因见该方法自己的说明。
@@ -2153,12 +2262,127 @@ class MainWindow(QMainWindow):
         # 不重排、不评分、不测速，也不认识任何具体平台。
         self._failover = CandidateFailover(info)
         self._playback_info = info
+        self._bare_notice_shown = False
 
+        # RELEASE-02-B5：裸流是**默认正常路径**。运行时校验与裸流 URL 页面直取
+        # 都在后台线程完成（不阻塞 GUI），拿到结果后才开始候选尝试 ——
+        # 因此全程只有一条播放管线，不存在"裸流与 _uhd 同时跑"。
+        self._begin_bare_resolution(info)
+
+    # ------------------------------------------------------------------
+    # RELEASE-02-B5：裸流主路径解析（后台）+ 会话启动
+    # ------------------------------------------------------------------
+    def _begin_bare_resolution(self, info: StreamInfo) -> None:
+        """开始本次会话的裸流解析（后台线程），完成后才启动候选尝试。
+
+        - 非抖音 / 总开关显式关闭 → 立即走标准路径，不请求页面、不等运行时；
+        - 抖音但候选路径下完全没有运行时文件 → 立即给一次用户提示并走标准
+          路径（廉价 isfile 检查，不拉起探测进程）；
+        - 其余情况 → 后台 worker：运行时校验（带缓存）→ 页面直取裸流 URL。
+        """
+        self._bare_url = None
+        self._bare_exe = None
+        self._bare_req_id += 1
+        req_id = self._bare_req_id
+
+        if not bare_stream_applicable(info.platform):
+            logger.info("[BARE] 平台/开关不适用裸流，直接走标准路径 (platform=%s)",
+                        info.platform)
+            self._start_session_failover()
+            return
+
+        # 廉价前置：一个运行时文件都没有 → 不必拉起探测进程、不必请求页面
+        if not ffmpeg7_runtime.find_existing_candidates():
+            self._notify_bare_unavailable(ffmpeg7_runtime.REASON_NOT_FOUND)
+            self._start_session_failover()
+            return
+
+        self._bare_worker = _BareResolveWorker(
+            request_id=req_id,
+            platform=info.platform,
+            room_id=info.room_id or "",
+            on_done=self._on_bare_done,
+        )
+        self._bare_worker.start()
+        logger.info("[BARE] 已启动后台裸流解析 (req=%d room=%s)",
+                    req_id, info.room_id)
+
+    def _on_bare_done(self, request_id: int, result) -> None:
+        """worker 回调（**后台线程**）→ 经 Signal 回到 GUI 线程。"""
+        self._bare_resolved_sig.emit(request_id, result)
+
+    def _on_bare_resolved(self, request_id: int, result) -> None:
+        """在 GUI 线程处理裸流解析结果（含迟到回调保护）。"""
+        # 会话已切换（新解析已开始）/ 已断开 / 正在关闭 → 丢弃旧结果
+        if request_id != self._bare_req_id:
+            logger.info("[BARE] 丢弃过期结果 (req=%d 当前=%d)",
+                        request_id, self._bare_req_id)
+            return
+        if self._closing or self._playback_info is None:
+            logger.info("[BARE] 会话已结束，丢弃结果 (req=%d)", request_id)
+            return
+
+        self._bare_worker = None
+        self._bare_url = result.url
+        self._bare_exe = result.exe
+
+        if not result.runtime_ok:
+            # 运行时缺失 / 无效：明确告知用户，并按设计回退标准路径
+            self._notify_bare_unavailable(result.reason, result.detail)
+        elif result.url:
+            logger.info("[BARE] 本次会话使用裸流主路径 (exe=%s)", result.exe)
+        else:
+            # 取不到裸流属正常降级（页面结构变化等），不打扰用户
+            logger.info("[BARE] 本次未取到裸流，使用标准路径 (room=%s)",
+                        self._playback_info.room_id)
+
+        self._start_session_failover()
+
+    def _start_session_failover(self) -> None:
+        """启动本次会话的候选尝试（裸流解析完成后的唯一入口）。"""
+        if self._closing or self._playback_info is None:
+            return
         if not self._failover_next():
             self._failover_exhausted()
             return
-
         self._apply_connected_ui()
+
+    def _notify_bare_unavailable(self, reason: str | None,
+                                 detail: str = "") -> None:
+        """运行时不可用：给用户一句人话 + 给日志技术细节（每个会话一次）。
+
+        刻意**不**把路径 / 环境变量 / 底层错误码放进 UI —— 那些只进日志。
+        """
+        logger.warning("[BARE] 运行时不可用: reason=%s detail=%s", reason, detail)
+        if self._bare_notice_shown:
+            return
+        self._bare_notice_shown = True
+        self.statusBar().showMessage(
+            f"{ffmpeg7_runtime.reason_message(reason or '')}，已使用标准播放路径"
+        )
+
+    def _start_runtime_probe(self) -> None:
+        """启动时在后台探测一次 FFmpeg7 运行时（仅日志 + 预热缓存）。
+
+        刻意不阻塞启动、不弹 UI：可用性对**用户**的呈现发生在连接时（状态栏
+        提示）；这里保证"安装后能从日志明确判断运行时是否可用"，并让首次连接
+        的裸流解析不必再等一次进程探测。
+        """
+
+        def _run() -> None:
+            try:
+                st = ffmpeg7_runtime.status()
+                if st.ok:
+                    logger.info("[FFMPEG7] 启动探测：可用 %s", st.as_log_line())
+                else:
+                    logger.warning(
+                        "[FFMPEG7] 启动探测：不可用，裸流将回退标准路径 %s",
+                        st.as_log_line(),
+                    )
+            except Exception:  # noqa: BLE001 - 探测失败绝不影响启动
+                logger.exception("[FFMPEG7] 启动探测异常")
+
+        threading.Thread(target=_run, name="ffmpeg7-probe", daemon=True).start()
 
     # ------------------------------------------------------------------
     # Phase 2.5：候选流 failover
@@ -2214,16 +2438,16 @@ class MainWindow(QMainWindow):
         # 创建并启动 FFmpegReader（protocol 供 flv 候选强制 live_flv demuxer）
         reader = None
         try:
-            # B5 裸流灰度：DLV_BARE_STREAM=1 且 DLV_FFMPEG7_EXE 已配置时，
-            # 首选视频版裸流（外部 ffmpeg7 运行时），失败自动回退到原候选
-            # （默认运行时）。门禁关闭 / 非 FLV / 取不到裸流时，行为与改动前
-            # 完全一致。裸流 URL 从直播间页面直取（不能从转码档后缀派生——
-            # 实测剥离后 sign 失效 403）。
+            # RELEASE-02-B5：裸流是**默认主路径**。裸流 URL 与 FFmpeg7 运行时
+            # 已在会话开始时于后台线程解析并校验（self._bare_url/_bare_exe）；
+            # 这里只消费结果，不做任何网络或进程探测——不阻塞 GUI。
+            # 取不到裸流 / 运行时不可用 → bare_url 为 None → 走标准 _uhd 路径。
             bare_url = None
-            if (candidate.protocol or "").lower() == "flv":
-                bare_url = video_bare_url_for(info.platform, info.room_id)
+            if (self._bare_url and self._bare_exe
+                    and (candidate.protocol or "").lower() == "flv"):
+                bare_url = self._bare_url
             if bare_url:
-                logger.info("[FFMPEG] 裸流模式：尝试 ffmpeg7 裸流，回退 %s",
+                logger.info("[FFMPEG] 裸流主路径：尝试 ffmpeg7 裸流，失败回退 %s",
                             (candidate.url or "")[:60])
                 reader = FFmpegReader(
                     bare_url,
@@ -2237,7 +2461,7 @@ class MainWindow(QMainWindow):
                     audio_sample_rate=self._audio.sample_rate,
                     audio_channels=self._audio.channels,
                     protocol=candidate.protocol,
-                    exe_path=ffmpeg7_exe(),
+                    exe_path=self._bare_exe,
                     fallback=(candidate.url, None),
                 )
             else:
@@ -2415,6 +2639,23 @@ class MainWindow(QMainWindow):
         # 从未成功 → 该候选不可用：结算它、清理它，再试下一个
         self._failover.note_failure()
 
+        # RELEASE-02-B5：若本次失败已用掉"裸流 → 回退"切换，或观测到解码器
+        # 不支持证据，说明**本会话的裸流不可用**（裸流是 per-room，不是
+        # per-candidate）。丢弃它，让后续候选直接走标准 _uhd 路径 ——
+        # 避免对每个候选重复"裸流失败 → 回退"的无效循环（重复回退）。
+        # getattr 兜底：既有测试用脚本化替身 reader，只实现被用到的接口。
+        if reader is not None:
+            fb_used = bool(getattr(reader, "fallback_used", False))
+            dec_failed = bool(getattr(reader, "decode_failed", False))
+            if fb_used or dec_failed:
+                if self._bare_url is not None:
+                    logger.warning(
+                        "[BARE] 本会话裸流已判定不可用 (fallback_used=%s "
+                        "decode_failed=%s)，后续候选直接走标准路径",
+                        fb_used, dec_failed,
+                    )
+                self._bare_url = None
+
         t0 = time.perf_counter()
         self._teardown_playback()
 
@@ -2517,6 +2758,15 @@ class MainWindow(QMainWindow):
         """断开连接，停止一切"""
         # 先让所有在途 attempt 失效：任何排队中的回调都不会再启动 reader
         self._attempt_id += 1
+
+        # RELEASE-02-B5：让在途的裸流解析请求失效并取消（旧结果不得覆盖
+        # 下一轮会话），同时清掉本会话已解析出的裸流结果与运行时路径。
+        self._bare_req_id += 1
+        if self._bare_worker is not None:
+            self._bare_worker.cancel()
+            self._bare_worker = None
+        self._bare_url = None
+        self._bare_exe = None
 
         # 取消并丢弃候选迭代器：本会话不再尝试任何候选
         if self._failover is not None:
@@ -3980,6 +4230,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         """窗口关闭时确保资源释放"""
+        # RELEASE-02-B5：先置关闭标志 —— 此后到达的裸流解析结果一律丢弃，
+        # 不再向正在销毁的 Qt 对象投递任何更新。
+        self._closing = True
         # 数据集采集还在跑就先收尾：把队列排空、写好 dataset.json / manifest，
         # 否则最后一帧和 manifest 会丢。关闭时（未在采集）是空操作。
         if self._dataset_recorder is not None and self._dataset_recorder.running:

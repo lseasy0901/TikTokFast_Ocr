@@ -512,6 +512,24 @@ class FFmpegReader:
         return self._frames_skipped
 
     @property
+    def fallback_used(self):
+        """B4/B5 回退：本实例是否已从主 URL 切换到回退 URL（只读）。
+
+        供上层判定"裸流主路径本会话已失败"——避免对后续每个候选重复
+        "裸流失败 → 回退" 的无效循环。
+        """
+        return self._fallback_used
+
+    @property
+    def decode_failed(self):
+        """是否观测到解码器不支持证据（stderr "not implemented"，只读）。
+
+        裸流（增强 FLV HEVC）遇到不支持解码器的运行时即此信号，用于快速
+        判定该运行时不适合裸流。
+        """
+        return self._stderr_decode_fail
+
+    @property
     def first_frame_ms(self):
         """首帧到达耗时（ms）；未收到首帧返回 None"""
         if self._first_frame_time is None or self._start_time is None:
