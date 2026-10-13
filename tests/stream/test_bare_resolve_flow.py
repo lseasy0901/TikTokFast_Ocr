@@ -254,27 +254,60 @@ def test_runtime_unavailable_aborts_with_message(monkeypatch):
 
 
 # ======================================================================
-# 5. 非抖音 / 显式关闭 → 用适配器候选，不请求页面
+# 5. 非裸流平台：候选由适配器给出，运行时就绪后启动
 # ======================================================================
-@pytest.mark.parametrize("platform,env", [
-    ("huya", None),
-    ("bilibili", None),
-    ("douyin", "0"),
-])
-def test_not_applicable_uses_platform_candidates(monkeypatch, platform, env):
-    if env is not None:
-        monkeypatch.setenv("DLV_BARE_STREAM", env)
+@pytest.mark.parametrize("platform", ["huya", "bilibili"])
+def test_non_bare_platform_uses_platform_candidates(monkeypatch, platform):
+    """虎牙 / B 站不走裸流页面直取，但**仍需通过 FFmpeg7 运行时校验**
+    （内置 FFmpeg 6 已移除，不存在任何内置解码器）。"""
+    _runtime_ok(monkeypatch)
 
     def _boom(*a, **kw):
-        raise AssertionError("不该取裸流")
+        raise AssertionError("非裸流平台不该请求页面")
     monkeypatch.setattr(mw, "probe_video_bare", _boom)
     w = _build_window()
     try:
         _connect(w, [HUYA_URL], platform=platform)
-        assert len(CREATED) == 1, "应同步立即启动平台候选"
+        assert pump(2.0, lambda: len(CREATED) >= 1), "运行时就绪后应启动平台候选"
         assert CREATED[0].url == HUYA_URL
-        assert CREATED[0].exe_path is None, "非抖音不走裸流运行时"
+        assert CREATED[0].exe_path == FAKE_EXE, \
+            "所有平台都用外部 FFmpeg7 运行时"
         assert w._bare_worker is None
+        assert w._failover.total == 1, "仍按适配器候选迭代"
+    finally:
+        w._disconnect()
+        w.close()
+
+
+def test_non_bare_platform_runtime_missing_aborts(monkeypatch):
+    """运行时缺失 → 非裸流平台同样明确终止（不再有内置解码器兜底）。"""
+    # fixture 默认 status = 不可用
+    w = _build_window()
+    try:
+        _connect(w, [HUYA_URL], platform="huya")
+        assert pump(2.0, lambda: w._bare_worker is None)
+        assert CREATED == [], "运行时缺失时不得启动 reader"
+        msg = w.statusBar().currentMessage()
+        assert "低延迟播放组件" in msg, f"应有明确提示，实际={msg!r}"
+    finally:
+        w._disconnect()
+        w.close()
+
+
+def test_switch_off_leaves_douyin_nothing_to_play(monkeypatch):
+    """`DLV_BARE_STREAM=0`：抖音适配器已无候选、裸流又被关闭 → 明确终止。
+
+    这是"唯一路径"的直接后果：没有第二条路可走，也不允许静默降级。
+    """
+    monkeypatch.setenv("DLV_BARE_STREAM", "0")
+    _runtime_ok(monkeypatch)
+    w = _build_window()
+    try:
+        _connect(w, [], platform="douyin")
+        assert pump(2.0, lambda: w._bare_worker is None)
+        assert CREATED == [], "不得启动任何 reader"
+        msg = w.statusBar().currentMessage()
+        assert "低延迟播放" in msg, f"应有明确提示，实际={msg!r}"
     finally:
         w._disconnect()
         w.close()

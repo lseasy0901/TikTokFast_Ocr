@@ -129,13 +129,14 @@ def test_r3_exe_path_override(http_server):
 # ======================================================================
 # R4：ffmpeg>=7 参数兼容（49f9a23 判据）
 # ======================================================================
-def test_r4_thread_queue_size_only_for_default_runtime(http_server):
-    from stream.ffmpeg_reader import FFmpegReader
+def test_r4_thread_queue_size_never_injected(http_server):
+    """唯一运行时是外部 FFmpeg 7：`-thread_queue_size` 不得再被注入。
 
-    r_default = FFmpegReader(http_server + "/sample_ok.mp4", width=320,
-                             height=180, use_cuda=False)
-    cmd_default = r_default._build_ffmpeg_cmd()
-    assert "-thread_queue_size" in cmd_default, "默认路径不得改动命令行"
+    该选项在 ffmpeg>=7 被归到 muxer（输出）侧，作为输入选项会被 CLI 直接
+    拒绝（"cannot be applied to input url"）→ 整条命令开流失败（实测）。
+    旧实现按 `exe_path` 是否传入分支注入；内置 FFmpeg 6 移除后该分支已删。
+    """
+    from stream.ffmpeg_reader import FFmpegReader
 
     r_ext = FFmpegReader(http_server + "/sample_ok.mp4", width=320, height=180,
                          use_cuda=False, exe_path=r"D:\ffmpeg7\ffmpeg.exe")
@@ -143,19 +144,13 @@ def test_r4_thread_queue_size_only_for_default_runtime(http_server):
     assert "-thread_queue_size" not in cmd_ext, \
         "ffmpeg>=7 运行时不得注入 -thread_queue_size（否则整条命令开流失败）"
 
-    def _strip_flag(cmd):
-        out, i = [], 0
-        while i < len(cmd):
-            if cmd[i] == "-thread_queue_size":
-                i += 2
-                continue
-            out.append(cmd[i])
-            i += 1
-        return out
-
-    a, b = _strip_flag(cmd_default), list(cmd_ext)
-    a[0] = b[0] = "<EXE>"
-    assert a == b, "除 exe 与该选项外，命令行必须逐字一致"
+    # 未显式传 exe_path（回落到已校验的 FFmpeg 7 运行时）同样不得注入
+    r_fallback = FFmpegReader(http_server + "/sample_ok.mp4", width=320,
+                              height=180, use_cuda=False)
+    cmd_fallback = r_fallback._build_ffmpeg_cmd()
+    assert "-thread_queue_size" not in cmd_fallback
+    assert os.path.exists(cmd_fallback[0]) or cmd_fallback[0].endswith(".exe"), \
+        f"回落解析出的运行时路径应可执行: {cmd_fallback[0]}"
 
 
 # ======================================================================
@@ -238,3 +233,26 @@ def test_r8_stop_is_idempotent(http_server):
     r.stop()
     r.stop()
     assert r._process is None
+
+
+# ======================================================================
+# R10：无任何运行时 → 可读错误（不再有内置解码器兜底）
+# ======================================================================
+def test_r10_no_runtime_raises_readable_error(monkeypatch):
+    from stream.ffmpeg_reader import FFmpegReader
+    from utils import ffmpeg7_runtime as RUNTIME
+
+    monkeypatch.setattr(RUNTIME, "status",
+                        lambda refresh=False: RUNTIME.Ffmpeg7Status(
+                            False, RUNTIME.REASON_NOT_FOUND, detail="test"))
+    monkeypatch.setattr(RUNTIME, "resolved_exe", lambda: None)
+    RUNTIME.reset_cache()
+
+    r = FFmpegReader("https://x/live.flv", width=320, height=180,
+                     use_cuda=False, exe_path=None)
+    with pytest.raises(RuntimeError) as ei:
+        r._build_ffmpeg_cmd()
+    msg = str(ei.value)
+    assert "低延迟播放组件" in msg, f"错误应指向组件缺失，实际={msg!r}"
+    for leak in ("Traceback", "WinError", "0x"):
+        assert leak not in msg

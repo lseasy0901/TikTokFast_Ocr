@@ -80,53 +80,51 @@ def main():
     return 0
 
 def prepare_ffmpeg(project_root):
-    """Download and prepare FFmpeg binaries"""
+    """Prepare the bundled ffprobe runtime.
+
+    RELEASE-02-B5-CLEANUP: this used to also stage ``ffmpeg.exe`` (the ACLOS
+    recorder's build) for the old ``_uhd`` pull path. That binary is gone --
+    playback now uses the external FFmpeg 7 runtime located by
+    ``utils/ffmpeg7_runtime.py``, which is intentionally NOT bundled.
+
+    What remains in ``runtime/ffmpeg/`` is ``ffprobe.exe`` plus its ``av*``/``sw*``
+    companion DLLs (used for the resolution probe fallback), and both are required
+    by ``douyin_viewer.spec``.
+    """
     runtime_ffmpeg_dir = project_root / "runtime" / "ffmpeg"
 
-    # Check if FFmpeg already exists
-    ffmpeg_exe = runtime_ffmpeg_dir / "ffmpeg.exe"
     ffprobe_exe = runtime_ffmpeg_dir / "ffprobe.exe"
 
-    if ffmpeg_exe.exists() and ffprobe_exe.exists():
-        print("  FFmpeg already prepared")
+    if ffprobe_exe.exists() and ffprobe_exe.stat().st_size > 0:
+        print("  ffprobe already prepared")
         return True
 
-    # For now, copy from system if available
-    # In production, you would download official FFmpeg builds
-    ffmpeg_paths = [
-        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-        r"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe",
-        r"C:\ffmpeg\bin\ffmpeg.exe",
+    # For now, copy from system if available.
+    # In production, you would download an official FFmpeg build.
+    ffprobe_paths = [
+        r"C:\Program Files\ffmpeg\bin\ffprobe.exe",
+        r"C:\Program Files (x86)\ffmpeg\bin\ffprobe.exe",
+        r"C:\ffmpeg\bin\ffprobe.exe",
     ]
 
-    ffmpeg_found = False
-    for ffmpeg_path in ffmpeg_paths:
-        if os.path.exists(ffmpeg_path):
-            print(f"  Found FFmpeg at: {ffmpeg_path}")
-
-            # Create runtime directory
+    for ffprobe_path in ffprobe_paths:
+        if os.path.exists(ffprobe_path):
+            print(f"  Found ffprobe at: {ffprobe_path}")
             runtime_ffmpeg_dir.mkdir(parents=True, exist_ok=True)
 
-            # Copy FFmpeg and related DLLs
-            ffmpeg_dir = os.path.dirname(ffmpeg_path)
-            for file in os.listdir(ffmpeg_dir):
-                if file.lower().startswith('ffmpeg') or file.lower().endswith('.dll'):
-                    shutil.copy2(os.path.join(ffmpeg_dir, file), runtime_ffmpeg_dir)
+            src_dir = os.path.dirname(ffprobe_path)
+            for file in os.listdir(src_dir):
+                low = file.lower()
+                # 只要 ffprobe 本体与 av*/sw* 依赖闭包；ffmpeg.exe 不再随包分发
+                if low == "ffprobe.exe" or low.startswith(("av", "sw")):
+                    shutil.copy2(os.path.join(src_dir, file), runtime_ffmpeg_dir)
                     print(f"  Copied: {file}")
+            return True
 
-            ffmpeg_found = True
-            break
-
-    if not ffmpeg_found:
-        print("  Warning: FFmpeg not found in standard locations")
-        print("  You will need to manually place ffmpeg.exe in runtime/ffmpeg/")
-        # Create placeholder files for now
-        runtime_ffmpeg_dir.mkdir(parents=True, exist_ok=True)
-        (runtime_ffmpeg_dir / "ffmpeg.exe").touch()
-        (runtime_ffmpeg_dir / "ffprobe.exe").touch()
-        return True
-
-    return True
+    print("  Warning: ffprobe not found in standard locations")
+    print("  You will need to manually place ffprobe.exe (plus its av*/sw* DLLs)")
+    print("  in runtime/ffmpeg/ before building.")
+    return False
 
 def build_with_pyinstaller(spec_file, dist_dir):
     """Build the application using PyInstaller"""

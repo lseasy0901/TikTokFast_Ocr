@@ -170,19 +170,22 @@ def expected_payload(project_root):
                 "ONNX OCR 产物",
             ))
 
-    # --- 2. FFmpeg / ffprobe 及其伴生闭包 ---------------------------------
-    ffmpeg_dir = os.path.join(project_root, "runtime", "ffmpeg")
-    if os.path.isdir(ffmpeg_dir):
-        for name in sorted(os.listdir(ffmpeg_dir)):
-            source = os.path.join(ffmpeg_dir, name)
+    # --- 2. ffprobe 及其伴生闭包 -------------------------------------------
+    # RELEASE-02-B5-CLEANUP：runtime/ffmpeg/ 下只剩 ffprobe.exe 与 av*/sw* 闭包
+    # （分辨率探测回退用）。播放运行时是外部 FFmpeg 7，由 utils/ffmpeg7_runtime
+    # 定位，**不随包** —— 这里不应再期望 ffmpeg.exe。
+    ffprobe_dir = os.path.join(project_root, "runtime", "ffmpeg")
+    if os.path.isdir(ffprobe_dir):
+        for name in sorted(os.listdir(ffprobe_dir)):
+            source = os.path.join(ffprobe_dir, name)
             if not os.path.isfile(source):
                 continue
             if not (name.lower().endswith(".dll") or name.lower().endswith(".exe")):
                 continue
             entries.append(Entry(os.path.join("runtime", "ffmpeg", name), source,
-                                 "FFmpeg 运行时"))
+                                 "ffprobe 运行时"))
     else:
-        warnings.append("构建环境没有 %s，跳过 FFmpeg 闭包校验" % ffmpeg_dir)
+        warnings.append("构建环境没有 %s，跳过 ffprobe 闭包校验" % ffprobe_dir)
 
     # ONNX Runtime 的原生库不在这里推导：它们由 PyInstaller 的 hook-onnxruntime
     # 从**构建环境的 site-packages** 收进包，与源码树无关，所以「构建机上的源

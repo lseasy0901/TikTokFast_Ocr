@@ -78,21 +78,13 @@ VERSION_RELPATH = ("utils", "version.py")
 VERSION_SOURCE = '__version__ = "0.0.0"\n'
 
 # runtime/ assets bundled so the release build never needs PATH.
-FFMPEG_RELPATH = ("runtime", "ffmpeg", "ffmpeg.exe")
-FFMPEG_DEST = os.path.join("runtime", "ffmpeg")
-FFMPEG_DIR_RELPATH = ("runtime", "ffmpeg")
-
-# ffmpeg.exe is the ACLOS recorder's build, not a stock FFmpeg: it hard-imports
-# libpag.dll and o264rtenc.dll (plus ANGLE and the MSVC runtime) at process start,
-# so the spec requires the core library by name and the whole set to be present.
-FFMPEG_DLL_REQUIRED = "libpag.dll"
-FFMPEG_DLL_MIN = 7
-
-# ffprobe.exe is a different build from ffmpeg.exe -- the ACLOS *shared* n5.1.3
-# build -- and hard-imports its own av*/sw* closure. It lands beside ffmpeg.exe,
-# so the spec tells the two closures apart by name and the fixture must provision
-# the av*/sw* names, not stub_ffmpeg_*.dll, or the ffmpeg count check would see
-# them as ffmpeg's.
+#
+# RELEASE-02-B5-CLEANUP: runtime/ffmpeg/ffmpeg.exe is GONE. It was the ACLOS
+# recorder's build (hard-importing libpag.dll / o264rtenc.dll / ANGLE / MSVC at
+# process start) and existed only for the old `_uhd` pull path. Playback now uses
+# the external FFmpeg 7 runtime located by utils/ffmpeg7_runtime.py, which is
+# deliberately NOT bundled. The assertions below therefore check the *absence*
+# of that binary rather than its presence.
 FFPROBE_RELPATH = ("runtime", "ffmpeg", "ffprobe.exe")
 FFPROBE_DEST = os.path.join("runtime", "ffmpeg")
 FFPROBE_DLL_NAMES = (
@@ -106,6 +98,15 @@ FFPROBE_DLL_NAMES = (
 )
 FFPROBE_DLL_REQUIRED = FFPROBE_DLL_NAMES[0]
 FFPROBE_DLL_COUNT = len(FFPROBE_DLL_NAMES)
+
+# ACLOS-specific DLLs that only ffmpeg.exe needed. None of them may reappear in
+# the bundle now that the binary is gone.
+FFMPEG_ONLY_DLLS = (
+    "libpag.dll",
+    "o264rtenc.dll",
+    "libEGL.dll",
+    "libGLESv2.dll",
+)
 
 # ONNX Runtime is the production OCR backend, so the build has to ship its two
 # artifacts. The spec gates on both (it mirrors
@@ -121,7 +122,7 @@ ONNX_MODEL_RELPATH = ONNX_RELPATH + (ONNX_MODEL_NAME,)
 ONNX_CHARSET_RELPATH = ONNX_RELPATH + (ONNX_CHARSET_NAME,)
 ONNX_DEST = os.path.join("runtime", ONNX_SUBDIR)
 
-RUNTIME_RELPATHS = (FFMPEG_RELPATH, FFPROBE_RELPATH)
+RUNTIME_RELPATHS = (FFPROBE_RELPATH,)
 
 PASSED = 0
 FAILED = 0
@@ -145,7 +146,6 @@ def skip(msg):
 
 
 def make_tree(root, with_key, with_helper, with_runtime=True,
-              ffmpeg_dll_count=FFMPEG_DLL_MIN,
               ffprobe_dll_count=FFPROBE_DLL_COUNT,
               with_onnx_artifacts=True, onnx_model=b"stub onnx model",
               onnx_charset=b"a\nb\n"):
@@ -171,14 +171,8 @@ def make_tree(root, with_key, with_helper, with_runtime=True,
             target = root.joinpath(*relpath).parent
             target.mkdir(parents=True, exist_ok=True)
             (target / relpath[-1]).write_bytes(b"stub binary")
-    if ffmpeg_dll_count:
-        dll_dir = root.joinpath(*FFMPEG_DIR_RELPATH)
-        dll_dir.mkdir(parents=True, exist_ok=True)
-        (dll_dir / FFMPEG_DLL_REQUIRED).write_bytes(b"stub dll")
-        for i in range(ffmpeg_dll_count - 1):
-            (dll_dir / ("stub_ffmpeg_%02d.dll" % i)).write_bytes(b"stub dll")
     if ffprobe_dll_count:
-        dll_dir = root.joinpath(*FFMPEG_DIR_RELPATH)
+        dll_dir = root.joinpath(*FFPROBE_RELPATH[:-1])
         dll_dir.mkdir(parents=True, exist_ok=True)
         for name in FFPROBE_DLL_NAMES[:ffprobe_dll_count]:
             (dll_dir / name).write_bytes(b"stub dll")
@@ -340,16 +334,7 @@ if __name__ == "__main__":
                       str(pathlib.Path(root) / "config.yaml")) for p in entries),
               "config.yaml is still bundled from the project root")
 
-        for relpath, dest, label in (
-            (FFMPEG_RELPATH, FFMPEG_DEST, "ffmpeg.exe"),
-        ):
-            src = os.path.normpath(runtime_path(root, relpath))
-            check(src in entries, "%s is bundled from %s"
-                  % (label, os.path.join(*relpath[:-1])))
-            check(entries.get(src) == os.path.normpath(dest),
-                  "%s destination is %s" % (label, dest))
-
-        ff_dir = os.path.normpath(runtime_path(root, FFMPEG_DIR_RELPATH))
+        ff_dir = os.path.normpath(runtime_path(root, FFPROBE_RELPATH[:-1]))
 
         # ffprobe.exe backs resolution pre-detection. Without it a frozen build
         # cannot size its rawvideo frames and falls back to a wrong fixed size.
@@ -373,22 +358,19 @@ if __name__ == "__main__":
               "every ffprobe companion DLL lands beside ffprobe.exe (%s)"
               % FFPROBE_DEST)
 
-        # ffmpeg.exe is the ACLOS build; its companion DLLs must ride along.
-        # ffprobe's av*/sw* closure shares this directory, so it is excluded here
-        # to keep this count about ffmpeg.exe's own set.
-        ff_dlls = [p for p in entries
-                   if os.path.normpath(p).startswith(ff_dir + os.sep)
-                   and p.lower().endswith(".dll")
-                   and os.path.basename(os.path.normpath(p)).lower()
-                   not in FFPROBE_DLL_NAMES]
-        check(os.path.normpath(runtime_path(
-                  root, FFMPEG_DIR_RELPATH + (FFMPEG_DLL_REQUIRED,))) in entries,
-              "the FFmpeg runtime library (libpag.dll) is bundled")
-        check(len(ff_dlls) >= FFMPEG_DLL_MIN,
-              "the full FFmpeg companion DLL set is bundled (%d)" % len(ff_dlls))
-        check(all(entries[os.path.normpath(p)] == os.path.normpath(FFMPEG_DEST)
-                  for p in ff_dlls),
-              "every FFmpeg companion DLL lands beside ffmpeg.exe (%s)" % FFMPEG_DEST)
+        # RELEASE-02-B5-CLEANUP: ffmpeg.exe and its ACLOS-only DLL closure must
+        # NOT be bundled any more -- playback uses the external FFmpeg 7 runtime.
+        ffmpeg_src = os.path.normpath(runtime_path(
+            root, ("runtime", "ffmpeg", "ffmpeg.exe")))
+        check(ffmpeg_src not in entries,
+              "ffmpeg.exe is NOT bundled (old `_uhd` pull path removed)")
+        stray = [p for p in entries
+                 if os.path.basename(os.path.normpath(p)).lower()
+                 in {n.lower() for n in FFMPEG_ONLY_DLLS}]
+        check(not stray,
+              "no ACLOS-only DLL rides along (%s) %s"
+              % (", ".join(FFMPEG_ONLY_DLLS),
+                 [os.path.basename(p) for p in stray]))
 
         # Both ONNX artifacts must be gated AND land in the directory
         # ONNXModelLocator probes. The charset is checked alongside the model on
@@ -403,35 +385,10 @@ if __name__ == "__main__":
                       "%s is bundled to %s" % (name, ONNX_DEST))
 
         # --------------------------------------------------------------
-        print("\n[5] FFmpeg runtime library missing")
-        root = make_tree(temp / "noffcore", with_key=True, with_helper=True,
-                         ffmpeg_dll_count=0)
-        error, _, calls = exec_spec(root)
-        check(isinstance(error, FileNotFoundError),
-              "the spec raises FileNotFoundError")
-        if isinstance(error, FileNotFoundError):
-            report = missing_section(str(error))
-            check("FFmpeg runtime library" in report,
-                  "it names the missing FFmpeg runtime library")
-        check(calls["analysis"] == 0, "analysis never ran")
-
-        # --------------------------------------------------------------
-        print("\n[6] FFmpeg runtime present but incomplete")
-        root = make_tree(temp / "partialff", with_key=True, with_helper=True,
-                         ffmpeg_dll_count=1)
-        error, _, calls = exec_spec(root)
-        check(isinstance(error, FileNotFoundError),
-              "the spec raises FileNotFoundError")
-        if isinstance(error, FileNotFoundError):
-            message = str(error)
-            check("FFmpeg runtime is incomplete" in message,
-                  "it says the FFmpeg runtime is incomplete")
-            check(str(FFMPEG_DLL_MIN) in message,
-                  "it states how many DLLs are expected")
-        check(calls["analysis"] == 0, "analysis never ran")
-
-        # --------------------------------------------------------------
-        print("\n[6a] ffprobe runtime library missing")
+        # RELEASE-02-B5-CLEANUP: sections [5] and [6] used to prove the spec
+        # aborts when runtime/ffmpeg/ffmpeg.exe's own DLL closure was missing
+        # (libpag.dll / partial set). That binary and its guard are gone.
+        print("\n[5] ffprobe runtime library missing")
         root = make_tree(temp / "noffprobecore", with_key=True, with_helper=True,
                          ffprobe_dll_count=0)
         error, _, calls = exec_spec(root)

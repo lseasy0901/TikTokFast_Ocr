@@ -16,7 +16,8 @@ import logging
 import subprocess
 import time
 
-from utils.runtime_paths import resolve_ffmpeg_path, resolve_ffprobe_path
+from utils import ffmpeg7_runtime
+from utils.runtime_paths import resolve_ffprobe_path
 
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.video_info")
 
@@ -217,8 +218,13 @@ def detect_resolution_fallback(stream_url: str) -> tuple:
     logger.info("[VIDEO INFO] 尝试备用分辨率检测...")
 
     try:
+        # 备用检测用同一个外部 FFmpeg 7 运行时（内置 FFmpeg 6 已随
+        # RELEASE-02-B5-CLEANUP 移除）；没有可用运行时即如实报错。
+        exe = ffmpeg7_runtime.status().path
+        if not exe:
+            raise RuntimeError("未找到可用的 FFmpeg 7 运行时")
         cmd = [
-            resolve_ffmpeg_path(),
+            exe,
             "-hide_banner",
             "-loglevel", "error",
             "-i", stream_url,

@@ -26,13 +26,14 @@
 import os
 import sys
 
-__all__ = ["resolve_ffmpeg_path", "resolve_ffprobe_path"]
+__all__ = ["resolve_ffprobe_path"]
 
-#: runtime/ 下的子目录名。ffmpeg 与 ffprobe 同处 runtime/ffmpeg/。
+#: runtime/ 下的子目录名。ffprobe 位于 runtime/ffmpeg/。
+#: （RELEASE-02-B5-CLEANUP 起该目录下只剩 ffprobe；播放运行时见
+#: utils/ffmpeg7_runtime.py。）
 _FFMPEG_SUBDIR = "ffmpeg"
 
 #: 部署覆盖用的环境变量名，与 DLV_LICENSE_SERVER_URL / SUSI_HELPER_PATH 同一模式。
-_ENV_FFMPEG = "DLV_FFMPEG_PATH"
 _ENV_FFPROBE = "DLV_FFPROBE_PATH"
 
 
@@ -106,15 +107,14 @@ def _resolve(name: str, subdir: str, env_var: str) -> str:
     return name
 
 
-def resolve_ffmpeg_path() -> str:
-    """解析 FFmpeg 可执行文件路径。"""
-    return _resolve("ffmpeg", _FFMPEG_SUBDIR, _ENV_FFMPEG)
-
-
 def resolve_ffprobe_path() -> str:
-    """解析 ffprobe 可执行文件路径。
+    """解析随包分发的 ffprobe 可执行文件路径。
 
-    ffprobe 仅用于可选的分辨率预探测；未随包分发时（发布构建即如此）返回
-    确定性的缺失路径，调用方会回退到基于 FFmpeg 的检测方案。
+    RELEASE-02-B5-CLEANUP 起 `runtime/ffmpeg/` 下**只剩 ffprobe**（内置的
+    ffmpeg.exe 已随旧 `_uhd` 拉流链路移除）；播放用的 FFmpeg 7 运行时由
+    `utils.ffmpeg7_runtime` 独立定位与校验。
+
+    ffprobe 用于分辨率探测（stderr 自报失败时的回退路径）；未随包分发时
+    返回确定性的缺失路径，调用方按既有方式处理探测失败。
     """
     return _resolve("ffprobe", _FFMPEG_SUBDIR, _ENV_FFPROBE)

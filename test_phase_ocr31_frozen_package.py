@@ -105,9 +105,13 @@ def test_assets():
               "打包产物内不再含 %s（已退役）" % relpath)
 
     ff_dir = os.path.join(INTERNAL, "runtime", "ffmpeg")
-    for name in ("ffmpeg.exe", "ffprobe.exe"):
+    # RELEASE-02-B5-CLEANUP：runtime/ffmpeg/ 下只剩 ffprobe.exe（分辨率探测回退）。
+    # ffmpeg.exe 已随旧 `_uhd` 拉流链路移除；播放用外部 FFmpeg 7 运行时（不随包）。
+    for name in ("ffprobe.exe",):
         check(os.path.isfile(os.path.join(ff_dir, name)),
               "打包内含 %s" % name)
+    check(not os.path.exists(os.path.join(ff_dir, "ffmpeg.exe")),
+          "打包产物内不再含 runtime/ffmpeg/ffmpeg.exe（旧 `_uhd` 拉流链路已移除）")
     helper = None
     for dirpath, _dirs, files in os.walk(DIST):
         if "susi_helper.exe" in files:

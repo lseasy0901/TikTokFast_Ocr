@@ -40,7 +40,7 @@ import numpy as np
 
 from utils.diag_trace import TRACE, S_STORE
 from utils.stderr_recorder import STDERR_RECORDER
-from utils.runtime_paths import resolve_ffmpeg_path
+from utils import ffmpeg7_runtime
 from utils.startup_timing import (
     STAGE_FFMPEG_SPAWN,
     STAGE_FFPROBE_END,
@@ -983,6 +983,28 @@ class FFmpegReader:
             except Exception:  # noqa: BLE001 - 已在退出的进程不值得再报错
                 pass
 
+    def _resolve_exe(self) -> str:
+        """返回本实例要执行的 FFmpeg 可执行文件路径。
+
+        RELEASE-02-B5-CLEANUP：内置 FFmpeg 6 已随本任务移除，**唯一**运行时是
+        外部 FFmpeg 7。生产路径（GUI）总会在会话开始时定位并校验好路径、
+        经 ``exe_path=`` 显式传入；未显式传入时（测试 / 基准脚本）这里回落到
+        `utils.ffmpeg7_runtime` 已校验的运行时。
+
+        都没有 → 抛出**可读**错误：不再有任何内置解码器可以兜底，静默走 PATH
+        只会把"缺运行时"变成含糊的"找不到命令"。
+        """
+        if self._exe_path:
+            return self._exe_path
+        st = ffmpeg7_runtime.status()
+        if st.ok and st.path:
+            # 记下来：同一实例后续重启不必重复解析
+            self._exe_path = st.path
+            return st.path
+        raise RuntimeError(
+            "未找到可用的低延迟播放组件（FFmpeg 7 运行时），无法播放直播流"
+        )
+
     def _build_ffmpeg_cmd(self, with_audio: bool | None = None):
         """构造 FFmpeg 极低延迟参数（CUDA 按需追加）
 
@@ -993,7 +1015,8 @@ class FFmpegReader:
         # loglevel info + -nostats：stderr 里会出现一次性的 "Stream #0:0 ...
         # 1280x720" dump 行，读取线程据此自报分辨率（替代独立的 ffprobe 二次
         # 连流）；-nostats 压掉周期性进度行，保 stderr_tail 可用于错误诊断。
-        cmd = [self._exe_path or resolve_ffmpeg_path(),
+        exe = self._resolve_exe()
+        cmd = [exe,
                "-hide_banner", "-loglevel", "info", "-nostats"]
 
         # ---- 输入侧：极致低延迟参数 ----
@@ -1006,12 +1029,10 @@ class FFmpegReader:
         cmd += ["-flags2", "fast"]                     # 快速解码（跳过不重要帧）
         cmd += ["-probesize", "32768"]                 # 32KB探测：快且足够检测FLV+h264
         cmd += ["-analyzeduration", "100000"]          # 0.1s分析：足够检测参数，快速启动
-        # 输入线程队列只留1包。该选项在 ffmpeg >= 7（外部 ffmpeg7 运行时，
-        # 经 exe_path 注入）被归到 muxer 侧，作为输入选项会被 CLI 直接拒绝
-        # （"cannot be applied to input url"）——整条命令开流失败（B5 实测）。
-        # 生产默认运行时（内置 6.x，exe_path 未传）行为逐字不变，仍注入该项。
-        if not self._exe_path:
-            cmd += ["-thread_queue_size", "1"]
+        # 刻意**不注入** `-thread_queue_size`：RELEASE-02-B5-CLEANUP 起唯一运行时
+        # 是外部 FFmpeg 7，它把该选项归到 muxer（输出）侧，作为输入选项会被 CLI
+        # 直接拒绝（"cannot be applied to input url"）→ 整条命令开流失败（实测）。
+        # 内置 FFmpeg 6 已随本任务移除，因此不再需要"按运行时分支"。
 
         # ---- 断流自愈（仅 http(s) 输入；迁移审计 P0-2，参数取自 live-player 逆向报告）----
         # 这四项是 http 协议私有选项，而 ffmpeg CLI 对"该输入不认识的选项"

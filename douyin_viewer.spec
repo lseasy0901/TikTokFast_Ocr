@@ -4,7 +4,6 @@ PyInstaller spec file for Douyin Low Latency Viewer
 Windows standalone EXE packaging
 """
 
-import glob
 import importlib.util
 import os
 import sys
@@ -39,16 +38,21 @@ print("=" * 72)
 #
 #   license_public_key.pem                        (.gitignore:22)
 #   susi_helper/target/release/susi_helper.exe    (Rust target tree, gitignored)
-#   runtime/ffmpeg/ffmpeg.exe                     (large third-party binary)
-#   runtime/ffmpeg/*.dll                          (their required companion DLLs)
+#   runtime/ffmpeg/ffprobe.exe                    (large third-party binary)
+#   runtime/ffmpeg/av*.dll, sw*.dll               (its required companion DLLs)
 #   runtime/onnx/                                 (production OCR artifacts, large)
+#
+# RELEASE-02-B5-CLEANUP: runtime/ffmpeg/ffmpeg.exe is no longer bundled. It was
+# the ACLOS recorder's build and existed only for the old `_uhd` pull path;
+# playback now uses the external FFmpeg 7 runtime located by
+# utils/ffmpeg7_runtime.py (user-provided, not bundled).
 #
 # PyInstaller only *warns* when a `datas` source is missing and then produces an
 # EXE anyway. Each of those omissions is invisible here and fatal on a customer's
-# machine: no helper -> activation never works; no FFmpeg -> the video pipeline
-# dies at spawn; no ffprobe -> the resolution probe silently degrades to a wrong
-# fixed frame size; no ONNX model -> the production OCR backend cannot load.
-# Verify all of them up front and stop the build.
+# machine: no helper -> activation never works; no ffprobe -> the resolution
+# probe silently degrades to a wrong fixed frame size; no ONNX model -> the
+# production OCR backend cannot load. Verify all of them up front and stop the
+# build.
 #
 # The Tesseract set (runtime/tesseract/tesseract.exe, its ~26 companion DLLs and
 # tessdata/eng.traineddata) used to be on this list. It is gone as of the
@@ -85,23 +89,25 @@ _SUSI_HELPER_SRC = os.path.join(
 )
 _SUSI_HELPER_DEST = os.path.join("susi_helper", "target", "release")
 
-# runtime/ assets. The destinations mirror what the client resolves at runtime:
-#   utils.runtime_paths.resolve_ffmpeg_path()   -> <MEIPASS>/runtime/ffmpeg/ffmpeg.exe
-# which is why ffmpeg.exe must keep this exact relative path.
-_FFMPEG_DIR = os.path.join(PROJECT_ROOT, "runtime", "ffmpeg")
-_FFMPEG_SRC = os.path.join(_FFMPEG_DIR, "ffmpeg.exe")
-_FFMPEG_DEST = os.path.join("runtime", "ffmpeg")
+# runtime/ assets. The destination mirrors what the client resolves at runtime:
+#   utils.runtime_paths.resolve_ffprobe_path() -> <MEIPASS>/runtime/ffmpeg/ffprobe.exe
+# which is why ffprobe.exe must keep this exact relative path.
+#
+# RELEASE-02-B5-CLEANUP: this directory used to also carry ffmpeg.exe (the ACLOS
+# recorder's build) plus its own DLL closure. It was removed with the old `_uhd`
+# pull path. Playback now uses the external FFmpeg 7 runtime located by
+# utils/ffmpeg7_runtime.py, which is intentionally NOT bundled (see the release
+# report's runtime-distribution section).
+_RUNTIME_FFMPEG_DIR = os.path.join(PROJECT_ROOT, "runtime", "ffmpeg")
+_RUNTIME_FFMPEG_DEST = os.path.join("runtime", "ffmpeg")
 
-# ffprobe.exe is the *shared* ACLOS FFmpeg build (n5.1.3) and is a different
-# build from ffmpeg.exe. It resolves to <MEIPASS>/runtime/ffmpeg/ffprobe.exe via
+# ffprobe.exe is an --enable-shared FFmpeg build (n5.1.3). It resolves to
+# <MEIPASS>/runtime/ffmpeg/ffprobe.exe via
 # utils.runtime_paths.resolve_ffprobe_path(), which is why it must land in
-# _FFMPEG_DEST beside ffmpeg.exe.
-_FFPROBE_SRC = os.path.join(_FFMPEG_DIR, "ffprobe.exe")
+# _RUNTIME_FFMPEG_DEST.
+_FFPROBE_SRC = os.path.join(_RUNTIME_FFMPEG_DIR, "ffprobe.exe")
 
-# ffprobe.exe's companion set, required by name. These live in the same directory
-# as ffmpeg.exe's DLLs, so the two closures are told apart by name: every entry
-# here is subtracted from the ffmpeg glob below, which keeps the "FFmpeg runtime
-# is incomplete" count meaning exactly what it meant before.
+# ffprobe.exe's companion set, required by name.
 _FFPROBE_DLL_NAMES = (
     "avformat-59.dll",  # core library -- ffprobe links the format layer directly
     "avcodec-59.dll",
@@ -111,28 +117,12 @@ _FFPROBE_DLL_NAMES = (
     "swresample-4.dll",
     "swscale-6.dll",
 )
-_FFPROBE_CORE = os.path.join(_FFMPEG_DIR, _FFPROBE_DLL_NAMES[0])
+_FFPROBE_CORE = os.path.join(_RUNTIME_FFMPEG_DIR, _FFPROBE_DLL_NAMES[0])
 _FFPROBE_DLLS = [
-    os.path.join(_FFMPEG_DIR, name)
+    os.path.join(_RUNTIME_FFMPEG_DIR, name)
     for name in _FFPROBE_DLL_NAMES
-    if os.path.isfile(os.path.join(_FFMPEG_DIR, name))
+    if os.path.isfile(os.path.join(_RUNTIME_FFMPEG_DIR, name))
 ]
-
-# ffmpeg.exe is not a stock FFmpeg build -- it is the ACLOS recorder's, and it
-# hard-links against its sibling DLLs: libpag.dll and o264rtenc.dll first, then
-# the ANGLE (libEGL/libGLESv2) and MSVC runtimes they pull in. Those are ordinary
-# imports, not delay-loads, so the loader demands them at process start; without
-# them ffmpeg.exe dies with STATUS_DLL_NOT_FOUND (0xC0000135) before it parses a
-# single argument. The build only ever worked because the developer machine had
-# C:\Program Files (x86)\ACLOS\Cross\recorder-release on PATH. Vendored beside
-# ffmpeg.exe and gitignored (.gitignore).
-_FFMPEG_DLL_REQUIRED = os.path.join(_FFMPEG_DIR, "libpag.dll")
-_FFMPEG_DLLS = sorted(
-    path
-    for path in glob.glob(os.path.join(_FFMPEG_DIR, "*.dll"))
-    if os.path.basename(path).lower() not in _FFPROBE_DLL_NAMES
-)
-_FFMPEG_DLL_MIN = 7
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime OCR artifacts (the production OCR backend)
@@ -205,18 +195,16 @@ def require_build_inputs(required):
         "  susi_helper",
         "      run `cargo build --release` in susi_helper/, or copy the pinned",
         "      prebuilt binary to %s" % _SUSI_HELPER_SRC,
-        "  runtime/ffmpeg/ffmpeg.exe",
-        "      copy the FFmpeg build to %s" % _FFMPEG_SRC,
-        "      plus its %d companion DLLs (ffmpeg.exe is the ACLOS build, not a" % _FFMPEG_DLL_MIN,
-        "      stock one; without them it fails with STATUS_DLL_NOT_FOUND)",
-        "      e.g. from C:\\Program Files (x86)\\ACLOS\\Cross\\recorder-release\\*.dll",
         "  runtime/ffmpeg/ffprobe.exe",
         "      copy that build's ffprobe.exe to %s" % _FFPROBE_SRC,
         "      plus its %d companion DLLs (%s)." % (
             len(_FFPROBE_DLL_NAMES), ", ".join(_FFPROBE_DLL_NAMES)),
-        "      ffprobe.exe is the shared ACLOS build, not ffmpeg.exe's; without",
-        "      those it dies at process start (0xC0000135) and the app silently",
-        "      falls back to a hardcoded 1920x1080 frame size.",
+        "      ffprobe.exe is a --enable-shared build: without its closure it",
+        "      dies at process start (0xC0000135) and the app silently falls",
+        "      back to a hardcoded 1920x1080 frame size.",
+        "      NOTE (RELEASE-02-B5-CLEANUP): runtime/ffmpeg/ffmpeg.exe is gone.",
+        "      Playback uses the external FFmpeg 7 runtime located by",
+        "      utils/ffmpeg7_runtime.py (user-provided, NOT bundled).",
         "  runtime/onnx/",
         "      copy the two ONNX artifacts to %s:" % _ONNX_DIR,
         "        %s" % _ONNX_MODEL_NAME,
@@ -235,8 +223,6 @@ require_build_inputs(
     (
         ("license_public_key.pem", _PUBLIC_KEY_SRC),
         ("susi_helper executable", _SUSI_HELPER_SRC),
-        ("FFmpeg executable", _FFMPEG_SRC),
-        ("FFmpeg runtime library", _FFMPEG_DLL_REQUIRED),
         ("FFprobe executable", _FFPROBE_SRC),
         ("FFprobe runtime library", _FFPROBE_CORE),
         ("ONNX OCR model", _ONNX_MODEL_SRC),
@@ -285,39 +271,16 @@ if _pytesseract_missing:
         )
     )
 
-# A present-but-partial DLL set is the case require_build_inputs() cannot see.
-# ffmpeg.exe needs all of them at process start, so a partial set is as fatal as
-# none.
-if len(_FFMPEG_DLLS) < _FFMPEG_DLL_MIN:
-    raise FileNotFoundError(
-        "\n".join(
-            [
-                "",
-                "=" * 72,
-                "BUILD ABORTED: the FFmpeg runtime is incomplete.",
-                "",
-                "  found %d DLL(s) in %s" % (len(_FFMPEG_DLLS), _FFMPEG_DIR),
-                "  expected at least %d" % _FFMPEG_DLL_MIN,
-                "",
-                "ffmpeg.exe is the ACLOS recorder's build and links against these",
-                "DLLs at process start (libpag.dll, o264rtenc.dll, libEGL/libGLESv2,",
-                "msvcp140, vcruntime140[_1]). A partial set builds an EXE whose video",
-                "pipeline dies with STATUS_DLL_NOT_FOUND -- which looks like a stream",
-                "problem, not a packaging problem.",
-                "",
-                "Provision them from an ACLOS install, e.g.",
-                '  copy "C:\\Program Files (x86)\\ACLOS\\Cross\\recorder-release\\*.dll" %s'
-                % _FFMPEG_DIR,
-                "=" * 72,
-                "",
-            ]
-        )
-    )
-
-# Same reasoning for ffprobe.exe, which is a different build with its own closure.
+# Same reasoning for ffprobe.exe: a partial DLL set is as fatal as none.
 # A partial set is as fatal as none: the exe dies with STATUS_DLL_NOT_FOUND
 # (0xC0000135), get_video_info() reports no resolution, and the app falls back to
 # the hardcoded 1920x1080 frame size this fix exists to remove.
+#
+# NOTE (RELEASE-02-B5-CLEANUP): there used to be a second guard here for
+# runtime/ffmpeg/ffmpeg.exe and its ACLOS-specific DLL closure (libpag.dll,
+# o264rtenc.dll, ANGLE, MSVC). That binary was removed together with the old
+# `_uhd` pull path -- playback now uses the external FFmpeg 7 runtime located by
+# utils/ffmpeg7_runtime.py, which is deliberately NOT bundled.
 if len(_FFPROBE_DLLS) < len(_FFPROBE_DLL_NAMES):
     _present = {os.path.basename(path).lower() for path in _FFPROBE_DLLS}
     raise FileNotFoundError(
@@ -328,7 +291,7 @@ if len(_FFPROBE_DLLS) < len(_FFPROBE_DLL_NAMES):
                 "BUILD ABORTED: the ffprobe runtime is incomplete.",
                 "",
                 "  found %d of %d DLL(s) in %s" % (
-                    len(_FFPROBE_DLLS), len(_FFPROBE_DLL_NAMES), _FFMPEG_DIR),
+                    len(_FFPROBE_DLLS), len(_FFPROBE_DLL_NAMES), _RUNTIME_FFMPEG_DIR),
                 "  missing: %s" % ", ".join(
                     name for name in _FFPROBE_DLL_NAMES if name not in _present),
                 "",
@@ -344,9 +307,9 @@ if len(_FFPROBE_DLLS) < len(_FFPROBE_DLL_NAMES):
                 '  copy "C:\\Program Files (x86)\\ACLOS\\Cross\\recorder-release\\ffprobe.exe" %s'
                 % _FFPROBE_SRC,
                 '  copy "C:\\Program Files (x86)\\ACLOS\\Cross\\recorder-release\\av*.dll" %s'
-                % _FFMPEG_DIR,
+                % _RUNTIME_FFMPEG_DIR,
                 '  copy "C:\\Program Files (x86)\\ACLOS\\Cross\\recorder-release\\sw*.dll" %s'
-                % _FFMPEG_DIR,
+                % _RUNTIME_FFMPEG_DIR,
                 "=" * 72,
                 "",
             ]
@@ -531,21 +494,19 @@ datas = [
     # data. A clean Windows machine has it not installed, and the release build
     # must not depend on PATH, so it is bundled and resolved relative to the
     # bundle: utils.runtime_paths probes <MEIPASS>/runtime/ffmpeg/ffmpeg.exe.
-    (_FFMPEG_SRC, _FFMPEG_DEST),
     # ffprobe.exe backs the resolution pre-detection. resolve_ffprobe_path() probes
     # <MEIPASS>/runtime/ffmpeg/ffprobe.exe, so it must land in the same directory as
     # ffmpeg.exe. Without it the frozen app cannot size its rawvideo frames.
-    (_FFPROBE_SRC, _FFMPEG_DEST),
+    (_FFPROBE_SRC, _RUNTIME_FFMPEG_DEST),
 ]
 
 # ffmpeg.exe's companion DLLs, resolved beside it at process start. Bundled flat
 # into <dest>/ next to ffmpeg.exe -- the same place the Windows loader searches,
 # and where the vendored set is validated to run from a clean PATH.
-datas += [(dll, _FFMPEG_DEST) for dll in _FFMPEG_DLLS]
 
 # ffprobe.exe's companion DLLs, resolved beside it at process start. Same
 # directory as ffmpeg.exe's set, and the same reason.
-datas += [(dll, _FFMPEG_DEST) for dll in _FFPROBE_DLLS]
+datas += [(dll, _RUNTIME_FFMPEG_DEST) for dll in _FFPROBE_DLLS]
 
 # ONNX OCR artifacts. Both sources are files, so dest is the directory they must
 # land in and the frozen probe path <MEIPASS>/runtime/onnx/<name> is exactly what

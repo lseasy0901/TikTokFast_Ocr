@@ -29,7 +29,14 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from stream.ffmpeg_reader import FFmpegReader
-from utils.runtime_paths import resolve_ffmpeg_path
+from utils import ffmpeg7_runtime as _ffmpeg7_runtime
+
+
+def _runtime_exe():
+    """返回本机已校验的 FFmpeg 7 运行时路径（内置 ffmpeg.exe 已随
+    RELEASE-02-B5-CLEANUP 移除）。"""
+    st = _ffmpeg7_runtime.status()
+    return st.path if (st.ok and st.path) else None
 
 FAILURES = []
 
@@ -68,14 +75,18 @@ def wait_until(pred, timeout, app=None):
 
 
 def ensure_media():
-    """没有就用随包的 FFmpeg 生成一个最小 FLV"""
+    """没有就用外部 FFmpeg 7 运行时生成一个最小 FLV"""
+    exe = _runtime_exe()
+    if not exe:
+        print("  [SKIP] 未找到可用的 FFmpeg 7 运行时，无法生成测试媒体")
+        return False
     if os.path.isfile(MEDIA) and os.path.getsize(MEDIA) > 0:
         return True
     os.makedirs(MEDIA_DIR, exist_ok=True)
     cmd = [
-        resolve_ffmpeg_path(), "-y", "-hide_banner", "-loglevel", "error",
+        exe, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", "testsrc=size=%dx%d:rate=15" % (MEDIA_W, MEDIA_H),
-        "-t", "2", "-c:v", "libo264rt", "-f", "flv", MEDIA,
+        "-t", "2", "-c:v", "libx264", "-f", "flv", MEDIA,
     ]
     try:
         subprocess.run(cmd, timeout=60, check=True,
@@ -283,14 +294,15 @@ def test_ffmpeg_params_unchanged():
     #   - rw_timeout + reconnect 三项（断流自愈，仅 http(s) 输入注入）；
     #   - loglevel info + -nostats：stderr dump 行供 reader 自报分辨率
     #     （刀1，替代独立 ffprobe 二次连流），nostats 防进度行刷屏。
-    expected = [
-        resolve_ffmpeg_path(), "-hide_banner", "-loglevel", "info", "-nostats",
+    expected_tail = [
+        "-hide_banner", "-loglevel", "info", "-nostats",
         "-fflags", "nobuffer+flush_packets+genpts",
         "-flags", "low_delay",
         "-flags2", "fast",
         "-probesize", "32768",
         "-analyzeduration", "100000",
-        "-thread_queue_size", "1",
+        # RELEASE-02-B5-CLEANUP：-thread_queue_size 已移除 —— 唯一运行时是
+        # 外部 FFmpeg 7，它把该选项归到 muxer 侧，作为输入选项会被 CLI 拒绝。
         "-rw_timeout", "15000000",
         "-reconnect", "1",
         "-reconnect_streamed", "1",
@@ -304,8 +316,10 @@ def test_ffmpeg_params_unchanged():
         "-pix_fmt", "bgr24",
         "-f", "rawvideo", "pipe:1",
     ]
-    check(cmd == expected, "命令与启动刀后基线完全一致",
-          "\n    got=%s\n    exp=%s" % (cmd, expected))
+    check(bool(cmd) and os.path.isfile(cmd[0]) or cmd[0].endswith(".exe"),
+          "命令以运行时路径开头 (%s)" % (cmd[0] if cmd else "(空)"))
+    check(cmd[1:] == expected_tail, "命令与启动刀后基线完全一致",
+          "\n    got=%s\n    exp=%s" % (cmd[1:], expected_tail))
     # 断流自愈选项是 http 协议私有项：ffmpeg CLI 对不认识的输入选项直接报错
     # 退出（lavfi/file 实测复现），因此非 http(s) URL 绝不能注入。
     no_http = FFmpegReader("testsrc=duration=1:s=64x64",

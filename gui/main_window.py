@@ -120,7 +120,8 @@ from stream.models import StreamCandidate, StreamInfo, StreamResolveError
 from stream.resolver import StreamResolver
 from stream.failover import CandidateFailover
 from stream.ffmpeg_reader import FFmpegReader
-from stream.bare_source import bare_stream_applicable, probe_video_bare, reason_message
+from stream.bare_source import (bare_stream_applicable, probe_video_bare,
+                                reason_message, REASON_DISABLED)
 from stream.frame_buffer import LatestFrameBuffer
 from audio import AudioService
 from gui.audio_panel import AudioPanel
@@ -203,12 +204,14 @@ class _ConnectWorker:
 # ======================================================================
 @dataclass(frozen=True)
 class _BareResolveResult:
-    """一次取流解析的结论（由后台线程产出，经 Signal 回到 GUI 线程）。
+    """一次会话取流准备的结论（由后台线程产出，经 Signal 回到 GUI 线程）。
 
-    RELEASE-02-B5-CLEANUP：这是**唯一**取流入口的结论。失败时不存在"降级到
-    旧路径"的分支 —— 只有明确原因，由 GUI 给用户一句人话并结束会话。
+    RELEASE-02-B5-CLEANUP：这是**唯一**运行时/取流入口的结论。失败时不存在
+    "降级到旧路径"的分支 —— 只有明确原因，由 GUI 给用户一句人话并结束会话。
+    所有平台都必须先通过 FFmpeg 7 运行时校验（内置 FFmpeg 6 已随本任务移除，
+    不再存在任何内置解码器）。
 
-    :param url:         视频版裸流 URL；None = 本次取不到
+    :param url:         视频版裸流 URL；None = 非裸流平台，或本次取不到
     :param exe:         已通过校验的 FFmpeg7 运行时路径；None = 不可用
     :param runtime_ok:  运行时是否可用（False → 需要给用户可见提示）
     :param live:        页面是否显示该房间正在直播（用于区分"未开播"与"取不到"）
@@ -225,7 +228,7 @@ class _BareResolveResult:
 
 
 class _BareResolveWorker:
-    """后台线程：校验 FFmpeg7 运行时并取本次会话的裸流 URL。
+    """后台线程：校验 FFmpeg7 运行时；（裸流平台）再取本次会话的裸流 URL。
 
     与 `_ConnectWorker` 同一模式（普通类 + daemon 线程 + 回调），不引入
     新的线程模型：线程只做阻塞 IO（运行时探测、页面 GET），结果通过
@@ -237,10 +240,12 @@ class _BareResolveWorker:
     其返回值被丢弃）。
     """
 
-    def __init__(self, request_id: int, platform: str, room_id: str, on_done):
+    def __init__(self, request_id: int, platform: str, room_id: str,
+                 want_bare: bool, on_done):
         self._request_id = request_id
         self._platform = platform
         self._room_id = room_id
+        self._want_bare = want_bare
         self._on_done = on_done
         self._cancelled = False
         self._thread = threading.Thread(
@@ -262,12 +267,26 @@ class _BareResolveWorker:
     def _run(self):
         result = _BareResolveResult()
         try:
-            # 1) 运行时校验（带缓存；首次会拉起子进程探测，故必须在后台线程）
+            # 1) 运行时校验（带缓存；首次会拉起子进程探测，故必须在后台线程）。
+            #    所有平台共用同一个 FFmpeg 7 运行时 —— 内置 FFmpeg 6 已移除。
             st = ffmpeg7_runtime.status()
             if not st.ok:
                 result = _BareResolveResult(
                     url=None, exe=None, runtime_ok=False,
                     reason=st.reason, detail=st.detail,
+                )
+            elif not self._want_bare:
+                # 非裸流平台（虎牙 / B 站）：只需运行时就绪，候选由适配器给出。
+                # 抖音但总开关被显式关闭 → 记录原因：抖音唯一取流路径就是裸流，
+                # 关掉它意味着本会话无可播放来源（不许静默降级）。
+                reason = None
+                detail = "非裸流平台，使用适配器候选"
+                if (self._platform or "").lower() == "douyin":
+                    reason = REASON_DISABLED
+                    detail = "抖音总开关被显式关闭，无可用取流来源"
+                result = _BareResolveResult(
+                    url=None, exe=st.path, runtime_ok=True,
+                    reason=reason, detail=detail,
                 )
             else:
                 # 2) 页面直取裸流 URL（有界超时的阻塞请求）
@@ -2288,21 +2307,18 @@ class MainWindow(QMainWindow):
         self._bare_req_id += 1
         req_id = self._bare_req_id
 
-        if not bare_stream_applicable(info.platform):
-            logger.info("[BARE] 平台/开关不适用裸流，直接使用平台候选 (platform=%s)",
-                        info.platform)
-            self._start_session_failover()
-            return
-
+        # 所有平台都要过同一个 FFmpeg 7 运行时校验（内置 FFmpeg 6 已移除，
+        # 不再存在任何内置解码器）。抖音额外要页面直取裸流 URL。
         self._bare_worker = _BareResolveWorker(
             request_id=req_id,
             platform=info.platform,
             room_id=info.room_id or "",
+            want_bare=bare_stream_applicable(info.platform),
             on_done=self._on_bare_done,
         )
         self._bare_worker.start()
-        logger.info("[BARE] 已启动后台取流解析 (req=%d room=%s)",
-                    req_id, info.room_id)
+        logger.info("[BARE] 已启动后台取流准备 (req=%d platform=%s room=%s)",
+                    req_id, info.platform, info.room_id)
 
     def _on_bare_done(self, request_id: int, result) -> None:
         """worker 回调（**后台线程**）→ 经 Signal 回到 GUI 线程。"""
@@ -2331,9 +2347,18 @@ class MainWindow(QMainWindow):
                 f"{ffmpeg7_runtime.reason_message(result.reason or '')}，无法播放直播流",
                 result.reason, result.detail)
             return
+
         if not result.url:
-            self._abort_session(reason_message(result.reason or ""),
-                                result.reason, result.detail)
+            if (self._playback_info.platform or "").lower() == "douyin":
+                # 抖音只能走裸流（旧 `_uhd` 转码档候选已整体移除）：开关被显式
+                # 关闭或取流失败，都意味着本会话没有可播放来源。
+                self._abort_session(reason_message(result.reason
+                                                   or REASON_DISABLED),
+                                    result.reason, result.detail)
+                return
+            # 虎牙 / B 站：候选由适配器给出，运行时已就绪
+            logger.info("[FFMPEG7] 运行时就绪，使用平台候选 (exe=%s)", result.exe)
+            self._start_session_failover()
             return
 
         self._bare_url = result.url
@@ -2447,15 +2472,16 @@ class MainWindow(QMainWindow):
         # 创建并启动 FFmpegReader（protocol 供 flv 候选强制 live_flv demuxer）
         reader = None
         try:
-            # RELEASE-02-B5-CLEANUP：抖音会话的唯一候选**就是**裸流本身
-            # （旧 `_uhd` 转码档候选已整体移除）。裸流由外部 FFmpeg 7 运行时
-            # 解码（会话开始时已在后台线程定位并校验）；失败**不再回退任何
-            # 旧路径** —— reader 内部只有有界重启。
-            # 虎牙 / B 站不走裸流，候选由各自适配器给出（exe_path 为 None）。
+            # RELEASE-02-B5-CLEANUP：**所有平台**都用外部 FFmpeg 7 运行时
+            # （内置 FFmpeg 6 已随本任务移除，不再存在任何内置解码器）。
+            # 运行时路径在会话开始时已在后台线程定位并校验（self._bare_exe）；
+            # 失败不会再走到这里（会话已在此之前明确终止）。
+            # 抖音会话的唯一候选就是裸流本身（旧 `_uhd` 候选已整体移除）；
+            # 虎牙 / B 站的候选由各自适配器给出。
             is_bare = bool(self._bare_url and candidate.url == self._bare_url)
-            if is_bare:
-                logger.info("[FFMPEG] 裸流播放（ffmpeg7 运行时），url=%s",
-                            (candidate.url or "")[:60])
+            logger.info("[FFMPEG] %s播放（ffmpeg7 运行时 %s），url=%s",
+                        "裸流" if is_bare else "平台候选",
+                        self._bare_exe, (candidate.url or "")[:60])
             reader = FFmpegReader(
                 candidate.url,
                 width=video_width,
@@ -2468,7 +2494,7 @@ class MainWindow(QMainWindow):
                 audio_sample_rate=self._audio.sample_rate,
                 audio_channels=self._audio.channels,
                 protocol=candidate.protocol,
-                exe_path=self._bare_exe if is_bare else None,
+                exe_path=self._bare_exe,
             )
             reader.start()
             logger.info("[FFMPEG] reader.start() called, use_cuda=True")

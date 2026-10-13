@@ -32,11 +32,12 @@ license_public_key.pem
 *.db-wal
 
 # FFmpeg companion DLL set - provisioned per machine, not versioned.
-# runtime/ffmpeg/ffmpeg.exe is the ACLOS recorder's build, not a stock FFmpeg. It
-# hard-imports libpag.dll, o264rtenc.dll, libEGL/libGLESv2 and the MSVC runtime,
-# so it cannot start without them (STATUS_DLL_NOT_FOUND). Previously it only ran
-# because C:\Program Files (x86)\ACLOS\Cross\recorder-release was on PATH.
-# ffmpeg.exe stays tracked; the DLLs do not.
+# runtime/ffmpeg/ holds ONLY ffprobe.exe (tracked) plus its av*/sw* companion
+# DLLs (untracked).
+# RELEASE-02-B5-CLEANUP: runtime/ffmpeg/ffmpeg.exe is gone. It was the ACLOS
+# recorder's build (hard-importing libpag.dll, o264rtenc.dll, libEGL/libGLESv2
+# and the MSVC runtime) and existed only for the old `_uhd` pull path; playback
+# now uses the external FFmpeg 7 runtime located by utils/ffmpeg7_runtime.py.
 runtime/ffmpeg/*.dll
 
 # PP-OCRv6 production OCR model - supplied per machine, never versioned.

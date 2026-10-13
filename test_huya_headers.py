@@ -24,6 +24,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -164,7 +165,28 @@ def t_douyin_headers():
 
 
 # ----------------------------------------------------------------------
+#: 测试用的显式运行时路径（不依赖隔离环境里是否装了用户级 FFmpeg 7）
+_FAKE_EXE = r"D:\fake\runtime\ffmpeg7\ffmpeg.exe"
+
+
+def _pump_until(pred, timeout=5.0):
+    """驱动 Qt 事件循环直到 pred 成立（后台 worker 经 Signal 回 GUI 需要它）。"""
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
+        if app is not None:
+            app.processEvents()
+        if pred():
+            if app is not None:
+                app.processEvents()
+            return True
+        time.sleep(0.005)
+    return bool(pred())
+
+
 def cmd_for(**kw):
+    kw.setdefault("exe_path", _FAKE_EXE)
     r = FFmpegReader("http://example.com/a.flv", width=1280, height=720, **kw)
     return r._build_ffmpeg_cmd()
 
@@ -180,10 +202,10 @@ def t_ffmpeg_cmd():
           "-user_agent" not in base)
     check("无 headers 时命令里没有 -headers",
           "-headers" not in base)
-    check("仍保留低延迟参数",
+    check("仍保留低延迟参数（不含 -thread_queue_size：ffmpeg>=7 会拒绝）",
           all(x in base for x in ("-fflags", "nobuffer+flush_packets+genpts", "-flags",
-                                  "low_delay", "-probesize", "-analyzeduration",
-                                  "-thread_queue_size")),
+                                  "low_delay", "-probesize", "-analyzeduration"))
+          and "-thread_queue_size" not in base,
           str(base[:20]))
     check("use_cuda 行为不变", "-hwaccel" in base and "cuda" in base)
     check("输出侧参数未被破坏",
@@ -295,6 +317,14 @@ def t_mainwindow_wiring():
 
     real = mw.FFmpegReader
     mw.FFmpegReader = _SpyReader
+    # RELEASE-02-B5-CLEANUP：会话先过 FFmpeg7 运行时校验。隔离环境里没有
+    # 用户级运行时，这里桩成"即时可用"，避免真实子进程探测。
+    from utils import ffmpeg7_runtime as _rt
+    _saved = (_rt.status, _rt.resolved_exe)
+    _Status = _rt.Ffmpeg7Status
+    _rt.status = lambda refresh=False: _Status(True, _rt.REASON_OK,
+                                               path=_FAKE_EXE)
+    _rt.resolved_exe = lambda: _FAKE_EXE
     try:
         win = mw.MainWindow()
         # 压掉"首次进入直播间询问备注"的模态弹窗：record_success 会触发
@@ -356,6 +386,9 @@ def t_mainwindow_wiring():
                           candidates=[cand], selected=cand,
                           width=1280, height=720)
         win._handle_connect_success(info)
+        # RELEASE-02-B5-CLEANUP：所有平台都先过一次 FFmpeg7 运行时校验（后台
+        # 线程），结果经 Qt Signal 回到 GUI 线程后才启动第一个候选。
+        _pump_until(lambda: win._bare_worker is None)
         check("FFmpegReader 被调用", captured.get("started"))
         check("http_headers 传到了 FFmpegReader",
               captured.get("http_headers") is not None
@@ -366,25 +399,30 @@ def t_mainwindow_wiring():
         check("url/宽高未被改变",
               captured.get("url") == cand.url
               and (captured.get("width"), captured.get("height")) == (1280, 720))
+        # RELEASE-02-B5-CLEANUP：所有平台都用外部 FFmpeg 7 运行时
+        check("运行时路径传给了 FFmpegReader",
+              captured.get("exe_path") == _FAKE_EXE,
+              repr(captured.get("exe_path")))
         # Phase 3.2：启动分段计时对象由 MainWindow 创建并交给 reader
         check("启动计时对象已传给 FFmpegReader",
               captured.get("timing") is not None,
               repr(captured.get("timing")))
         win._disconnect()
 
-        # 抖音式候选（无 headers）应传 None
+        # 无 headers 的候选（虎牙平台）应传 {} / None —— 不产生任何注入
         captured.clear()
         plain = StreamCandidate(url="http://d/x.flv", protocol="flv")
-        info2 = StreamInfo(platform="douyin", room_id="1", candidates=[plain],
+        info2 = StreamInfo(platform="huya", room_id="1", candidates=[plain],
                            selected=plain, width=1280, height=720)
         win._handle_connect_success(info2)
+        _pump_until(lambda: win._bare_worker is None)
         # 语义要求是"传下去后不产生任何注入"。默认值是 {} 而不是 None，
         # FFmpegReader 对两者一视同仁（见 [4]），这里断言真正重要的那件事。
-        check("无 headers 的候选不产生注入（抖音路径）",
+        check("无 headers 的候选不产生注入",
               not captured.get("http_headers"),
               str(captured.get("http_headers")))
         check("无 headers 的候选命令不含 -user_agent/-headers",
-              not FFmpegReader("u", width=1, height=1,
+              not FFmpegReader("u", width=1, height=1, exe_path=_FAKE_EXE,
                                http_headers=captured.get("http_headers")
                                )._build_ffmpeg_cmd().count("-user_agent"))
         win._disconnect()
@@ -402,6 +440,7 @@ def t_mainwindow_wiring():
             check("selected 为 None 不抛异常", False, f"{type(e).__name__}: {e}")
     finally:
         mw.FFmpegReader = real
+        _rt.status, _rt.resolved_exe = _saved
         app.processEvents()
 
 

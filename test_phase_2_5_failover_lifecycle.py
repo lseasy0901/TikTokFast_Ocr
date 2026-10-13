@@ -167,17 +167,36 @@ _real_reader = mw.FFmpegReader
 _real_bridge = mw._FrameBridge
 
 
+_RUNTIME_ORIG = {}
+
+
 def install_fakes():
     PLAN.clear()
     del CREATED[:]
     del BRIDGES[:]
     mw.FFmpegReader = FakeReader
     mw._FrameBridge = RecordingBridge
+    # RELEASE-02-B5-CLEANUP：所有平台都先过一次 FFmpeg7 运行时校验（后台线程）。
+    # 这里把它桩成"即时可用"，避免真实子进程探测（慢且与事件循环竞争），
+    # 也让"运行时缺失"分支由各测试自行覆盖。
+    from utils import ffmpeg7_runtime as _rt
+    if "status" not in _RUNTIME_ORIG:
+        _RUNTIME_ORIG["status"] = _rt.status
+        _RUNTIME_ORIG["resolved_exe"] = _rt.resolved_exe
+    _Status = _rt.Ffmpeg7Status
+    _FAKE_EXE = r"D:\fake\runtime\ffmpeg7\ffmpeg.exe"
+    _rt.status = lambda refresh=False: _Status(
+        True, _rt.REASON_OK, path=_FAKE_EXE)
+    _rt.resolved_exe = lambda: _FAKE_EXE
 
 
 def restore_fakes():
     mw.FFmpegReader = _real_reader
     mw._FrameBridge = _real_bridge
+    if _RUNTIME_ORIG:
+        from utils import ffmpeg7_runtime as _rt
+        _rt.status = _RUNTIME_ORIG["status"]
+        _rt.resolved_exe = _RUNTIME_ORIG["resolved_exe"]
 
 
 def build_window():
@@ -211,9 +230,25 @@ def drive_failure(window):
     window._frame_timer.stop()
 
 
+def _pump_until(pred, timeout=5.0):
+    """驱动事件循环直到 pred 成立（worker 经 Qt Signal 回 GUI 线程需要它）。"""
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
+        app.processEvents()
+        if pred():
+            app.processEvents()
+            return True
+        time.sleep(0.005)
+    app.processEvents()
+    return bool(pred())
+
+
 def connect(window, urls):
     window._handle_connect_success(make_info(urls))
     window._frame_timer.stop()      # 后续一律手动驱动，避免真实定时器插入
+    # RELEASE-02-B5-CLEANUP：取流/运行时校验在后台线程完成，结果经 Qt Signal
+    # 回到 GUI 线程后才启动第一个候选 —— 这里驱动事件循环等它交付。
+    _pump_until(lambda: window._bare_worker is None)
 
 
 # ======================================================================
