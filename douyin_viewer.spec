@@ -125,6 +125,48 @@ _FFPROBE_DLLS = [
 ]
 
 # ---------------------------------------------------------------------------
+# FFmpeg 7 playback runtime (RELEASE-02 2.2.0) -- now BUNDLED
+#
+# RELEASE-02 ships the FFmpeg 7 runtime *inside the installer* so live playback
+# works out of the box. utils.ffmpeg7_runtime.py's candidate list already probes
+#   <MEIPASS>/runtime/ffmpeg7/ffmpeg.exe   (frozen, candidate 2)
+#   <exe_dir>/runtime/ffmpeg7/ffmpeg.exe   (frozen, candidate 3)
+# i.e. the same "<base>/runtime/<subdir>/<tool>" contract as ffprobe above, so
+# no locator code change is required -- only these datas entries.
+#
+# LICENSE (deliberate, documented): this FFmpeg 7 build is configured with
+# `--enable-gpl --enable-version3` => GPL v3. RELEASE-02 bundles it WITHOUT the
+# GPL v3 licence text / source offer ONLY under the release lead's explicit,
+# written risk acceptance, recorded verbatim in
+# RELEASE-02-2.2.0_FINAL_DELIVERY_REPORT.md (License section). It is NOT a
+# precedent: any future release must re-decide this.
+#
+# runtime/ffmpeg7/ is provisioned per machine and gitignored (like
+# runtime/ffmpeg/). Provenance: D:\TikTok_Ocr_Rebuild\runtime\ffmpeg7\.
+# ---------------------------------------------------------------------------
+_RUNTIME_FFMPEG7_DIR = os.path.join(PROJECT_ROOT, "runtime", "ffmpeg7")
+_RUNTIME_FFMPEG7_DEST = os.path.join("runtime", "ffmpeg7")
+_FFMPEG7_EXE = os.path.join(_RUNTIME_FFMPEG7_DIR, "ffmpeg.exe")
+#: ffmpeg.exe's companion DLLs, resolved beside it at process start.
+#: ffplay.exe / the FFmpeg 7 ffprobe.exe are intentionally NOT shipped: the app
+#: only spawns ffmpeg.exe, and resolution probing keeps using the bundled ACLOS
+#: ffprobe (n5.1.3) in runtime/ffmpeg/.
+_FFMPEG7_DLL_NAMES = (
+    "avcodec-63.dll",
+    "avdevice-63.dll",
+    "avfilter-12.dll",
+    "avformat-63.dll",
+    "avutil-61.dll",
+    "swresample-7.dll",
+    "swscale-10.dll",
+)
+_FFMPEG7_DLLS = [
+    os.path.join(_RUNTIME_FFMPEG7_DIR, name)
+    for name in _FFMPEG7_DLL_NAMES
+    if os.path.isfile(os.path.join(_RUNTIME_FFMPEG7_DIR, name))
+]
+
+# ---------------------------------------------------------------------------
 # ONNX Runtime OCR artifacts (the production OCR backend)
 #
 # PP-OCRv6_medium_rec on ONNX Runtime + DirectML replaced the retired
@@ -225,6 +267,8 @@ require_build_inputs(
         ("susi_helper executable", _SUSI_HELPER_SRC),
         ("FFprobe executable", _FFPROBE_SRC),
         ("FFprobe runtime library", _FFPROBE_CORE),
+        ("FFmpeg7 executable", _FFMPEG7_EXE),
+        ("FFmpeg7 runtime library", os.path.join(_RUNTIME_FFMPEG7_DIR, _FFMPEG7_DLL_NAMES[0])),
         ("ONNX OCR model", _ONNX_MODEL_SRC),
         ("ONNX charset", _ONNX_CHARSET_SRC),
     )
@@ -310,6 +354,35 @@ if len(_FFPROBE_DLLS) < len(_FFPROBE_DLL_NAMES):
                 % _RUNTIME_FFMPEG_DIR,
                 '  copy "C:\\Program Files (x86)\\ACLOS\\Cross\\recorder-release\\sw*.dll" %s'
                 % _RUNTIME_FFMPEG_DIR,
+                "=" * 72,
+                "",
+            ]
+        )
+    )
+
+# Same reasoning for the FFmpeg 7 runtime: a partial DLL set is as fatal as none.
+# ffmpeg.exe hard-imports its av*/sw* companion DLLs, so without the full set it
+# dies with STATUS_DLL_NOT_FOUND (0xC0000135) before it reads a single argument,
+# and -- because RELEASE-02 removed the old `_uhd` fallback -- playback simply
+# fails. Gate it here rather than rediscovering it on a user's machine.
+if len(_FFMPEG7_DLLS) < len(_FFMPEG7_DLL_NAMES):
+    _present7 = {os.path.basename(path).lower() for path in _FFMPEG7_DLLS}
+    raise FileNotFoundError(
+        "\n".join(
+            [
+                "",
+                "=" * 72,
+                "BUILD ABORTED: the FFmpeg 7 runtime is incomplete.",
+                "",
+                "  found %d of %d DLL(s) in %s" % (
+                    len(_FFMPEG7_DLLS), len(_FFMPEG7_DLL_NAMES), _RUNTIME_FFMPEG7_DIR),
+                "  missing: %s" % ", ".join(
+                    name for name in _FFMPEG7_DLL_NAMES if name not in _present7),
+                "",
+                "RELEASE-02 ships FFmpeg 7 so playback works out of the box; a",
+                "partial set reproduces the exact failure class this guard exists",
+                "to prevent. Provision the whole runtime, e.g. from",
+                "  D:\\TikTok_Ocr_Rebuild\\runtime\\ffmpeg7\\",
                 "=" * 72,
                 "",
             ]
@@ -507,6 +580,13 @@ datas = [
 # ffprobe.exe's companion DLLs, resolved beside it at process start. Same
 # directory as ffmpeg.exe's set, and the same reason.
 datas += [(dll, _RUNTIME_FFMPEG_DEST) for dll in _FFPROBE_DLLS]
+
+# FFmpeg 7 playback runtime (RELEASE-02 2.2.0). Lands in
+# <MEIPASS>/runtime/ffmpeg7/, which is exactly where
+# utils.ffmpeg7_runtime.candidate_paths() probes (candidate 2/3). Bundled so
+# streaming works out of the box; see the LICENSE note in the block above.
+datas += [(_FFMPEG7_EXE, _RUNTIME_FFMPEG7_DEST)]
+datas += [(dll, _RUNTIME_FFMPEG7_DEST) for dll in _FFMPEG7_DLLS]
 
 # ONNX OCR artifacts. Both sources are files, so dest is the directory they must
 # land in and the frozen probe path <MEIPASS>/runtime/onnx/<name> is exactly what

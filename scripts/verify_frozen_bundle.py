@@ -187,6 +187,28 @@ def expected_payload(project_root):
     else:
         warnings.append("构建环境没有 %s，跳过 ffprobe 闭包校验" % ffprobe_dir)
 
+    # --- 2b. FFmpeg 7 播放运行时（RELEASE-02 2.2.0，随包分发）---------------
+    # RELEASE-02 起 FFmpeg 7 随安装包分发，让流媒体开箱即用。
+    # utils/ffmpeg7_runtime.candidate_paths() 在 <MEIPASS>/runtime/ffmpeg7/ 与
+    # <exe_dir>/runtime/ffmpeg7/ 探测 ffmpeg.exe。与 ffprobe 闭包同理：该目录
+    # 下的每个 .exe/.dll 都必须真的进包（漏一个，ffmpeg.exe 起不来，播放直接失败）。
+    #
+    # 注意：该目录**不含** GPL v3 许可文本 —— 这是 RELEASE-02 交付负责人的书面
+    # 风险承担下的刻意决定，逐字记录在 RELEASE-02-2.2.0_FINAL_DELIVERY_REPORT.md。
+    # 本脚本只核对二进制是否进包，不做许可合规断言。
+    ffmpeg7_dir = os.path.join(project_root, "runtime", "ffmpeg7")
+    if os.path.isdir(ffmpeg7_dir):
+        for name in sorted(os.listdir(ffmpeg7_dir)):
+            source = os.path.join(ffmpeg7_dir, name)
+            if not os.path.isfile(source):
+                continue
+            if not (name.lower().endswith(".dll") or name.lower().endswith(".exe")):
+                continue
+            entries.append(Entry(os.path.join("runtime", "ffmpeg7", name), source,
+                                 "FFmpeg 7 播放运行时"))
+    else:
+        warnings.append("构建环境没有 %s，跳过 FFmpeg 7 运行时校验" % ffmpeg7_dir)
+
     # ONNX Runtime 的原生库不在这里推导：它们由 PyInstaller 的 hook-onnxruntime
     # 从**构建环境的 site-packages** 收进包，与源码树无关，所以「构建机上的源
     # 文件」这种对照没有意义。它们的核对放在 verify_bundle() 里直接查包内路径

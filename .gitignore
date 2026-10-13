@@ -40,6 +40,16 @@ license_public_key.pem
 # now uses the external FFmpeg 7 runtime located by utils/ffmpeg7_runtime.py.
 runtime/ffmpeg/*.dll
 
+# FFmpeg 7 playback runtime - provisioned per machine, not versioned.
+# RELEASE-02 2.2.0 bundles the external FFmpeg 7 runtime (ffmpeg.exe + its
+# av*/sw* companion DLLs) so streaming works out of the box. It is ~188 MB and,
+# like runtime/ffmpeg/, is provisioned rather than committed (provenance:
+# D:\TikTok_Ocr_Rebuild\runtime\ffmpeg7\). utils/ffmpeg7_runtime.py probes
+# <MEIPASS>/runtime/ffmpeg7/ffmpeg.exe; douyin_viewer.spec gates the build on it.
+# NOTE: this build is GPL v3; it is bundled WITHOUT a licence file only under the
+# release lead's written risk acceptance (see the RELEASE-02 delivery report).
+runtime/ffmpeg7/
+
 # PP-OCRv6 production OCR model - supplied per machine, never versioned.
 # runtime/ppocr/PP-OCRv6_medium_rec_infer/ is ~73 MB of weights (inference.pdiparams)
 # and is provisioned by the PP-OCRv6 packaging phase, not committed. The workspace
