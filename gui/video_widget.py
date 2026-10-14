@@ -114,6 +114,34 @@ class VideoWidget(QWidget):
         self.update()
 
     # ------------------------------------------------------------------
+    # 只读几何查询
+    # ------------------------------------------------------------------
+    def visible_video_rect(self) -> QRect:
+        """当前**实际显示视频画面**的矩形（本控件坐标系）。
+
+        纯几何只读访问器：复用 paintEvent 里同一套 KeepAspectRatio 居中算法，
+        但不绘制、不改状态、不参与任何帧处理，也不做像素缩放。
+
+        用途：预览区上方的浮层（如未激活水印）需要把自身约束在**画面**内，
+        而不是落在上下/左右黑边上。
+
+        - 没有帧时返回 ``self.rect()`` —— 此时"可视预览区"就是整个容器，
+          未连接直播时水印在空白背景上运动即依赖这一条。
+        - 尺寸用 ``QSize.scaled(..., KeepAspectRatio)`` 计算，与
+          ``QPixmap.scaled`` 内部用的是同一个函数，因此结果与 paintEvent
+          里实际绘制的矩形一致（不是近似）。
+        """
+        if self._pixmap is None or self._pixmap.isNull():
+            return self.rect()
+        scaled = self._pixmap.size().scaled(self.size(), Qt.KeepAspectRatio)
+        return QRect(
+            (self.width() - scaled.width()) // 2,
+            (self.height() - scaled.height()) // 2,
+            scaled.width(),
+            scaled.height(),
+        )
+
+    # ------------------------------------------------------------------
     # ROI 显示接口
     # ------------------------------------------------------------------
     def update_roi(self, roi):

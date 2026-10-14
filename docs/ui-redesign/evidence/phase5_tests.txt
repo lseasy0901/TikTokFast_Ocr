@@ -1,0 +1,14 @@
+test_phase_ui3_1_layout.py                     exit=1    |     ^^^^^^^^^^^^^^^^^^^^^^ AttributeError: 'MainWindow' object has no attribute '_stream_history' 
+test_phase_ui3_activation_settings.py          exit=0    | 通过 62 项，失败 0 项 ==================================================== 
+test_ui_internal_diagnostics_gate.py           exit=1    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ AttributeError: 'MainWindow' object has no attribute '_stream_history' 
+test_ui_tune_01_roi_entry.py                   exit=1    | 通过 24 项，失败 1 项 ==================================================== 
+test_ui_tune_02_address_alignment.py           exit=1    |                  ^^^^^^^^^^^^^^^^^^^^ AttributeError: 'MainWindow' object has no attribute '_recent_combo' 
+test_access_status.py                          exit=0    |  RESULT: 18/18 checks passed, 0 failed 
+test_expiration_access_control.py              exit=1    |                            ^^^^^^^^^^^^^^^ TypeError: _StubConnectWorker.__init__() got an unexpected keyword argument 'resolver' 
+test_license_priority.py                       exit=1    |          ^^^^^^^^^^^^^^^^^^^ FileNotFoundError: [Errno 2] No such file or directory: 'D:\\TIikTok_Ocr\\_wt_uilg\\license_server\\test_rsa_key.pem' 
+test_offline_activation.py                     exit=0    |  32 passed, 0 failed 
+test_roi_persistence_gui.py                    exit=1    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ AttributeError: '_StubBuffer' object has no attribute 'get_with_seq' 
+test_roi_verification.py                       exit=1    |  Result: FAILURE - Some tests failed 
+test_first_run_onboarding.py                   exit=0    | RESULT: 225 passed, 0 failed ======================================================================== 
+tests/ui_redesign/test_toolbar_contract.py     exit=0    | OK=72 | 结果：全部通过 ==================================================================== 
+tests/ui_redesign/test_watermark.py            exit=0    | OK=60 | 结果：全部通过 ====================================================================== 

@@ -75,6 +75,7 @@ from PySide6.QtWidgets import (
 from gui import theme
 from gui.theme import Metrics, Palette
 from gui.video_widget import VideoWidget
+from gui.watermark import WatermarkOverlay
 from gui.widgets import (
     DockPanel,
     FramelessController,
@@ -1119,6 +1120,26 @@ class MainWindow(QMainWindow):
         # interactive=True：遮罩上有「立即激活」按钮，必须收得到点击
         # （默认的鼠标穿透会让按钮连同浮层一起不可点）。
         self._video_container.add_overlay(self._activation_overlay, interactive=True)
+
+        # 未激活水印（Phase 5）：**注册在未激活遮罩之后** → 层级在其之上。
+        #
+        # 为什么必须在遮罩之上：遮罩用 rgba(11,12,14,0.88) 的 scrim 压暗整个
+        # 预览区，水印若在其下就基本看不见了；而两者由**同一个** denied 布尔量
+        # 驱动（遮罩可见 ⟺ 水印可见），因此"在遮罩之下"等价于"永远不可见"，
+        # 水印会彻底失去提示作用。
+        #
+        # 会不会挡住「立即激活」按钮？不会：
+        #   - 本浮层 mouse-transparent（interactive=False），点击一律穿透，
+        #     按钮的可操作性完全不受影响；
+        #   - 视觉上水印是半透明的（底 ~35%、描边 ~20%、文字 ~36%），
+        #     且持续移动，只在经过时短暂叠压。
+        # 这正是 DVD 屏保式水印在未授权软件上的常规表现。
+        #
+        # 水印**只消费一个布尔量**，不导入任何许可模块 —— 授权状态的权威
+        # 来源仍是 self._access_status，由 _on_access_status_changed 推送。
+        self._watermark = WatermarkOverlay(self._video_widget)
+        self._video_container.add_overlay(self._watermark)
+        self._watermark.hide()
 
         layout.addWidget(self._video_container, 1)
         layout.addWidget(self._build_video_toolbar())
@@ -3477,6 +3498,23 @@ class MainWindow(QMainWindow):
         # 未激活遮罩跟随同一份状态（只影响显示）
         self._sync_activation_overlay()
 
+        # 未激活动态水印（Phase 5）：与遮罩消费**同一个** denied 布尔量，
+        # 不新建平行的授权判断，也不在别处推断激活状态。
+        self._sync_watermark(denied)
+
+    def _sync_watermark(self, denied: bool | None = None) -> None:
+        """按既有授权状态同步水印显隐（只影响显示，不改变任何状态）。
+
+        与 :meth:`_sync_activation_overlay` 同一套语义：状态从
+        ``_access_status`` 读取，水印组件只负责显示与运动。
+        """
+        overlay = getattr(self, "_watermark", None)
+        if overlay is None:
+            return
+        if denied is None:
+            denied = self._access_status.is_expired()
+        overlay.set_denied(denied)
+
     def _on_access_expired(self):
         """访问过期回调"""
         # 显示过期对话框
@@ -3924,6 +3962,9 @@ class MainWindow(QMainWindow):
 
     def _finish_unlock_transition(self) -> None:
         self._sync_activation_overlay()
+        # 与 _on_access_status_changed 同一套顺序：遮罩先同步（它会 raise_()），
+        # 水印随后同步（同样 raise_()），保证水印不会被遮罩盖住。
+        self._sync_watermark()
 
     def _apply_license_result(self, result: LicenseResult):
         """把许可证结果映射到顶部状态显示。"""
