@@ -17,7 +17,7 @@ LiveLens 通用 UI 组件
 import math
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -307,6 +307,13 @@ class WindowButton(QPushButton):
         painter.end()
 
 
+#: 图标半尺寸 `s` 与控件边长的比例。
+#: 历史上 IconButton 是 28px 边长配 s=6，两处（IconButton.paintEvent 与
+#: icon_pixmap）各自硬编码这个比例。改成从边长推导后，按钮尺寸或 DPI 变化
+#: 时图标会等比跟随，不会再出现"按钮变大了图标没变"。
+_ICON_S_RATIO = 6.0 / 28.0
+
+
 def _draw_icon_glyph(painter, kind: str, cx: float, cy: float,
                      s: float) -> None:
     """把一个图标种类画在 (cx, cy)，`s` 是半尺寸基准。
@@ -343,17 +350,42 @@ def _draw_icon_glyph(painter, kind: str, cx: float, cy: float,
         painter.drawLine(QPointF(tail_x - s * 0.12, bubble.bottom() + s * 0.40),
                          QPointF(tail_x + s * 0.44, bubble.bottom()))
     elif kind == IconButton.SETTINGS:
-        # 标准齿轮：一圈齿 + 齿圈 + 中心孔
-        teeth = s * 0.86      # 齿顶半径
-        ring = s * 0.52       # 齿根半径（也是齿圈半径）
-        for i in range(8):
-            angle = math.radians(i * 45.0)
-            dx, dy = math.cos(angle), math.sin(angle)
-            painter.drawLine(QPointF(cx + dx * ring, cy + dy * ring),
-                             QPointF(cx + dx * teeth, cy + dy * teeth))
-        painter.drawEllipse(QRectF(cx - ring, cy - ring, ring * 2, ring * 2))
-        hole = s * 0.22
-        painter.drawEllipse(QRectF(cx - hole, cy - hole, hole * 2, hole * 2))
+        # 标准齿轮：**闭合轮廓** + 中心孔（Phase UI 液态玻璃改造）。
+        #
+        # 旧实现画 8 根从齿根半径指向齿顶半径的细辐条，再叠一个齿圈。
+        # 在实际尺寸（半尺寸 s≈6px、线宽 1.2px）下这些辐条糊成一团星芒，
+        # 用户读不出"齿轮"—— 这正是「设置按钮图标难以识别」的根因
+        # （见 docs/ui-redesign/PHASE2_UI_AUDIT.md §3.5）。
+        #
+        # 改为闭合多边形轮廓后，齿形由"外轮廓的凹凸"表达而不是靠辐条，
+        # 在 12~14px 级别仍然能读出齿轮。
+        teeth = 8
+        r_out = s * 0.96          # 齿顶半径
+        r_root = s * 0.70         # 齿根半径
+        r_hub = s * 0.30          # 中心孔半径
+        pitch = 2.0 * math.pi / teeth
+        half_tip = pitch * 0.22   # 齿顶半角（齿顶占约 20°，齿根占约 25°）
+
+        gear = QPainterPath()
+        started = False
+        for i in range(teeth):
+            base = i * pitch
+            for radius, angle in (
+                (r_root, base - pitch * 0.5),   # 齿根（上一齿的下降沿）
+                (r_out, base - half_tip),       # 齿顶左侧
+                (r_out, base + half_tip),       # 齿顶右侧
+                (r_root, base + pitch * 0.5),   # 回到齿根
+            ):
+                px = cx + math.cos(angle) * radius
+                py = cy + math.sin(angle) * radius
+                if started:
+                    gear.lineTo(px, py)
+                else:
+                    gear.moveTo(px, py)
+                    started = True
+        gear.closeSubpath()
+        painter.drawPath(gear)
+        painter.drawEllipse(QRectF(cx - r_hub, cy - r_hub, r_hub * 2, r_hub * 2))
     elif kind in (IconButton.FULLSCREEN, IconButton.FULLSCREEN_EXIT):
         # 四个直角括号；退出全屏时改画向内收拢的括号
         d = 2.5 if kind == IconButton.FULLSCREEN else 4.5
@@ -366,11 +398,11 @@ def _draw_icon_glyph(painter, kind: str, cx: float, cy: float,
 
 
 def icon_pixmap(kind: str, size: int = 14,
-                color: str = Palette.TEXT_DIM) -> QPixmap:
+                color: str = Palette.ICON) -> QPixmap:
     """把某个图标渲染成 QPixmap，供"图标 + 文字"的普通 QPushButton 使用。
 
-    尺寸按 IconButton 的比例（28px 对应 s=6）等比缩放，保证两处图标
-    看起来是同一种粗细与大小。
+    尺寸按 IconButton 的比例（见 :data:`_ICON_S_RATIO`）等比缩放，
+    保证两处图标看起来是同一种粗细与大小。
     """
     pix = QPixmap(size, size)
     pix.fill(Qt.transparent)
@@ -378,12 +410,12 @@ def icon_pixmap(kind: str, size: int = 14,
     painter = QPainter(pix)
     painter.setRenderHint(QPainter.Antialiasing, True)
     pen = QPen(QColor(color))
-    pen.setWidthF(1.2)
+    pen.setWidthF(1.3)
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     painter.setPen(pen)
     painter.setBrush(Qt.NoBrush)
-    _draw_icon_glyph(painter, kind, size / 2.0, size / 2.0, size * 6.0 / 28.0)
+    _draw_icon_glyph(painter, kind, size / 2.0, size / 2.0, size * _ICON_S_RATIO)
     painter.end()
     return pix
 
@@ -403,17 +435,22 @@ class IconButton(QPushButton):
         "fullscreenExit")
 
     def __init__(self, kind: str, tooltip: str = "",
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None,
+                 accessible_name: str = ""):
         super().__init__(parent)
         self._kind = kind
         self.setObjectName("titleIconBtn")
         self.setFlat(True)
         self.setFixedSize(Metrics.ICON_BUTTON_SIZE, Metrics.ICON_BUTTON_SIZE)
-        self.setFocusPolicy(Qt.NoFocus)
+        # 纯图标控件必须能被键盘到达并读出用途（Phase UI 液态玻璃改造：
+        # 无障碍要求 A1/A6）。原实现是 NoFocus，键盘用户完全够不到这些入口。
+        self.setFocusPolicy(Qt.TabFocus)
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover, True)
         if tooltip:
             self.setToolTip(tooltip)
+            # 可访问名称：屏幕阅读器读的是这个，不是 tooltip 的长句。
+            self.setAccessibleName(accessible_name or tooltip)
 
     def set_kind(self, kind: str) -> None:
         """切换图标（全屏 ↔ 还原），同时刷新 tooltip。"""
@@ -426,9 +463,11 @@ class IconButton(QPushButton):
     def _glyph_color(self) -> str:
         if self.property("variant") == "primary":
             return Palette.TEXT
-        if self.underMouse():
+        if self.underMouse() or self.hasFocus():
             return Palette.TEXT
-        return Palette.TEXT_DIM
+        # 默认色从 TEXT_DIM 提到 ICON：原色在深色标题栏上偏灰、几乎看不清，
+        # 是"图标难识别"的另一半原因（另一半是齿轮画法本身）。
+        return Palette.ICON
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)   # QSS 先画背景 / hover / pressed
@@ -436,7 +475,9 @@ class IconButton(QPushButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         pen = QPen(QColor(self._glyph_color()))
-        pen.setWidthF(1.2)
+        # 线宽从 1.2 提到 1.4：小尺寸下 1.2px 的抗锯齿会明显"发灰"，
+        # 1.4px 才立得住（不改几何，只改粗细）。
+        pen.setWidthF(1.4)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
@@ -444,7 +485,8 @@ class IconButton(QPushButton):
 
         cx = self.width() / 2.0
         cy = self.height() / 2.0
-        s = 6.0
+        # 半尺寸由按钮边长推导，按钮尺寸变化时图标等比跟随
+        s = self.width() * _ICON_S_RATIO
 
         _draw_icon_glyph(painter, self._kind, cx, cy, s)
         painter.end()
@@ -652,19 +694,39 @@ class TitleBar(QFrame):
         self._actions_layout.addWidget(button)
         return button
 
-    def add_icon_button(self, kind: str, tooltip: str = "") -> "IconButton":
+    def add_icon_button(self, kind: str, tooltip: str = "",
+                        accessible_name: str = "") -> "IconButton":
         """在操作区加一个紧凑图标按钮并返回它。
 
         与 :meth:`add_action_button` 同一个位置，但用自绘图标取代文字，
         避免标题栏被三个中文按钮撑满（Phase UI-3.1）。
+
+        :param accessible_name: 屏幕阅读器读出的短名称。tooltip 往往是
+            一整句说明（"使用引导：查看操作流程…"），不适合当可访问名称。
         """
-        button = IconButton(kind, tooltip, self)
+        button = IconButton(kind, tooltip, self,
+                            accessible_name=accessible_name)
         self._actions_layout.addWidget(button)
         return button
 
     def add_action_widget(self, widget: QWidget) -> None:
         """往操作区插入任意控件（例如一个状态标签）。"""
         self._actions_layout.addWidget(widget)
+
+    def add_action_separator(self) -> QFrame:
+        """在操作区插入一条竖直分组分隔线。
+
+        用于把语义不同的图标按钮分开（功能入口 / 视图 / 帮助），
+        让"一排气泡"变成可读的分组 —— 不改变任何按钮的存在与行为。
+        """
+        line = QFrame()
+        line.setObjectName("titleBarSeparator")
+        line.setFrameShape(QFrame.VLine)
+        line.setFixedWidth(1)
+        line.setFixedHeight(16)
+        line.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._actions_layout.addWidget(line)
+        return line
 
     # -- 拖动 ----------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802

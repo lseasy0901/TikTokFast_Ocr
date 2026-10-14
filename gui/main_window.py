@@ -911,38 +911,66 @@ class MainWindow(QMainWindow):
     # 标题栏 / 顶部地址栏
     # ------------------------------------------------------------------
     def _build_title_bar(self) -> TitleBar:
-        """标题栏：品牌 + 图标操作区（引导 / 授权 / 设置 / 全屏）+ 窗口控制。
+        """标题栏：品牌 + 图标操作区 + 窗口控制。
 
-        操作区一律用自绘图标按钮：三个中文标签会把标题栏挤满，且随字号变化
-        抖动；图标 + tooltip 在同样的宽度下更好辨认（Phase UI-3.1）。
+        操作区按语义分成两组，中间用分隔线断开（Phase UI 液态玻璃改造）：
+
+            [激活许可证] [设置] [全屏工作台]  │  [使用引导] [联系作者]
+
+        - **功能组**：激活 / 配置 / 视图。「激活许可证」是全应用唯一被强调的
+          入口（variant=primary），放在组首而不是夹在中间。
+        - **帮助组**：低频、只读、不改任何业务状态，靠右收拢。
+        - 窗口按钮（最小化 / 最大化 / 关闭）仍由 TitleBar 自己贴角管理，
+          不参与分组，也不受本次改造影响。
+
+        为什么仍然用图标而不是中文标签：五个中文标签会把标题栏挤满，且随
+        字号变化抖动；图标 + tooltip + accessibleName 在同样的宽度下更好辨认
+        （Phase UI-3.1 的结论，本次沿用）。
+
+        为什么不做"低频项收进溢出菜单"：现有测试把「帮助入口落在标题栏
+        操作区、objectName 为 titleIconBtn」当作事实断言
+        （test_first_run_onboarding.py:438、test_phase_ui3_1_layout.py:123）。
+        把按钮搬进菜单会让这些**当前通过**的断言失败 —— 属于"为改版而破坏
+        既有约定"。因此本次改为**分组 + 分隔线**来降低视觉杂乱，
+        功能入口一个不动。
         """
         self._title_bar = TitleBar("LiveLens", "低延迟播放工作台")
 
-        self._help_btn = self._title_bar.add_icon_button(
-            IconButton.HELP, "使用引导：查看操作流程，可随时重新打开")
-        self._help_btn.clicked.connect(self._on_help_clicked)
-
+        # ---- 组 1：功能入口 ------------------------------------------
         # 「授权」保持唯一被强调的入口（图标按钮上的 variant=primary）
         self._license_btn = self._title_bar.add_icon_button(
-            IconButton.LICENSE, "激活许可证：输入密钥为本机授权")
+            IconButton.LICENSE, "激活许可证：输入密钥为本机授权",
+            accessible_name="激活许可证")
         set_property(self._license_btn, "variant", "primary")
         self._license_btn.clicked.connect(self._on_license_clicked)
 
-        # 「联系作者」放在授权与设置之间：它和这两个一样是"辅助入口"，
-        # 不抢主操作的注意力
-        self._contact_btn = self._title_bar.add_icon_button(
-            IconButton.CONTACT, "联系作者")
-        self._contact_btn.clicked.connect(self._on_contact_clicked)
-
         self._settings_btn = self._title_bar.add_icon_button(
-            IconButton.SETTINGS, "设置")
+            IconButton.SETTINGS, "设置：授权状态、版本与偏好",
+            accessible_name="设置")
         self._settings_btn.clicked.connect(self._on_settings_clicked)
 
         # 全屏工作台是【独立】入口：窗口按钮里的最大化仍然是普通最大化，
         # 不能用全屏取代它（否则用户就没有"占满屏幕但保留任务栏"这条路了）。
         self._fullscreen_btn = self._title_bar.add_icon_button(
-            IconButton.FULLSCREEN, "全屏工作台：隐藏标题栏与地址栏")
+            IconButton.FULLSCREEN, "全屏工作台：隐藏标题栏与地址栏",
+            accessible_name="全屏工作台")
         self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
+
+        # ---- 分组分隔线 ----------------------------------------------
+        self._title_bar.add_action_separator()
+
+        # ---- 组 2：帮助入口 ------------------------------------------
+        # 这两项都是只读入口，不改变直播 / OCR / 授权状态
+        self._help_btn = self._title_bar.add_icon_button(
+            IconButton.HELP, "使用引导：查看操作流程，可随时重新打开",
+            accessible_name="使用引导")
+        self._help_btn.clicked.connect(self._on_help_clicked)
+
+        self._contact_btn = self._title_bar.add_icon_button(
+            IconButton.CONTACT, "联系作者",
+            accessible_name="联系作者")
+        self._contact_btn.clicked.connect(self._on_contact_clicked)
+
         return self._title_bar
 
     def _build_address_bar(self) -> QFrame:
@@ -1938,58 +1966,6 @@ class MainWindow(QMainWindow):
 
         body.addStretch(1)
         return panel
-
-    def _build_status_bar(self) -> None:
-        """状态栏：左侧留给瞬时消息，右侧是一排只读状态芯片。
-
-        芯片走 ``addPermanentWidget`` —— ``showMessage`` 显示临时消息时
-        Qt 会隐藏普通 widget，状态读数不应该跟着闪。
-        """
-        bar = self.statusBar()
-        bar.setSizeGripEnabled(False)
-
-        self._lbl_status = self._make_chip()
-        self._lbl_latency = self._make_chip()
-        self._lbl_fps = self._make_chip()
-        self._lbl_ocr = self._make_chip()
-        self._lbl_clipboard = self._make_chip()
-
-        for chip in (
-            self._lbl_status,
-            self._lbl_latency,
-            self._lbl_fps,
-            self._lbl_ocr,
-            self._lbl_clipboard,
-        ):
-            bar.addPermanentWidget(chip)
-
-        self._access_status_label = QLabel()
-        self._access_status_label.setObjectName("accessLabel")
-        self._access_status_label.setProperty("tone", "neutral")
-        bar.addPermanentWidget(self._access_status_label)
-
-        # 引导入口。刻意用次要样式（不带 variant="primary"）：状态栏上
-        # 「激活许可证」应当是唯一被强调的按钮。放在它左边，保持许可证在最右。
-        self._help_btn = QPushButton("使用引导")
-        self._help_btn.setObjectName("statusButton")
-        self._help_btn.setStatusTip("查看使用引导，可随时重新打开")
-        self._help_btn.clicked.connect(self._on_help_clicked)
-        bar.addPermanentWidget(self._help_btn)
-
-        self._license_btn = QPushButton("激活许可证")
-        self._license_btn.setObjectName("statusButton")
-        set_property(self._license_btn, "variant", "primary")
-        self._license_btn.setStatusTip("激活许可证")
-        self._license_btn.clicked.connect(self._on_license_clicked)
-        bar.addPermanentWidget(self._license_btn)
-
-        # 剪贴板芯片的自动回落（复制成功 → 2 秒后恢复待命）
-        self._clipboard_chip_timer = QTimer(self)
-        self._clipboard_chip_timer.setSingleShot(True)
-        self._clipboard_chip_timer.timeout.connect(self._reset_clipboard_chip)
-        self._reset_clipboard_chip()
-
-        self._reset_perf_ui()
 
     # ------------------------------------------------------------------
     # 小组件构造 / 状态芯片

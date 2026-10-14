@@ -85,6 +85,13 @@ class Palette:
     TEXT_DIM: str = "#90939B"
     TEXT_MUTED: str = "#6A6D74"
     TEXT_DISABLED: str = "#4C4E54"
+    #: 自绘图标线条的默认色。比 TEXT_DIM 亮一档：图标是 1.4px 细线，
+    #: 用 TEXT_DIM 会在深色标题栏上明显发灰、难以辨认（Phase UI 改造）。
+    ICON: str = "#B6BAC2"
+    #: 键盘焦点环颜色。取自设计系统 MASTER.md 的强调色令牌
+    #: （design-system/livelens/MASTER.md §2.1 --ll-accent）。
+    #: Phase 4 先用于标题栏图标按钮的 :focus；Phase 6 会把它推广到全局。
+    FOCUS_RING: str = "#80BFFF"
 
     # ---- 强调色（蓝）----
     ACCENT: str = "#D9DBE0"
@@ -122,7 +129,7 @@ class Metrics:
 
     TITLEBAR_HEIGHT: int = 38       # 自定义标题栏高度
     WINDOW_BUTTON_WIDTH: int = 46   # 标题栏窗口按钮宽度
-    ICON_BUTTON_SIZE: int = 28      # 标题栏操作区的紧凑图标按钮边长
+    ICON_BUTTON_SIZE: int = 30      # 标题栏操作区的紧凑图标按钮边长
     DOCK_HEADER_HEIGHT: int = 30
     DOCK_WIDTH_LEFT: int = 268      # 左侧配置 Dock
     DOCK_WIDTH_RIGHT: int = 276     # 右侧 OCR Dock
@@ -233,6 +240,21 @@ QToolTip {
 
 #titleIconBtn:pressed {
     background-color: {PRESSED};
+}
+
+/* 键盘焦点环（Phase UI 液态玻璃改造 / 无障碍要求 A1）。
+   图标按钮原本是 NoFocus，键盘用户够不到；改成 TabFocus 后必须有可见焦点，
+   否则就是"能聚焦但看不见焦点"—— 比不能聚焦更糟。
+   2px 实线 + 强调色：满足 WCAG 2.2 "Focus Appearance" 的 2px 周长要求。 */
+#titleIconBtn:focus {
+    background-color: {HOVER};
+    border: 2px solid {FOCUS_RING};
+}
+
+/* 操作区分组分隔线 */
+#titleBarSeparator {
+    background-color: {BORDER};
+    border: none;
 }
 
 /* 「授权」是操作区唯一被强调的入口 */
