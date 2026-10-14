@@ -1,0 +1,737 @@
+test_phase_ui3_1_layout.py                     exit=1    6s  |     window._stream_history.clear()     ^^^^^^^^^^^^^^^^^^^^^^ AttributeError: 'MainWindow' object has no attribute '_stream_history' 
+
+=== A. 标题栏 ===
+  [PASS] 引导是图标按钮（不再是文字按钮）
+  [PASS] 引导有 tooltip：'使用引导：查看操作流程，可随时重新打'
+  [PASS] 引导是 28×28 紧凑尺寸
+  [PASS] 授权是图标按钮（不再是文字按钮）
+  [PASS] 授权有 tooltip：'激活许可证：输入密钥为本机授权'
+  [PASS] 授权是 28×28 紧凑尺寸
+  [PASS] 设置是图标按钮（不再是文字按钮）
+  [PASS] 设置有 tooltip：'设置'
+  [PASS] 设置是 28×28 紧凑尺寸
+  [PASS] 全屏是图标按钮（不再是文字按钮）
+  [PASS] 全屏有 tooltip：'全屏工作台：隐藏标题栏与地址栏'
+  [PASS] 全屏是 28×28 紧凑尺寸
+  [PASS] 四个入口使用四种不同图标：['fullscreen', 'help', 'license', 'settings']
+  [PASS] 授权按钮是唯一 primary
+  [PASS] 其余图标按钮都不是 primary
+  [PASS] 窗口按钮中的最大化是普通最大化
+  [PASS] 最大化按钮字形为 MAX
+  [PASS] 最大化生效
+  [PASS] 最大化后按钮字形切到还原
+  [PASS] 最大化不会变成全屏
+  [PASS] 还原后字形回到最大化
+  [PASS] 点最小化按钮 → 窗口最小化
+  [PASS] 点关闭按钮 → 窗口关闭
+
+=== B. 顶部地址栏 ===
+Traceback (most recent call last):
+  File "D:\TIikTok_Ocr\_wt_uilg\test_phase_ui3_1_layout.py", line 540, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "D:\TIikTok_Ocr\_wt_uilg\test_phase_ui3_1_layout.py", line 527, in main
+    test_address_bar()
+  File "D:\TIikTok_Ocr\_wt_uilg\test_phase_ui3_1_layout.py", line 189, in test_address_bar
+    window._stream_history.clear()
+    ^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute '_stream_history'
+-----
+test_phase_ui3_activation_settings.py          exit=0    4s  | ==================================================== 通过 62 项，失败 0 项 ==================================================== 
+
+=== A. dispatch_activation 分派 ===
+  [PASS] 取到的样本 KEY 确实在离线池里
+  [PASS] 离线 KEY 只调用 activate_offline（未被在线路径触碰）
+  [PASS] 离线 KEY 返回已激活
+  [PASS] 带 - 且小写的离线 KEY 仍判定为离线
+  [PASS] 非离线池 KEY 只调用在线 activate
+  [PASS] 在线失败后没有回退到离线路径
+  [PASS] 在线失败如实返回失败
+  [PASS] 离线失败后没有回退到在线路径
+  [PASS] 离线失败如实返回失败
+
+=== B. ActivationDialog ===
+  [PASS] 空输入即时报错
+  [PASS] 空输入不启动后台任务
+  [PASS] 空输入仍停留在输入页
+  [PASS] 失败用例的后台任务已结束
+  [PASS] 失败后仍停留在输入页
+  [PASS] 失败后保留用户输入便于修正
+  [PASS] 失败后输入框重新可用
+  [PASS] 失败后按钮文案复位
+  [PASS] 失败时 result_data() 为 None（不改本地状态）
+  [PASS] 失败原因展示在行内
+  [PASS] 成功后切换到结果页
+  [PASS] result_data() 返回真实结果对象
+  [PASS] 结果页展示真实状态文案
+  [PASS] 结果页提供「开始使用」
+  [PASS] 成功路径不残留 busy 文案
+  [PASS] 「开始使用」以 Accepted 关闭弹窗
+  [PASS] 无 features 时权限行保持为空
+
+=== C. 未激活遮罩 ===
+  [PASS] 未激活时遮罩可见
+  [PASS] 遮罩上的「立即激活」按钮是命中目标（可点击回归）
+  [PASS] 遮罩本身未开启鼠标穿透
+  [PASS] 点击遮罩按钮打开统一激活弹窗（与标题栏入口同一条路径）
+  [PASS] 弹窗拿到的是主窗口的许可证管理器（没有另起一套授权状态）
+  [PASS] 标题栏「激活许可证」打开同一个统一弹窗
+  [PASS] 标题栏「设置」打开设置中心
+  [PASS] 设置中心拿到同一个许可证管理器
+  [PASS] 设置中心拿到真实版本号
+  [PASS] 遮罩可见时呼吸动画在运行
+  [PASS] 已有有效授权时遮罩隐藏
+  [PASS] 遮罩隐藏后呼吸动画已停止
+  [PASS] 解锁过渡期间遮罩可见
+  [PASS] 过渡文案为「已激活」
+  [PASS] 过渡期间隐藏激活按钮
+  [PASS] 过渡结束后遮罩收起
+  [PASS] 再次未激活时遮罩重新显示
+  [PASS] 文案复位为未激活
+  [PASS] 激活按钮重新出现
+
+=== D. SettingsDialog ===
+  [PASS] 导航分类为 ['授权', '关于']
+  [PASS] 切到「关于」时内容页联动
+  [PASS] 切回「授权」时内容页联动
+  [PASS] 无凭据时授权页显示未激活
+  [PASS] 无凭据时不虚构有效期
+  [PASS] 有凭据时展示真实状态
+  [PASS] 有效期来自凭据里的 expires
+  [PASS] 追加成功后回调把结果交回主窗口
+  [PASS] 回调拿到的是真实结果对象
+  [PASS] 追加后授权页就地刷新为新有效期
+  [PASS] 取消追加授权时不触发回调
+  [PASS] 官网地址由更新源推导：https://livelen.icu
+
+=== E. apply_dialog_acrylic 回退 ===
+  [PASS] 传入 None 返回 False
+  [PASS] 返回值是布尔（不抛异常）
+  [PASS] Acrylic 失败时不设置 WA_TranslucentBackground（保持不透明）
+  [PASS] Acrylic 失败时不打 acrylic 属性
+  [PASS] 未知 backdrop 类型返回 False
+
+====================================================
+通过 62 项，失败 0 项
+====================================================
+-----
+test_ui_internal_diagnostics_gate.py           exit=1    4s  |     check(under(window_off._stream_history._file_path, _TEMP_LOCALAPPDATA),                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ AttributeError: 'MainWindow' object has no attribute '_stream_history' 
+
+==========================================================================
+前置：开关本身
+==========================================================================
+  [PASS] 存在单一开关 gui.main_window.SHOW_INTERNAL_DIAGNOSTICS
+  [PASS] 开关默认 False（实际 False）
+  [PASS] 开关是布尔值，不是字符串/数字
+  [PASS] 开关值在构造时被读取（改回 False 后新建窗口即隐藏）
+
+==========================================================================
+A. 默认（开关 False）：入口不可见，但实现完整保留
+==========================================================================
+  [PASS] _diag_btn 控件对象仍然存在（隐藏，不是删除）
+  [PASS] 「开始诊断」默认不可见
+  [PASS] 「开始诊断」文案原样保留（实际 '开始诊断'）
+  [PASS] 「开始诊断」仍挂在 OCR 面板内（调用能力未变）
+  [PASS] _diag_export_btn 控件对象仍然存在（隐藏，不是删除）
+  [PASS] 「导出诊断 CSV」默认不可见
+  [PASS] 「导出诊断 CSV」文案原样保留（实际 '导出诊断 CSV'）
+  [PASS] 「导出诊断 CSV」仍挂在 OCR 面板内（调用能力未变）
+  [PASS] _diag_obs_check 控件对象仍然存在（隐藏，不是删除）
+  [PASS] 「全 PSM 观测」默认不可见
+  [PASS] 「全 PSM 观测」文案原样保留（实际 '全 PSM 观测'）
+  [PASS] 「全 PSM 观测」仍挂在 OCR 面板内（调用能力未变）
+  [PASS] _diag_capture_check 控件对象仍然存在（隐藏，不是删除）
+  [PASS] 「采集 ROI 样本」默认不可见
+  [PASS] 「采集 ROI 样本」文案原样保留（实际 '采集 ROI 样本'）
+  [PASS] 「采集 ROI 样本」仍挂在 OCR 面板内（调用能力未变）
+  [PASS] _diag_row 行容器被隐藏（不留空白行）
+  [PASS] _diag_obs_row 行容器被隐藏（不留空白行）
+  [PASS] _diag_capture_row 行容器被隐藏（不留空白行）
+  [PASS] OCRDiagnostics 实例照旧创建
+  [PASS] SampleCapture 实例照旧创建
+  [PASS] 诊断默认仍是关闭状态
+  [PASS] 「采集 ROI 样本」默认仍未勾选（隐藏不改默认值）
+  [PASS] 三个回调方法仍在（实现未删）
+
+==========================================================================
+B. 关闭后不留空白：几何断言
+==========================================================================
+  （会话列表顶边：开关关闭 205px，开关开启 279px，列间距 8px）
+  [PASS] 关闭后下游控件上移，说明三行确实让出了高度（205 < 279）
+  （会话列表与上方最近可见控件的空隙：8px）
+  [PASS] 关闭后会话列表上方只剩布局间距，没有空白带（空隙 8px ≤ 10px）
+  （三行身高合计 50px + 3×8px 间距 = 74px，实际让出 74px）
+  [PASS] 让出的高度恰为三行本身（74px ≈ 74px）—— 没有多留空白，也没有隐藏占位
+  [PASS] _diag_row 不是「不可见但仍占位」（由上面的空隙断言共同保证）
+  [PASS] _diag_obs_row 不是「不可见但仍占位」（由上面的空隙断言共同保证）
+  [PASS] _diag_capture_row 不是「不可见但仍占位」（由上面的空隙断言共同保证）
+
+==========================================================================
+C. 开关 True：四个入口完整恢复
+==========================================================================
+  [PASS] 「开始诊断」开关开启后可见
+  [PASS] 「开始诊断」文案不变（实际 '开始诊断'）
+  [PASS] 「导出诊断 CSV」开关开启后可见
+  [PASS] 「导出诊断 CSV」文案不变（实际 '导出诊断 CSV'）
+  [PASS] 「全 PSM 观测」开关开启后可见
+  [PASS] 「全 PSM 观测」文案不变（实际 '全 PSM 观测'）
+  [PASS] 「采集 ROI 样本」开关开启后可见
+  [PASS] 「采集 ROI 样本」文案不变（实际 '采集 ROI 样本'）
+  [PASS] _diag_row 行容器可见
+  [PASS] _diag_obs_row 行容器可见
+  [PASS] _diag_capture_row 行容器可见
+  [PASS] 开关开启后「开始诊断」仍可点击并生效
+  [PASS] 开关开启后「全 PSM 观测」仍可勾选
+  [PASS] 隐藏状态下回调仍可调用（调用能力保留，不只是「看得见」）
+  [PASS] 隐藏状态下可再次关闭诊断
+  [PASS] 关闭诊断时勾选仍被同步清除（原逻辑未变）
+  [PASS] 隐藏状态下「诊断未开启 -> 观测不可勾选」的原逻辑仍然成立
+
+==========================================================================
+D. 正式产品入口未被误隐藏
+==========================================================================
+  [PASS] 导出 CSV（本次会话房间码流水） 控件存在
+  [PASS] 导出 CSV（本次会话房间码流水） 默认仍然可见（未被误隐藏）
+  [PASS] 开始OCR 控件存在
+  [PASS] 开始OCR 默认仍然可见（未被误隐藏）
+  [PASS] 选择识别区域 控件存在
+  [PASS] 选择识别区域 默认仍然可见（未被误隐藏）
+  [PASS] 识别区域说明 控件存在
+  [PASS] 识别区域说明 默认仍然可见（未被误隐藏）
+  [PASS] 连接 控件存在
+  [PASS] 连接 默认仍然可见（未被误隐藏）
+  [PASS] 使用引导 控件存在
+  [PASS] 使用引导 默认仍然可见（未被误隐藏）
+  [PASS] 激活许可证 控件存在
+  [PASS] 激活许可证 默认仍然可见（未被误隐藏）
+  [PASS] 本次会话列表仍然可见
+  [PASS] 游戏选择仍然可见
+  [PASS] 「导出 CSV」与「导出诊断 CSV」仍是两个不同的入口
+  [PASS] 关闭的只有诊断导出，房间码导出不受影响
+  [PASS] 房间码记录流水照常写入（正式产品功能未受影响）
+
+==========================================================================
+E. 隐藏不改行为：_start_ocr 读到的观测开关
+==========================================================================
+  [PASS] _diag_obs_check 在隐藏后仍然存在（_start_ocr 读取它不会 AttributeError）
+  [PASS] 隐藏后读取到 False —— observe_all_psm 仍为默认关闭
+  [PASS] 生产代码确实在 _start_ocr 里读取该控件（因此它必须保留）
+  [PASS] observe_all_psm 参数照旧传递（行为未变）
+
+==========================================================================
+F. 开关只影响本窗口，不残留全局状态
+==========================================================================
+  [PASS] 两个窗口构造后开关值已复原，未污染全局（实际 False）
+  [PASS] ocr.diagnostics 不读取这个 UI 开关（只关入口，不动功能）
+  [PASS] ocr.sample_capture 不读取这个 UI 开关（只关入口，不动功能）
+  [PASS] ocr.worker 不读取这个 UI 开关（只关入口，不动功能）
+  [PASS] ocr.room_code 不读取这个 UI 开关（只关入口，不动功能）
+  [PASS] stream.adapters.douyin 不读取这个 UI 开关（只关入口，不动功能）
+
+==========================================================================
+G. 环境隔离自证：确实只用临时目录
+==========================================================================
+  （临时根: C:\Users\ZHUANZ~1\AppData\Local\Temp\dlv-diaggate-4onjeees）
+  [PASS] 历史目录解析到临时 LOCALAPPDATA（实际 C:\Users\ZHUANZ~1\AppData\Local\Temp\dlv-diaggate-4onjeees\localappdata\LiveLens）
+  [PASS] 偏好路径解析到临时 LOCALAPPDATA（实际 C:\Users\ZHUANZ~1\AppData\Local\Temp\dlv-diaggate-4onjeees\localappdata\LiveLens\prefs.json）
+  [PASS] 授权目录解析到临时 APPDATA（实际 C:\Users\ZHUANZ~1\AppData\Local\Temp\dlv-diaggate-4onjeees\appdata\DouyinLowLatencyViewer）
+Traceback (most recent call last):
+  File "D:\TIikTok_Ocr\_wt_uilg\test_ui_internal_diagnostics_gate.py", line 415, in <module>
+    check(under(window_off._stream_history._file_path, _TEMP_LOCALAPPDATA),
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute '_stream_history'
+-----
+test_ui_tune_01_roi_entry.py                   exit=1    4s  | ==================================================== 通过 24 项，失败 1 项 ==================================================== 
+
+=== A. 视频工具栏 ===
+  [PASS] 找到视频下方工具栏
+  [PASS] 工具栏里没有任何按钮（实际 []）
+  [PASS] 工具栏里找不到 ROI 按钮实例
+  [FAIL] 工具栏只剩直播状态 / 分辨率 / FPS：['未连接', '分辨率 --', 'FPS --', '🔊', '音频 --']
+
+=== B. OCR 面板里的两个入口 ===
+  [PASS] 「选择识别区域」的父级是 OCR 面板
+  [PASS] 「说明」位于 OCR 面板之内
+  [PASS] 「选择识别区域」全窗口只有一个实例（实际 1 个）
+  [PASS] 「说明」全窗口只有一个实例（实际 1 个）
+  [PASS] 面板里有唯一的「识别区域」小节标题
+  [PASS] 「说明」在「识别区域」标题右侧
+  [PASS] 「说明」与标题在同一行
+  [PASS] 「选择识别区域」在 ROI 状态文字下方
+
+=== C. 信号与行为 ===
+  [PASS] 未连接时「选择识别区域」仍按原逻辑禁用
+  [PASS] 「说明」随时可用（与连接状态无关）
+  [PASS] 「选择识别区域」仍接着 _on_roi_select_clicked
+  [PASS] 「说明」仍接着 _on_roi_help_clicked
+  [PASS] 「说明」带 tooltip
+  [PASS] ROI 键序提示保留：'拖动框选 → Enter 确认 / Esc 取消'
+  [PASS] 访问状态变化不改坏按钮文案
+
+=== D. 1100×660 下两个入口都可见 ===
+  [PASS] 窗口 1100×660 时面板处于展开态
+  [PASS] 「说明」可见且未被面板裁剪
+  [PASS] 「选择识别区域」可见且未被面板裁剪
+  [PASS] 「选择识别区域」仍是可点击高度（34px）
+  [PASS] 「说明」有可点中的高度（20px）
+  [PASS] 面板底部的 OCR 启停按钮没有被挤出去
+
+====================================================
+通过 24 项，失败 1 项
+====================================================
+-----
+test_ui_tune_02_address_alignment.py           exit=1    3s  |     return (span(window._recent_combo, window)[0],                  ^^^^^^^^^^^^^^^^^^^^ AttributeError: 'MainWindow' object has no attribute '_recent_combo' 
+
+=== A. 1400×860 / 1100×660 顶底对齐 ===
+Traceback (most recent call last):
+  File "D:\TIikTok_Ocr\_wt_uilg\test_ui_tune_02_address_alignment.py", line 266, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "D:\TIikTok_Ocr\_wt_uilg\test_ui_tune_02_address_alignment.py", line 132, in main
+    actions = action_span(window)
+              ^^^^^^^^^^^^^^^^^^^
+  File "D:\TIikTok_Ocr\_wt_uilg\test_ui_tune_02_address_alignment.py", line 107, in action_span
+    return (span(window._recent_combo, window)[0],
+                 ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute '_recent_combo'
+-----
+test_access_status.py                          exit=0    1s  | === Test Complete ===  RESULT: 18/18 checks passed, 0 failed 
+=== Testing Access Status ===
+
+--- Unlicensed: no free trial anymore ---
+    [ok]   fresh instance reports EXPIRED (no trial window)
+    [ok]   fresh instance is treated as expired/blocked
+    [ok]   status text is the not-activated text (actual: 未激活)
+    [ok]   trial API (start_trial/reset_trial) no longer exists
+    [ok]   local days-based activate() no longer exists
+    [ok]   AccessState.TRIAL no longer exists
+
+--- Activated (30 days) ---
+    [ok]   activated → ACTIVE
+    [ok]   activated → not blocked
+Status text: 已激活 · 剩余 30天
+
+--- Expiring soon (12 hours) ---
+    [ok]   near expiry → EXPIRING
+    [ok]   near expiry → still allowed
+
+--- Expired ---
+    [ok]   lapsed license → EXPIRED
+    [ok]   lapsed license → blocked
+
+--- Permanent license ---
+    [ok]   no expiry → permanent ACTIVE
+    [ok]   permanent license → not blocked
+
+--- Back to unlicensed ---
+    [ok]   cleared state blocks again
+    [ok]   cleared state shows the not-activated text
+
+--- Invalid license note ---
+    [ok]   inactive license → blocked
+    [ok]   inactive reason is shown verbatim
+
+=== Test Complete ===
+
+RESULT: 18/18 checks passed, 0 failed
+-----
+test_expiration_access_control.py              exit=1    3s  |     self._connect_worker = _ConnectWorker(                            ^^^^^^^^^^^^^^^ TypeError: _StubConnectWorker.__init__() got an unexpected keyword argument 'resolver' 
+======================================================================
+Phase 7.2-6.6: expiration / access-control regression suite
+isolated APPDATA: C:\Users\ZHUANZ~1\AppData\Local\Temp\dlv-access-test-1u6r2ivu
+======================================================================
+
+[1] ACTIVE license: protected actions allowed
+    [ok]   ACTIVE: predicate reports not expired
+Traceback (most recent call last):
+  File "D:\TIikTok_Ocr\_wt_uilg\test_expiration_access_control.py", line 572, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "D:\TIikTok_Ocr\_wt_uilg\test_expiration_access_control.py", line 551, in main
+    test_active_allows_protected_actions()
+  File "D:\TIikTok_Ocr\_wt_uilg\test_expiration_access_control.py", line 270, in test_active_allows_protected_actions
+    window._on_connect_clicked()
+  File "D:\TIikTok_Ocr\_wt_uilg\gui\main_window.py", line 2111, in _on_connect_clicked
+    self._connect()
+  File "D:\TIikTok_Ocr\_wt_uilg\gui\main_window.py", line 2133, in _connect
+    self._connect_worker = _ConnectWorker(
+                           ^^^^^^^^^^^^^^^
+TypeError: _StubConnectWorker.__init__() got an unexpected keyword argument 'resolver'
+-----
+test_license_priority.py                       exit=1    2s  |     with open(key_path, 'r') as f:          ^^^^^^^^^^^^^^^^^^^ FileNotFoundError: [Errno 2] No such file or directory: 'D:\\TIikTok_Ocr\\_wt_uilg\\license_server\\test_rsa_key.pem' 
+Traceback (most recent call last):
+  File "D:\TIikTok_Ocr\_wt_uilg\test_license_priority.py", line 40, in <module>
+    PRIVATE_KEY_PEM = load_test_rsa_key()
+                      ^^^^^^^^^^^^^^^^^^^
+  File "D:\TIikTok_Ocr\_wt_uilg\license_server\test_key_loader.py", line 13, in load_test_rsa_key
+    with open(key_path, 'r') as f:
+         ^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'D:\\TIikTok_Ocr\\_wt_uilg\\license_server\\test_rsa_key.pem'
+-----
+test_offline_activation.py                     exit=0    1s  | PASS  I activate() 仍然存在且未被离线逻辑接管  32 passed, 0 failed 
+写入离线授权失败: 模拟磁盘写入失败
+本地验签无法完成: susi_helper 不存在: D:\TIikTok_Ocr\_wt_uilg\susi_helper\target\release\susi_helper.exe
+服务器已签发凭据，但本地验证未通过: activation_failed
+PASS  KEY 池共 20 个
+PASS  1 天 KEY 10 个
+PASS  30 天 KEY 10 个
+PASS  只有 1 天与 30 天两种时长
+PASS  KEY 规范形式唯一（无重复）
+PASS  规范化不会改变 KEY 池内的 KEY
+PASS  KEY 形状为 12 位字母数字
+PASS  B 全部写法归一为同一 KEY
+PASS  B 归一结果为大写无分隔
+PASS  B 空/None 归一为空串
+PASS  A 1 天 KEY 激活成功
+PASS  A 1 天 = 24 小时
+PASS  A 成功文案包含时长
+PASS  C 同一 KEY 第二次（换写法）失败
+PASS  C 提示为已使用
+PASS  D 不同 KEY 可以连续使用
+PASS  E 30 天 KEY 覆盖为 30 天
+PASS  E 再次用 1 天 KEY 覆盖为 1 天
+PASS  H 重启后授权仍有效
+PASS  H 重启后已消费 KEY 记录仍存在
+PASS  H 重启后重复使用已消费 KEY 仍然失败
+PASS  F 无效 KEY 一律拒绝且提示「无效的离线 KEY」
+PASS  F 当前授权未被破坏且未改变
+PASS  G 写入失败返回激活失败
+PASS  G 写入失败时 KEY 未被消费
+PASS  G 写入失败时未产生授权
+PASS  G 恢复写入后同一个 KEY 仍可使用
+PASS  I 在线激活仍走服务器且失败可重试
+PASS  I 在线激活失败不产生离线授权
+PASS  I 凭据非法时在线激活不落盘
+PASS  I 无离线授权时 load_stored 仍为未激活
+PASS  I activate() 仍然存在且未被离线逻辑接管
+
+32 passed, 0 failed
+-----
+test_roi_persistence_gui.py                    exit=1    3s  |     frame, seq = self._frame_buffer.get_with_seq()                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ AttributeError: '_StubBuffer' object has no attribute 'get_with_seq' 
+本地验签无法完成: susi_helper 不存在: D:\TIikTok_Ocr\_wt_uilg\susi_helper\target\release\susi_helper.exe
+
+=== H. 预设文件位置隔离 ===
+  [PASS] 预设文件落在隔离目录: C:\Users\ZHUANZ~1\AppData\Local\Temp\dlv-roipersist-local-fpspn13e\LiveLens\roi_presets.json
+  [PASS] 尚未保存前文件不存在
+
+=== A. 有历史 ROI 的直播间：首帧后自动恢复 ===
+  [PASS] 预置 room 96670111738 的历史 ROI
+  [PASS] 保存后预设文件已落盘
+  [PASS] 连接成功后登记待恢复
+  [PASS] 恢复前 ROI 尚未落位
+
+=== B. 真实帧消费路径触发恢复 ===
+Traceback (most recent call last):
+  File "D:\TIikTok_Ocr\_wt_uilg\test_roi_persistence_gui.py", line 252, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "D:\TIikTok_Ocr\_wt_uilg\test_roi_persistence_gui.py", line 163, in main
+    window._consume_latest_frame()
+  File "D:\TIikTok_Ocr\_wt_uilg\gui\main_window.py", line 3083, in _consume_latest_frame
+    frame, seq = self._frame_buffer.get_with_seq()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_StubBuffer' object has no attribute 'get_with_seq'
+-----
+test_roi_verification.py                       exit=1    4s  | ❌ TEST FAILED: 'int' object is not callable  Result: FAILURE - Some tests failed 
+本地验签无法完成: susi_helper 不存在: D:\TIikTok_Ocr\_wt_uilg\susi_helper\target\release\susi_helper.exe
+Traceback (most recent call last):
+  File "D:\TIikTok_Ocr\_wt_uilg\test_roi_verification.py", line 257, in run_all_tests
+    self.test_roi_selector_mock()
+  File "D:\TIikTok_Ocr\_wt_uilg\test_roi_verification.py", line 149, in test_roi_selector_mock
+    src_coords = roi_selector._display_to_source(display_rect)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\TIikTok_Ocr\_wt_uilg\ocr\roi_selector.py", line 228, in _display_to_source
+    x = int((rect.x() - ox) / sx)
+             ^^^^^^^^
+TypeError: 'int' object is not callable
+=== ROI Final Verification Test Phase 4.4 ===
+
+--- Testing ROI Coordinate Mapping ---
+
+Test Case 1: (1920, 1080) -> (1280, 720)
+  Original ROI: x=100, y=200, w=300, h=100
+  Scaled ROI:  x=66, y=133, w=200, h=66
+  ✓ Coordinate mapping correct
+
+Test Case 2: (1280, 720) -> (640, 360)
+  Original ROI: x=100, y=200, w=300, h=100
+  Scaled ROI:  x=50, y=100, w=150, h=50
+  ✓ Coordinate mapping correct
+
+Test Case 3: (3840, 2160) -> (1280, 720)
+  Original ROI: x=100, y=200, w=300, h=100
+  Scaled ROI:  x=33, y=66, w=100, h=33
+  ✓ Coordinate mapping correct
+
+Test Case 4: (854, 480) -> (640, 360)
+  Original ROI: x=100, y=200, w=300, h=100
+  Scaled ROI:  x=74, y=150, w=224, h=75
+  ✓ Coordinate mapping correct
+
+✓ All coordinate mapping tests passed
+
+--- Testing ROI Display Verification ---
+
+Test 1: Update ROI display
+  ✓ ROI updated successfully
+
+Test 2: Clear ROI display
+  ✓ ROI cleared successfully
+
+✓ All ROI display tests passed
+
+--- Testing ROI Manager Operations ---
+  ✓ Initial state correct
+  ✓ ROI set successfully
+  ✓ ROI cleared successfully
+
+✓ All ROI manager tests passed
+
+--- Testing ROI Selector (Mock) ---
+
+❌ TEST FAILED: 'int' object is not callable
+
+Result: FAILURE - Some tests failed
+-----
+test_first_run_onboarding.py                   exit=0    20s  | ======================================================================== RESULT: 225 passed, 0 failed ======================================================================== 
+========================================================================
+首次启动引导 / ROI 帮助 —— 验证
+========================================================================
+
+A. FirstRunStore：容错读取 / 原子写入
+    [ok]   文件缺失 → 默认显示引导
+    [ok]   读取不会创建文件（只读磁盘 / 首次启动必须安全）
+    [ok]   写入后 prefs.json 存在
+    [ok]   新实例重新读取 → 不再显示引导
+    [ok]   写回 true → 往返一致
+    [ok]   记录含 version=1
+    [ok]   show_guide_on_start 是 JSON 布尔值（不是字符串）
+    [ok]   记录是 JSON 对象
+prefs.json 读取失败，按默认值处理: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)
+    [ok]   prefs.json 损坏 → 回落默认值
+    [ok]   字段类型不对 → 只有显式布尔 false 才算「不显示」
+    [ok]   更高版本号被容忍（无迁移阶梯，宽容读取）
+    [ok]   合并写入保留未知字段（不是整条覆盖）
+    [ok]   合并后目标字段已更新
+prefs.json 保存失败（忽略）: [WinError 183] 当文件已存在时，无法创建该文件。: 'C:\\Users\\ZHUANZ~1\\AppData\\Local\\Temp\\dlv-onboard-moach0l6\\not-a-dir'
+    [ok]   目标目录不可用时保存失败被吞掉（偏好不该让程序起不来）
+    [ok]   注入的 data_dir 生效（不写默认目录）
+
+B. MainWindow 接线
+    [ok]   构造 MainWindow 不会弹任何对话框（否则无头测试会被卡死）
+    [ok]   构造期不写 prefs.json
+    [ok]   maybe_show_first_run_guide() 返回 True
+    [ok]   第一步以主界面聚光灯呈现
+    [ok]   第一步不构造模态向导（它是主界面上的浮层）
+    [ok]   四步全部由聚光灯承担，首次引导不再构造模态向导
+    [ok]   走完后聚光灯已全部结束
+    [ok]   完成后显示轻量完成提示
+    [ok]   关闭后记录「不再自动显示」
+    [ok]   已看过 → 再调用返回 False
+    [ok]   已看过 → 不再构造对话框
+    [ok]   引导仍然弹出
+    [ok]   选「下次继续提醒」→ 不写「已看过」，下次启动仍会显示
+    [ok]   下次启动仍会弹出
+    [ok]   第一步聚光灯启动
+    [ok]   聚光灯仍在时再次触发返回 False
+    [ok]   不会叠出第二个聚光灯
+    [ok]   第一步期间不会构造模态向导
+    [ok]   走完四步后引导结束，不构造任何模态向导
+    [ok]   「使用引导」打开的是主界面聚光灯
+    [ok]   不再打开旧版模态向导
+    [ok]   帮助入口走回顾模式（review_mode=True）
+    [ok]   重新打开不改变已记录的状态
+    [ok]   「说明」会打开 ROI 帮助对话框
+    [ok]   ROI 帮助以主窗口为父
+    [ok]   帮助按钮在标题栏操作区（titleIconBtn）
+    [ok]   帮助入口以 tooltip 说明用途：'使用引导：查看操作流程，可随时重新打开'
+    [ok]   帮助按钮不是 primary（「激活许可证」仍是唯一强调按钮）
+    [ok]   OCR 区域旁有「说明」按钮
+    [ok]   「说明」按钮带 tooltip
+    [ok]   前置条件：当前访问状态为不可用
+    [ok]   未激活 / 已过期时引导不自动弹出
+    [ok]   未授权时不会构造向导
+    [ok]   未授权只是「暂不显示」，不写掉标记 —— 授权成功后仍要弹
+    [ok]   授权成功后引导弹出
+    [ok]   四步走完后聚光灯全部结束
+    [ok]   同一会话内第二次触发被会话标记挡住
+    [ok]   不会弹出第二个向导
+    [ok]   未授权 → 激活成功 → 第一步聚光灯弹出（需求 2）
+    [ok]   走完四步后引导结束，不构造任何模态向导
+    [ok]   引导关闭后写了「不再自动显示」
+    [ok]   启动恢复到有效授权 → 第一步聚光灯弹出（需求 3）
+    [ok]   走完四步后引导结束，不构造任何模态向导
+    [ok]   已明确关闭自动引导 → 已授权启动也不再弹
+    [ok]   不构造向导
+    [ok]   聚光灯 ✕ + 「下次继续提醒」→ show_guide_on_start = true
+    [ok]   聚光灯 ✕ + 「不再自动显示」→ show_guide_on_start = false
+    [ok]   聚光灯 ✕ + 「返回引导」→ 引导继续显示、配置不变
+    [ok]   「返回引导」后遮罩仍在
+    [ok]   正常走完 → show_guide_on_start = false（UI-4.2：一律如此）
+    [ok]   向导里提前关闭 + 「下次继续提醒」→ true
+    [ok]   手动打开帮助后关闭 → 不碰用户的自动提醒设置
+    [ok]   起始是第一步
+    [ok]   第一步没有「上一步」
+    [ok]   连接完成后进入第二步聚光灯
+    [ok]   当前是第二步
+    [ok]   第二步不再先开旧版弹窗（需求 1）
+    [ok]   第二步标题为 '选择游戏'
+    [ok]   第二步提供「上一步」
+    [ok]   第二步高亮的是真实游戏下拉框
+    [ok]   第二步遮罩同样不拦截鼠标
+    [ok]   「上一步」回到第一步聚光灯
+    [ok]   回退不会清掉已输入的地址
+    [ok]   回退不会触发连接
+    [ok]   选完游戏后自动进入第三步聚光灯
+    [ok]   第三步同样是聚光灯，不开旧版弹窗
+    [ok]   重新走到第二步
+    [ok]   (第三步的退出确认见第 31 节)
+    [ok]   ✕ 关闭第二步聚光灯
+    [ok]   第二步 ✕ 走的是同一套三选项确认（选「下次继续提醒」→ true）
+    [ok]   面板变宽后高亮孔跟随（1100,290 → 990,400）
+    [ok]   第二步聚光灯声明优先左侧
+    [ok]   卡片整体在下拉框左侧
+    [ok]   卡片右边缘与下拉框间距 24px 落在 16–24 内
+    [ok]   卡片不压住 OCR 面板（卡片右 970 ≤ 面板左 980）
+    [ok]   卡片完整落在窗口内
+    [ok]   第一步仍优先下方
+    [ok]   第一步卡片贴在地址输入框下方
+    [ok]   第一步卡片左边缘与输入框左边缘对齐（12 vs 12）
+    [ok]   前置条件：面板已收起
+    [ok]   进入第二步时面板被临时展开
+    [ok]   真实游戏下拉框可见
+    [ok]   高亮区有且仅有一个（游戏下拉框）
+    [ok]   记下了「原来是收起」
+    [ok]   引导退出后恢复为收起
+    [ok]   再次临时展开
+    [ok]   用户主动改过面板 → 退出时保留用户的选择，不恢复成收起
+    [ok]   进入第三步聚光灯
+    [ok]   第三步标题正确
+    [ok]   第三步提供「上一步」
+    [ok]   第三步高亮真实 ROI 按钮
+    [ok]   第三步卡片优先放左侧
+    [ok]   点击真实按钮打开了框选窗口
+    [ok]   框选期间遮罩收起
+    [ok]   框选期间卡片收起
+    [ok]   只是收起，没有结束第三步（Esc 之后要能恢复）
+    [ok]   松开鼠标后显示轻量提示
+    [ok]   提示文案为 'Enter 确认 · Esc 取消'
+    [ok]   提示条不遮挡已框选区域
+    [ok]   提示条不接收鼠标输入
+    [ok]   鼠标松开不会自动推进（需求 5）
+    [ok]   Esc 取消后仍在第三步
+    [ok]   Esc 取消后遮罩恢复
+    [ok]   Esc 取消后卡片恢复
+    [ok]   Esc 取消后提示条隐藏
+    [ok]   Enter 确认后进入第四步聚光灯
+    [ok]   第四步同样是聚光灯，不开旧版弹窗
+    [ok]   Enter 确认后提示条隐藏
+    [ok]   手动「下一步」也能进入第四步
+    [ok]   跳过框选不会启动 OCR
+    [ok]   第三步「上一步」回到第二步（需求 8）
+    [ok]   回退保留已选择的游戏
+    [ok]   回退时不留残提示条
+    [ok]   ✕ 结束第三步
+    [ok]   退出后提示条已收起
+    [ok]   退出后遮罩已从窗口移除
+    [ok]   退出后卡片已从窗口移除
+    [ok]   窗口上不再残留任何聚光灯遮罩
+    [ok]   进入第四步聚光灯
+    [ok]   第四步标题正确
+    [ok]   第四步高亮真实「开始 OCR」按钮
+    [ok]   第四步主按钮文案为「完成」
+    [ok]   卡片说明了缺少的前置条件：'点击「开始 OCR」。识别到新的房间码后，软件会自动复制到剪贴板。\n尚未连接直播：请先完成第 1 步。'
+    [ok]   未连接时 OCR 按钮保持禁用
+    [ok]   点禁用的按钮不会推进（不绕过业务门禁）
+    [ok]   也没有偷偷启动 OCR
+    [ok]   「完成」结束第四步
+    [ok]   「完成」不会启动 OCR
+    [ok]   完成后显示轻量完成提示
+    [ok]   正常完成 → show_guide_on_start = false
+    [ok]   前置条件齐备时 OCR 按钮可用
+    [ok]   前置条件齐备时卡片不再说缺什么
+    [ok]   OCR 启动成功后第四步聚光灯结束
+    [ok]   OCR 启动成功后显示完成提示
+    [ok]   OCR 启动成功 → show_guide_on_start = false
+    [ok]   第四步「上一步」回到第三步
+    [ok]   ✕ 结束第四步
+    [ok]   ✕ 走的是同一套三选项确认（选「不再自动显示」→ false）
+    [ok]   退出后遮罩已移除
+    [ok]   退出后卡片已移除
+    [ok]   退出后 ROI 提示条已移除
+    [ok]   窗口上不再残留任何聚光灯遮罩
+    [ok]   第四步需要面板可见，已临时展开
+    [ok]   记下原状态是收起
+    [ok]   完成后面板恢复为收起
+    [ok]   用户主动点帮助仍会打开引导（不受首次启动标记限制）
+    [ok]   帮助入口走回顾模式（review_mode=True）
+    [ok]   不再打开旧版模态向导
+    [ok]   点击 ? 打开聚光灯
+    [ok]   走的是回顾模式
+    [ok]   从第 1 步「连接直播间」开始
+    [ok]   第 1 步标题正确
+    [ok]   第 1 步高亮地址输入框与连接按钮
+    [ok]   回顾模式为高亮区加了点击挡板
+    [ok]   挡板可见（用于挡住误触，视觉透明）
+    [ok]   不再打开旧版四页模态向导
+    [ok]   OCR 启动不会推进回顾模式
+    [ok]   切换游戏不会推进回顾模式
+    [ok]   第 1 步高亮目标正确
+    [ok]   第 2 步高亮目标正确
+    [ok]   第 3 步高亮目标正确
+    [ok]   第 4 步高亮目标正确
+    [ok]   手动走到第 4 步
+    [ok]   第 4 步主按钮为「完成」
+    [ok]   「上一步」回到第 3 步
+    [ok]   「完成」关闭回顾模式
+    [ok]   回顾模式不显示首次引导完成提示（没有新造提示条）
+    [ok]   回顾不写 show_guide_on_start（仍为 true）
+    [ok]   Esc 直接关闭回顾模式
+    [ok]   Esc 不弹首次引导的三选项退出确认
+    [ok]   Esc 不改变首次引导提醒设置
+    [ok]   Esc 关闭后无残留遮罩
+    [ok]   ✕ 直接关闭回顾模式
+    [ok]   ✕ 不弹首次引导的三选项退出确认
+    [ok]   ✕ 不改变首次引导提醒设置
+    [ok]   ✕ 关闭后无残留遮罩
+    [ok]   首次引导的 Esc 行为不变（仍不关闭）
+    [ok]   首次引导不是回顾模式
+    [ok]   首次引导没有点击挡板
+    [ok]   首次引导仍会因真实操作自动推进
+    [ok]   回顾第 2 步临时展开面板
+    [ok]   记下原状态是收起
+    [ok]   回顾结束后面板恢复为收起
+
+C. 真实对话框（offscreen 构造，不 exec）
+    [ok]   整份引导共 4 步
+    [ok]   回顾用的对话框渲染全部 4 页
+    [ok]   从第 1 步开始
+    [ok]   进度圆点画 4 个
+    [ok]   第 1 页「上一步」禁用
+    [ok]   第 1 页「下一步」可见
+    [ok]   第 1 页「完成」隐藏
+    [ok]   没点「完成」就不算走完
+    [ok]   翻到第 4 步
+    [ok]   第 4 页「完成」可见
+    [ok]   圆点点亮第 4 个
+    [ok]   第 4 页是「开始自动识别」
+    [ok]   末页不再有「不再自动显示」复选框
+    [ok]   随之作废的读取接口也已删除
+    [ok]   点「跳过」/ Esc / 关窗 → 弹确认，结果由 exit_choice() 带出
+    [ok]   提前关闭不算「走完」（据此决定后续落盘分支）
+    [ok]   选「返回引导」时对话框不关闭、也不产生选择
+    [ok]   回顾模式没有「跳过」
+    [ok]   回顾模式主按钮文案为「关闭」（不必等翻到末页）
+    [ok]   回顾模式同样停在四步结构的最后一步
+    [ok]   末页文案仍为「关闭」
+    [ok]   回顾模式不表态（看一眼帮助不该改掉之前的设置）
+    [ok]   回顾模式同样没有「不再自动显示」复选框
+    [ok]   对话框不写 prefs.json（写盘只在 MainWindow 一处）
+    [ok]   ROI 帮助有尺寸
+    [ok]   ROI 示意图有固定高度
+    [ok]   ROI 示意图能完成一次绘制（不依赖任何图片资源）
+
+========================================================================
+RESULT: 225 passed, 0 failed
+========================================================================
+-----
