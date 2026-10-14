@@ -1,0 +1,49 @@
+### CMD: python search.py desktop window controls focus performance --stack wpf
+
+## UI Pro Max Stack Guidelines
+**Stack:** wpf | **Query:** desktop window controls focus performance
+**Source:** stacks/wpf.csv | **Found:** 3 results
+
+### Result 1
+- **Category:** Performance
+- **Guideline:** Use DependencyProperty for custom-control binding targets
+- **Description:** Binding target properties on custom controls must be DependencyProperties (sources can be plain CLR properties with INPC)
+- **Do:** Define DependencyProperty for properties bound TO on a custom control
+- **Don't:** Plain CLR properties as binding targets on custom controls
+- **Code Good:** public static readonly DependencyProperty NameProperty = ...
+- **Code Bad:** public string Name { get; set; } as binding target on custom control
+- **Severity:** Medium
+- **Docs URL:** https://learn.microsoft.com/en-us/dotnet/desktop/wpf/properties/dependency-properties-overview
+- **Applies To:** wpf current
+- **Status:** active
+- **Verified At:** 2026-08-13
+
+### Result 2
+- **Category:** Architecture
+- **Guideline:** Keep code-behind minimal
+- **Description:** Code-behind should only contain view-specific logic
+- **Do:** View logic like focus management and animations in code-behind
+- **Don't:** Business logic and data access in code-behind
+- **Code Good:** Loaded handler that sets initial focus
+- **Code Bad:** Loaded handler that calls database and populates grid
+- **Severity:** Medium
+- **Docs URL:** https://learn.microsoft.com/en-us/dotnet/desktop/wpf/xaml/
+- **Applies To:** wpf current
+- **Status:** active
+- **Verified At:** 2026-08-13
+
+### Result 3
+- **Category:** XAML
+- **Guideline:** Set x:Class on root element
+- **Description:** Connects XAML to its code-behind partial class
+- **Do:** x:Class on Window UserControl and Page
+- **Don't:** Missing x:Class or mismatched namespace
+- **Code Good:** <Window x:Class="MyApp.MainWindow">
+- **Code Bad:** <Window> without x:Class
+- **Severity:** High
+- **Docs URL:** https://learn.microsoft.com/en-us/dotnet/desktop/wpf/xaml/
+- **Applies To:** wpf current
+- **Status:** active
+- **Verified At:** 2026-08-13
+
+--- exit=0 ---

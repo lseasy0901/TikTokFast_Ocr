@@ -1,0 +1,40 @@
+### CMD: python search.py motion animation performance reduced motion --domain ux
+
+## UI Pro Max Search Results
+**Domain:** ux | **Query:** motion animation performance reduced motion
+**Source:** ux-guidelines.csv | **Found:** 3 results
+
+### Result 1
+- **Category:** Animation
+- **Issue:** Reduced Motion
+- **Platform:** All
+- **Description:** Respect user's motion preferences
+- **Do:** Check prefers-reduced-motion media query
+- **Don't:** Ignore accessibility motion settings
+- **Code Example Good:** @media (prefers-reduced-motion: reduce)
+- **Code Example Bad:** No motion query check
+- **Severity:** High
+
+### Result 2
+- **Category:** Animation
+- **Issue:** Excessive Motion
+- **Platform:** All
+- **Description:** Too many animations cause distraction and motion sickness
+- **Do:** Animate 1-2 key elements per view maximum
+- **Don't:** Animate everything that moves
+- **Code Example Good:** Single hero animation
+- **Code Example Bad:** animate-bounce on 5+ elements
+- **Severity:** High
+
+### Result 3
+- **Category:** Animation
+- **Issue:** Duration Timing
+- **Platform:** All
+- **Description:** Motion duration depends on distance complexity platform and user context
+- **Do:** Use shared motion tokens and test that feedback stays responsive
+- **Don't:** Present 150-300ms or any cutoff as a universal requirement
+- **Code Example Good:** transition-colors duration-200
+- **Code Example Bad:** One duration copied to every transition
+- **Severity:** Medium
+
+--- exit=0 ---

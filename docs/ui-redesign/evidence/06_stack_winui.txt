@@ -1,0 +1,49 @@
+### CMD: python search.py desktop window controls focus performance --stack winui
+
+## UI Pro Max Stack Guidelines
+**Stack:** winui | **Query:** desktop window controls focus performance
+**Source:** stacks/winui.csv | **Found:** 3 results
+
+### Result 1
+- **Category:** Controls
+- **Guideline:** Use ContentDialog for modal interactions
+- **Description:** Standard modal dialog pattern
+- **Do:** ContentDialog for confirmations and input
+- **Don't:** Custom overlay Panel as dialog
+- **Code Good:** <ContentDialog Title="Delete?" PrimaryButtonText="Delete" CloseButtonText="Cancel"/>
+- **Code Bad:** Grid overlay with manual focus trapping
+- **Severity:** Medium
+- **Docs URL:** https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/dialogs-and-flyouts/dialogs
+- **Applies To:** winui current windows app sdk
+- **Status:** active
+- **Verified At:** 2026-08-13
+
+### Result 2
+- **Category:** Architecture
+- **Guideline:** Use WinUI 3 Window management
+- **Description:** Proper window lifecycle management
+- **Do:** AppWindow API for multi-window scenarios
+- **Don't:** Single Window assumption in complex apps
+- **Code Good:** var appWindow = this.AppWindow;
+- **Code Bad:** Relying solely on MainWindow for everything
+- **Severity:** Medium
+- **Docs URL:** https://learn.microsoft.com/en-us/windows/apps/develop/ui/manage-app-windows
+- **Applies To:** winui current windows app sdk
+- **Status:** active
+- **Verified At:** 2026-08-13
+
+### Result 3
+- **Category:** Architecture
+- **Guideline:** Open secondary windows with new Window
+- **Description:** WinUI 3 supports multiple top-level windows; each Window owns an AppWindow accessible via Window.AppWindow for size and position control
+- **Do:** new Window().Activate() for secondary windows tracking them in App state
+- **Don't:** Faking multi-window via main-window content swaps or ContentDialog
+- **Code Good:** var settings = new SettingsWindow(); settings.Activate();
+- **Code Bad:** MainWindow.Content = new SettingsView(); when a separate window is needed
+- **Severity:** Medium
+- **Docs URL:** https://learn.microsoft.com/en-us/windows/apps/develop/ui/manage-app-windows
+- **Applies To:** winui current windows app sdk
+- **Status:** active
+- **Verified At:** 2026-08-13
+
+--- exit=0 ---

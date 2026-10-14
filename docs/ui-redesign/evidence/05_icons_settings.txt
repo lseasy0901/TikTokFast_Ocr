@@ -1,0 +1,43 @@
+### CMD: python search.py settings gear navigation toolbar icon consistency --domain icons
+
+## UI Pro Max Search Results
+**Domain:** icons | **Query:** settings gear navigation toolbar icon consistency
+**Source:** icons.csv | **Found:** 3 results
+
+### Result 1
+- **Category:** Action
+- **Icon Name:** gear
+- **Keywords:** gear cog preferences config
+- **Library:** Phosphor
+- **Import Code:** import { Gear } from '@phosphor-icons/react'
+- **Usage:** <Gear size={20} weight="regular" />; Context is chosen by use: if decorative beside visible text, set aria-hidden="true"; if meaningful without equivalent visible text, provide a text alternative; if inside an interactive control, give the control an accessible name and expose applicable state (for ...
+- **Best For:** Settings page configuration
+- **Style:** Outline
+- **Semantic Role:** meaningful
+- **Allowed Contexts:** decorative|meaningful|interactive
+
+### Result 2
+- **Category:** Guideline
+- **Icon Name:** icon-context-accessibility
+- **Keywords:** decorative icon aria hidden, meaningful icon text alternative, icon button accessible label, accessible name, aria pressed, aria expanded, semantic context, phosphor, heroicons
+- **Library:** Phosphor (primary) + Heroicons (fallback)
+- **Import Code:** import { Question } from '@phosphor-icons/react'; import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
+- **Usage:** Prefer the most semantically precise Phosphor icon, even if it is outside this curated subset. Use Heroicons only as a consistent fallback. Keep one visual family per surface. Context is chosen by use: if decorative beside visible text, set aria-hidden="true"; if meaningful without equivalent visibl...
+- **Best For:** Contextual icon semantics, icon accessibility, and library fallback rules
+- **Style:** Outline
+- **Semantic Role:** guideline
+- **Allowed Contexts:** decorative|meaningful|interactive
+
+### Result 3
+- **Category:** Navigation
+- **Icon Name:** list
+- **Keywords:** hamburger menu navigation toggle bars
+- **Library:** Phosphor
+- **Import Code:** import { List } from '@phosphor-icons/react'
+- **Usage:** <List size={20} weight="regular" />; Context is chosen by use: if decorative beside visible text, set aria-hidden="true"; if meaningful without equivalent visible text, provide a text alternative; if inside an interactive control, give the control an accessible name and expose applicable state (for ...
+- **Best For:** Mobile navigation drawer toggle sidebar
+- **Style:** Outline
+- **Semantic Role:** interactive
+- **Allowed Contexts:** decorative|meaningful|interactive
+
+--- exit=0 ---

@@ -1,0 +1,65 @@
+## Design System: LiveLens
+
+### Pattern
+- **Name:** Real-Time / Operations Landing
+- **Conversion Focus:** Offer a demo or sandbox and show trust signals. Label telemetry as live only when backed by a current source, with update time and stale state. Provide pause/hide or update-frequency controls for tickers and previews, stop offscreen/hidden work, support keyboard controls, and render a static final snapshot under reduced motion.
+- **CTA Placement:** Primary CTA in nav + After metrics
+- **Color Strategy:** Dark or neutral. Status colors (green/amber/red). Data-dense but scannable.
+- **Sections:** Hero (product + live preview or status) > Key metrics/indicators > How it works > CTA (Start trial / Contact)
+
+### Style
+- **Name:** Glassmorphism
+- **Mode Support:** Light supported | Dark supported
+- **Keywords:** Frosted glass, transparent, blurred background, layered, vibrant background, light source, depth, multi-layer
+- **Best For:** Modern SaaS, financial dashboards, high-end corporate, lifestyle apps, modal overlays, navigation
+- **Performance:** cost:low|drivers:none | **Accessibility:** risk:conditional|requires:contrast-text-4.5,keyboard,visible-focus,reduced-motion
+
+### Colors
+| Role | Hex | CSS Variable |
+|------|-----|--------------|
+| Primary | `#1E293B` | `--color-primary` |
+| On Primary | `#FFFFFF` | `--color-on-primary` |
+| Secondary | `#334155` | `--color-secondary` |
+| On Secondary | `#FFFFFF` | `--color-on-secondary` |
+| Accent/CTA | `#22C55E` | `--color-accent` |
+| On Accent/CTA | `#0F172A` | `--color-on-accent` |
+| Background | `#0F172A` | `--color-background` |
+| Foreground | `#F8FAFC` | `--color-foreground` |
+| Card | `#1B2336` | `--color-card` |
+| Card Foreground | `#F8FAFC` | `--color-card-foreground` |
+| Muted | `#272F42` | `--color-muted` |
+| Muted Foreground | `#94A3B8` | `--color-muted-foreground` |
+| Border | `#475569` | `--color-border` |
+| Destructive | `#EF4444` | `--color-destructive` |
+| On Destructive | `#000000` | `--color-on-destructive` |
+| Ring | `#FFFFFF` | `--color-ring` |
+
+*Notes: Dark tech + status green*
+
+### Typography
+- **Heading:** Fira Code
+- **Body:** Fira Sans
+- **Mood:** dashboard, data, analytics, code, technical, precise
+- **Best For:** Dashboards, analytics, data visualization, admin panels
+- **Google Fonts:** https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap
+- **CSS Import:**
+```css
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+```
+
+### Key Effects
+Backdrop blur (10-20px), subtle border (1px solid rgba white 0.2), light reflection, Z-depth
+
+### Avoid (Anti-patterns)
+- Slow updates
+- No automation
+
+### Pre-Delivery Checklist
+- [ ] No emojis as icons (use SVG: Heroicons/Lucide)
+- [ ] cursor-pointer on all clickable elements
+- [ ] Hover states with smooth transitions (150-300ms)
+- [ ] Light mode: text contrast 4.5:1 minimum
+- [ ] Focus states visible for keyboard nav
+- [ ] prefers-reduced-motion respected
+- [ ] Responsive: 375px, 768px, 1024px, 1440px
+

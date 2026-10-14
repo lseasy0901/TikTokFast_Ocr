@@ -1,0 +1,30 @@
+### CMD: python search.py glassmorphism dark translucent desktop panels --domain style
+
+## UI Pro Max Search Results
+**Domain:** style | **Query:** glassmorphism dark translucent desktop panels
+**Source:** styles.csv | **Found:** 1 results
+
+### Result 1
+- **Style ID:** glassmorphism
+- **Style Category:** Glassmorphism
+- **Aliases:** 
+- **Status:** active
+- **Parent Style ID:** 
+- **Preferred Mode:** auto
+- **Type:** General
+- **Keywords:** Frosted glass, transparent, blurred background, layered, vibrant background, light source, depth, multi-layer
+- **Primary Colors:** Translucent white: rgba(255,255,255,0.1-0.3)
+- **Effects & Animation:** Backdrop blur (10-20px), subtle border (1px solid rgba white 0.2), light reflection, Z-depth
+- **Best For:** Modern SaaS, financial dashboards, high-end corporate, lifestyle apps, modal overlays, navigation
+- **Light Mode ✓:** supported
+- **Dark Mode ✓:** supported
+- **Performance:** cost:low|drivers:none
+- **Accessibility:** risk:conditional|requires:contrast-text-4.5,keyboard,visible-focus,reduced-motion
+- **Framework Compatibility:** tailwind|mui|chakra
+- **Complexity:** Medium
+- **AI Prompt Keywords:** Design a glassmorphic interface with frosted glass effect. Use backdrop blur (10-20px), translucent overlays (rgba 10-30% opacity), vibrant background colors, subtle borders, light source reflection, layered depth. Perfect for modern overlays and cards.
+- **CSS/Technical Keywords:** backdrop-filter: blur(15px), background: rgba(255, 255, 255, 0.15), border: 1px solid rgba(255,255,255,0.2), -webkit-backdrop-filter: blur(15px), z-index layering for depth
+- **Implementation Checklist:** ☐ Backdrop-filter blur 10-20px, ☐ Translucent white 15-30% opacity, ☐ Subtle border 1px light, ☐ Vibrant background verified, ☐ Text contrast 4.5:1 checked
+- **Design System Variables:** --blur-amount: 15px, --glass-opacity: 0.15, --border-color: rgba(255,255,255,0.2), --background: vibrant color, --text-color: light/dark based on BG
+
+--- exit=0 ---
