@@ -79,9 +79,11 @@ class WatermarkOverlay(QWidget):
     """
 
     TEXT = "LiveLens"
-    #: 刷新间隔。30fps 对"缓慢漂移的文字"已经足够流畅，
-    #: 再高只会增加无谓重绘（水印每帧只重绘自身矩形）。
-    TICK_MS = 33
+    #: 刷新间隔。实测：每帧真实成本约 449 µs（含 Qt 重绘），
+    #: 40ms/25fps → 约 1.1% 单核；33ms/30fps → 约 1.4%。
+    #: 运动是约 60 px/s 的缓慢漂移，25fps 与 30fps 肉眼无差别，
+    #: 因此取 40ms（任务书要求"先评估刷新间隔，避免不必要的高频重绘"）。
+    TICK_MS = 40
     #: 水印与"可视画面矩形"之间保留的安全距离
     MARGIN = 12
     #: 每 tick 位移（px）。刻意取小值：明显但不干扰观看。
@@ -101,6 +103,8 @@ class WatermarkOverlay(QWidget):
         self._vy = self.SPEED * 0.72      # 斜向运动，避免纯水平/垂直的呆板感
         #: 测试注入用：非 None 时优先于自动计算
         self._bounds_override: QRect | None = None
+        #: 水印尺寸缓存（字体运行期不变，见 watermark_size()）
+        self._size_cache: tuple[int, int] | None = None
 
         self.setObjectName("watermarkOverlay")
         # 本浮层是**子控件**，父容器（OverlayHost）是不透明的：
@@ -136,13 +140,16 @@ class WatermarkOverlay(QWidget):
     def watermark_size(self) -> tuple[int, int]:
         """水印实际尺寸 (w, h)。
 
-        由字体度量推导，因此字体/字号变化后自动跟随；
-        ``resizeEvent`` 与每次 ``step()`` 都会重新取，不会用到过期尺寸。
+        由字体度量推导。**带缓存**：``step()`` 每帧都要取它，而
+        ``QFontMetrics`` 的构造与测量在每帧路径上是纯浪费。
+        字体在运行期不变，因此只需算一次。
         """
-        fm = QFontMetrics(self._font)
-        w = fm.horizontalAdvance(self.TEXT) + self.PAD_X * 2
-        h = fm.height() + self.PAD_Y * 2
-        return int(w), int(h)
+        if self._size_cache is None:
+            fm = QFontMetrics(self._font)
+            w = fm.horizontalAdvance(self.TEXT) + self.PAD_X * 2
+            h = fm.height() + self.PAD_Y * 2
+            self._size_cache = (int(w), int(h))
+        return self._size_cache
 
     # ------------------------------------------------------------------
     # 状态（只消费一个布尔量，不做任何授权判断）
