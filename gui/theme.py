@@ -46,72 +46,80 @@ __all__ = [
 
 
 # ======================================================================
-# 调色板：深蓝 / 蓝灰、低对比边框、蓝色主强调色
+# 调色板：黑曜石深色底 + 烟灰半透明玻璃 + 蓝调强调色
 # ======================================================================
 class Palette:
-    """全局颜色常量（注解表即 QSS 占位符表，不要删注解）。"""
+    """全局颜色常量（注解表即 QSS 占位符表，不要删注解）。
+
+    取值来源：``design-system/livelens/MASTER.md`` §2.1（Phase 1 设计系统）。
+    对比度已按 WCAG 2.1 实测：主文字/次级文字/强调色/成功色 在三种底色上
+    全部通过 AA 4.5:1（10/10 组合），9/10 通过 AAA 7.0:1。
+    实测脚本：``docs/ui-redesign/evidence/contrast_check.py``。
+
+    玻璃表面（DOCK_BG / HOVER / BORDER* 等）用 rgba：因为真正的"液态玻璃"
+    必须让底下的内容透出来，不透明色块做不出层次。
+    """
 
     # ---- 背景层级 ----
-    APP_BG: str = "#141518"          # 窗口底色
-    CHROME_BG: str = "#1D1E22"       # 标题栏 / 状态栏
-    DOCK_BG: str = "#1D1E22"         # Dock 面板
-    DOCK_HEADER_BG: str = "#1D1E22"  # Dock 面板标题栏
-    PANEL_BG: str = "#0B0C0E"        # 预览区（最暗，让画面成为焦点）
-    POPUP_BG: str = "#1D1E22"        # 下拉弹层
-    INPUT_BG: str = "#17181C"        # 输入框
-    ELEVATED: str = "#24262B"        # 面板之上的控件
-    HOVER: str = "#2A2C31"
-    PRESSED: str = "#101114"
-    DISABLED_BG: str = "#191A1E"
+    APP_BG: str = "#090B10"          # 窗口底色（黑曜石）
+    CHROME_BG: str = "#171B24"       # 标题栏 / 状态栏
+    DOCK_BG: str = "rgba(37, 43, 54, 0.62)"   # 玻璃面板基色（半透明）
+    DOCK_HEADER_BG: str = "rgba(255, 255, 255, 0.04)"  # 玻璃面板标题条
+    PANEL_BG: str = "#0B0D12"        # 预览区（最暗，让画面成为焦点）
+    POPUP_BG: str = "rgba(27, 32, 41, 0.96)"  # 下拉弹层（悬浮玻璃，更实）
+    INPUT_BG: str = "rgba(9, 11, 16, 0.60)"   # 输入框（比玻璃更深，形成凹陷）
+    ELEVATED: str = "#252B36"        # 面板之上的控件
+    HOVER: str = "rgba(255, 255, 255, 0.07)"
+    PRESSED: str = "rgba(255, 255, 255, 0.11)"
+    DISABLED_BG: str = "#14171D"
     CHIP_BG: str = "transparent"
     #: 「框架层」（标题栏/地址栏/性能栏）：半透明深色 —— 让 Mica 只作为
     #: 很淡的底纹，避免系统亮色主题下出现浅色标题栏与深色主体割裂。
-    CHROME: str = "rgba(20, 21, 24, 0.72)"
+    CHROME: str = "rgba(9, 11, 16, 0.72)"
     #: 视频井：最暗的一层，让画面成为绝对视觉中心
-    WELL: str = "#0B0C0E"
+    WELL: str = "#080A0E"
     #: 浮层遮罩：盖在视频井之上的半透明深色（未激活遮罩用它压暗画面）
-    SCRIM: str = "rgba(11, 12, 14, 0.88)"
-    #: 主操作（浅色实心按钮）上的文字色
-    ACCENT_INK: str = "#141518"
+    SCRIM: str = "rgba(9, 11, 16, 0.86)"
+    #: 主操作（强调色实心按钮）上的文字色
+    ACCENT_INK: str = "#08121C"
 
     # ---- 边框：低对比，1px + 顶部微亮边区分层级 ----
-    BORDER: str = "#303137"
-    BORDER_TOP: str = "#3A3B41"
-    BORDER_SOFT: str = "#26272C"
-    BORDER_STRONG: str = "#3A3B41"
+    BORDER: str = "rgba(255, 255, 255, 0.10)"
+    BORDER_TOP: str = "rgba(255, 255, 255, 0.16)"
+    BORDER_SOFT: str = "rgba(255, 255, 255, 0.06)"
+    BORDER_STRONG: str = "rgba(255, 255, 255, 0.18)"
 
     # ---- 文本 ----
-    TEXT: str = "#F0F0F2"
-    TEXT_DIM: str = "#90939B"
-    TEXT_MUTED: str = "#6A6D74"
-    TEXT_DISABLED: str = "#4C4E54"
+    TEXT: str = "#E9F0FF"
+    TEXT_DIM: str = "#A8B4C7"
+    TEXT_MUTED: str = "#7B8798"
+    TEXT_DISABLED: str = "#5A6472"
     #: 自绘图标线条的默认色。比 TEXT_DIM 亮一档：图标是 1.4px 细线，
     #: 用 TEXT_DIM 会在深色标题栏上明显发灰、难以辨认（Phase UI 改造）。
-    ICON: str = "#B6BAC2"
+    ICON: str = "#C2CBD9"
     #: 键盘焦点环颜色。取自设计系统 MASTER.md 的强调色令牌
     #: （design-system/livelens/MASTER.md §2.1 --ll-accent）。
-    #: Phase 4 先用于标题栏图标按钮的 :focus；Phase 6 会把它推广到全局。
     FOCUS_RING: str = "#80BFFF"
 
     # ---- 强调色（蓝）----
-    ACCENT: str = "#D9DBE0"
-    ACCENT_HOVER: str = "#E6E8EC"
-    ACCENT_PRESSED: str = "#C7C9CF"
-    ACCENT_TEXT: str = "#E8E9ED"
-    ACCENT_DIM: str = "rgba(255, 255, 255, 0.08)"
-    ACCENT_EDGE: str = "rgba(255, 255, 255, 0.18)"
+    ACCENT: str = "#80BFFF"
+    ACCENT_HOVER: str = "#9CCFFF"
+    ACCENT_PRESSED: str = "#66A8E6"
+    ACCENT_TEXT: str = "#80BFFF"
+    ACCENT_DIM: str = "rgba(128, 191, 255, 0.14)"
+    ACCENT_EDGE: str = "rgba(128, 191, 255, 0.28)"
 
     # ---- 状态色 ----
-    OK_TEXT: str = "#83B69A"
-    OK_BG: str = "rgba(131, 182, 154, 0.12)"
-    OK_BORDER: str = "rgba(131, 182, 154, 0.28)"
-    WARN_TEXT: str = "#C8A96A"
-    WARN_BG: str = "rgba(200, 169, 106, 0.12)"
-    WARN_BORDER: str = "rgba(200, 169, 106, 0.28)"
+    OK_TEXT: str = "#64D9A0"
+    OK_BG: str = "rgba(100, 217, 160, 0.12)"
+    OK_BORDER: str = "rgba(100, 217, 160, 0.28)"
+    WARN_TEXT: str = "#E0B76A"
+    WARN_BG: str = "rgba(224, 183, 106, 0.12)"
+    WARN_BORDER: str = "rgba(224, 183, 106, 0.28)"
     DANGER: str = "#B4554E"
-    DANGER_TEXT: str = "#D08A82"
-    DANGER_BG: str = "rgba(180, 85, 78, 0.12)"
-    DANGER_BORDER: str = "rgba(180, 85, 78, 0.28)"
+    DANGER_TEXT: str = "#E08A82"
+    DANGER_BG: str = "rgba(224, 138, 130, 0.12)"
+    DANGER_BORDER: str = "rgba(224, 138, 130, 0.28)"
     DANGER_HOVER: str = "#C4736B"
 
     # ---- 字体 ----

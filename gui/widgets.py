@@ -17,7 +17,7 @@ LiveLens 通用 UI 组件
 import math
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -194,6 +194,42 @@ class DockPanel(QFrame):
 
     def set_title(self, title: str) -> None:
         self._title.setText(title)
+
+    # -- 玻璃边缘高光 --------------------------------------------------
+    def paintEvent(self, event) -> None:  # noqa: N802
+        """QSS 画玻璃底/圆角/描边，这里补一条**顶部渐变高光**。
+
+        为什么必须自绘：QSS 表达不了线性渐变，也做不出"圆角内裁剪"。
+        设计依据 ``design-system/livelens/MASTER.md`` §3.2：
+        高光高度取 ``min(1px, 8% 面板高)``，颜色从 20% 白渐隐到全透明。
+
+        这是**诚实的视觉近似**，不是真实背景折射 —— Qt 的 QSS 没有
+        ``backdrop-filter``，本面板也没有做背景采样。层次感来自
+        "半透明填充 + 边缘高光 + 描边"三件套。
+        """
+        super().paintEvent(event)   # QSS 先画底
+
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = float(Metrics.RADIUS)
+        h = max(1.0, min(3.0, rect.height() * 0.08))
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        # 裁剪到圆角矩形内，高光才不会溢出到圆角外
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, radius, radius)
+        painter.setClipPath(clip)
+
+        grad = QLinearGradient(rect.topLeft(),
+                               QPointF(rect.left(), rect.top() + h))
+        grad.setColorAt(0.0, QColor(255, 255, 255, 52))
+        grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(grad)
+        painter.drawRect(QRectF(rect.left(), rect.top(), rect.width(), h))
+        painter.end()
 
 
 # ======================================================================
