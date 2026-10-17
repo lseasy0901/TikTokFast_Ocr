@@ -1,0 +1,92 @@
+=== 完整测试集（root test_*.py + tests/） ===
+开始: 2026-10-14 16:40:16
+test_access_status.py                                exit=0    | RESULT: 18/18 checks passed, 0 failed
+test_clipboard.py                                    exit=0    | OK 通过
+test_copy_log_export.py                              exit=0    | 结果：52 通过 / 0 失败
+test_dataset_capture.py                              exit=0    | PASS 69 / FAIL 0
+test_douyin_follow_live.py                           exit=1    | AttributeError: '_FakeSession' object has no attribute 'update'
+test_douyin_url_parsing.py                           exit=0    | 通过 97 项，失败 0 项
+test_english_ocr.py                                  exit=0    | 
+test_expiration_access_control.py                    exit=1    | TypeError: _StubConnectWorker.__init__() got an unexpected keyword argument 'resolver'
+test_final.py                                        exit=0    | 通过
+test_first_run_onboarding.py                         exit=0    | RESULT: 225 passed, 0 failed
+test_frame_drops_and_worker_errors.py                exit=0    | 通过 44 项，失败 0 项
+test_huya_adapter.py                                 exit=0    | RESULT: 82/82 passed
+test_huya_headers.py                                 exit=1    |   FAILED: 位置参数构造仍兼容 
+test_license_priority.py                             exit=1    | FileNotFoundError: [Errno 2] No such file or directory: 'D:\\TIikTok_Ocr\\_wt_uilg\\licens
+test_ocr_delta_1v1_profile.py                        exit=0    | 通过 85 项，失败 0 项
+test_ocr_diagnostics.py                              exit=0    | 结果：91 通过 / 0 失败
+test_ocr_diagnostics_perf.py                         exit=0    | 通过 44 项，失败 0 项
+test_ocr_image.py                                    exit=124  | 
+test_ocr_observe_all_psm.py                          exit=0    | 通过 43 项，失败 0 项
+test_ocr_observe_all_psm_gui.py                      exit=0    | 通过 60 项，失败 0 项
+test_ocr_sample_capture_and_bench.py                 exit=0    | 通过 56 项，失败 0 项，跳过 0 项
+test_ocr_window_residue_safety.py                    exit=0    | 通过 48 项，失败 0 项
+test_ocr_worker.py                                   exit=1    | IndentationError: unexpected indent
+test_offline_activation.py                           exit=0    | 32 passed, 0 failed
+test_onnx_engine.py                                  exit=0    | 全部通过
+test_phase_2_5_candidate_failover.py                 exit=0    | 通过 59 项，失败 0 项
+test_phase_2_5_failover_lifecycle.py                 exit=0    | 通过 86 项，失败 0 项
+test_phase_3_3_deferred_probe.py                     exit=0    | 全部通过
+test_phase_3_length_escalation.py                    exit=0    | 通过 37 项，失败 0 项
+test_phase_3_velopack_update.py                      exit=0    | PASS 64 / FAIL 0
+test_phase_4b_update_recovery.py                     exit=0    | PASS 63 / FAIL 0
+test_phase_7_2_8_portability.py                      exit=1    | ModuleNotFoundError: No module named 'pydantic_settings'
+test_bilibili_adapter.py                             exit=0    | RESULT: 42/42 passed
+test_phase_7_2_8g_build_guard.py                     exit=1    | RESULT: 37/56 checks passed, 19 failed, 0 skipped
+test_phase_7_2_9_ocr_startup_fix.py                  exit=0    | RESULT: 11/11 checks passed, 0 failed
+test_phase_7_4_dau_client_heartbeat.py               exit=0    | PASSED=45  FAILED=0
+test_phase_7_4_dau_heartbeat_schedule.py             exit=0    | PASSED=43  FAILED=0
+test_phase_7_4_dau_heartbeat_wiring.py               exit=0    | PASSED=37  FAILED=0
+test_phase_8_0_ocr_v2_1_format_aware.py              exit=0    | RESULT: 163/163 checks passed, 0 failed
+test_phase_8_1_ocr_game_selector.py                  exit=0    | RESULT: 48/48 checks passed, 0 failed
+test_phase_8_3_ocr_temporal_resolver.py              exit=0    | RESULT: 68/68 checks passed, 0 failed
+test_phase_8_4_ocr_reading_arbitration.py            exit=0    | RESULT: 37/37 checks passed, 0 failed
+test_phase_8_5_ocr_game_chain.py                     exit=0    | RESULT: 68/68 checks passed, 0 failed
+test_phase_8_6_ocr_game_mismatch_notice.py           exit=0    | RESULT: 80/80 checks passed, 0 failed
+test_phase_b2_frame_ready.py                         exit=0    | 通过 41 项，失败 0 项
+test_phase_ocr2_adaptive_interval.py                 exit=0    | 全部通过
+test_phase_ocr31_frozen_package.py                   exit=1    |   [FAIL] 存在打包目录 dist/DouyinLowLatencyViewer D:\TIikTok_Ocr\_wt_uilg\
+test_phase_ocr31_lifecycle.py                        exit=0    | 全部通过
+test_phase_ocr3_persistent_engine.py                 exit=1    |   [PASS] worker 线程已退出
+test_phase_ui3_1_layout.py                           exit=1    | AttributeError: 'MainWindow' object has no attribute '_stream_history'
+test_phase_ui3_activation_settings.py                exit=0    | 通过 62 项，失败 0 项
+test_ppocrv6_backend.py                              exit=1    | FileNotFoundError: [WinError 3] 系统找不到指定的路径。: 'C:\\Users\\Z
+test_preprocess_params.py                            exit=0    | 
+test_psm_comparison.py                               exit=0    | 
+test_publish_update_bat.py                           exit=1    |   FAILED: exit code 0
+test_release01_purchase_contact.py                   exit=0    | RESULT: 24/24 passed
+test_release_ocr_runtime.py                          exit=0    | test_frozen_missing_tesseract_message (__main__.TestUserFacingErrors.test_frozen
+test_release_packaging.py                            exit=0    | PASS 18 / FAIL 0
+test_roi_verification.py                             exit=1    | Result: FAILURE - Some tests failed
+test_stream_history_paths.py                         exit=0    | 通过 65 项，失败 0 项
+test_stream_resolver.py                              exit=0    | RESULT: 42/42 passed
+test_strict.py                                       exit=0    | 
+test_tesseract_locator.py                            exit=0    | 
+test_ui_internal_diagnostics_gate.py                 exit=1    | AttributeError: 'MainWindow' object has no attribute '_stream_history'
+test_ui_tune_01_roi_entry.py                         exit=1    | 通过 24 项，失败 1 项
+test_ui_tune_02_address_alignment.py                 exit=1    | AttributeError: 'MainWindow' object has no attribute '_recent_combo'
+test_video_message.py                                exit=0    | 
+
+=== pytest tests/ (25 files) ===
+            "未找到可用的低延迟播放组件（FFmpeg 7 运行时），无法播放直播流"
+        )
+E       RuntimeError: 未找到可用的低延迟播放组件（FFmpeg 7 运行时），无法播放直播流
+
+stream\ffmpeg_reader.py:1004: RuntimeError
+=========================== short test summary info ===========================
+FAILED tests/audio/test_audio_no_track.py::TestReaderCommand::test_cmd_with_audio_appends_block
+FAILED tests/audio/test_audio_no_track.py::TestReaderCommand::test_cmd_without_audio_unchanged
+FAILED tests/stream/test_reader_recovery.py::test_r4_thread_queue_size_never_injected
+ERROR tests/ui_redesign/test_toolbar_contract.py::test_structure
+ERROR tests/ui_redesign/test_toolbar_contract.py::test_wiring
+ERROR tests/ui_redesign/test_toolbar_contract.py::test_dead_code
+ERROR tests/ui_redesign/test_toolbar_contract.py::test_behaviour
+ERROR tests/ui_redesign/test_watermark.py::test_structure
+ERROR tests/ui_redesign/test_watermark.py::test_license_mapping
+ERROR tests/ui_redesign/test_watermark.py::test_bounds
+ERROR tests/ui_redesign/test_watermark.py::test_lifecycle
+ERROR tests/ui_redesign/test_watermark.py::test_isolation
+ERROR tests/ui_redesign/test_watermark.py::test_render_position
+3 failed, 274 passed, 1 skipped, 10 errors in 101.27s (0:01:41)
+DONE

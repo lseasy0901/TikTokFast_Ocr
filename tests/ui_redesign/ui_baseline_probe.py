@@ -122,6 +122,14 @@ def main() -> int:
         result["qtimer_error"] = str(exc)
 
     result["window_size"] = [window.width(), window.height()]
+    # 窗口若被最小化/未 expose，Qt 不派发 paintEvent，空闲 CPU 会虚低。
+    # Phase 7 的 A/B 必须能识别这种无效样本，因此这里如实记录。
+    try:
+        _handle = window.windowHandle()
+        result["window_exposed"] = bool(_handle.isExposed()) if _handle else None
+    except Exception:  # noqa: BLE001
+        result["window_exposed"] = None
+    result["window_minimized"] = bool(window.isMinimized())
     result["ok"] = True
 
     # --- 干净退出：验证无残留 ---
