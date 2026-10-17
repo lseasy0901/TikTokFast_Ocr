@@ -2,7 +2,9 @@
 
 > **阶段**：Phase 7（末阶段）
 > **日期**：2026-10-14 起草 / 2026-10-17 完成
-> **工作区**：`D:\TIikTok_Ocr\_wt_uilg`（分支 `feature/ui-liquid-glass`，HEAD `05a5ad6`）
+> **工作区**：`D:\TIikTok_Ocr\_wt_uilg`（分支 `feature/ui-liquid-glass`）
+> **被测代码状态**：`05a5ad6`（全部测量都在此状态上完成）；本阶段收尾提交 `ca5e521`
+> 只新增文档与测量脚本，**不改动任何生产代码**
 > **基线**：`d3b2c78`（`feature/release02-2.2.0`）—— 见 `REBASE_ADDENDUM.md`
 > **证据标签**：FACT / INFERENCE / UNKNOWN
 
@@ -116,7 +118,7 @@ Phase 0–6 的基线是 `f0418ea`（`feature/bare-stream-integration`），**�
 |---|---|
 | 脚本 | `tests/ui_redesign/ab_baseline_vs_ui.py` |
 | 探针 | `tests/ui_redesign/ui_baseline_probe.py`（**同一份源码**，两侧各放一份；基线侧是未跟踪文件） |
-| 对照 | `_wt_uilg_base`（detached @ `d3b2c78`）↔ `_wt_uilg`（HEAD `05a5ad6`） |
+| 对照 | `_wt_uilg_base`（detached @ `d3b2c78`）↔ `_wt_uilg`（被测状态 `05a5ad6`） |
 | 顺序 | base → ui → base → ui → base → ui（**交替**，抵消 T1） |
 | 平台 | offscreen（抵消 T2） |
 | 样本 | N=3，取中位数 |
