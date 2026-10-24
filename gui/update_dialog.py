@@ -160,7 +160,7 @@ class UpdateDialog(GlassDialog):
         self._version_label = QLabel(
             f"当前版本 {self._service.current_version()}　→　最新版本 {self._asset.Version}"
         )
-        versions.setStyleSheet(
+        self._version_label.setStyleSheet(
             f"QLabel {{ font-size: 13px; color: {Palette.TEXT}; background: none; }}"
         )
         self._version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
