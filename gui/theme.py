@@ -127,7 +127,10 @@ class Palette:
 
     # ---- 字体 ----
     FONT_FAMILY: str = '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei"'
-    MONO_FAMILY: str = 'Consolas, "Cascadia Mono", monospace'
+    #: 等宽栈必须带 CJK 回退：Consolas/Cascadia 无汉字，缺省回退是宋体，
+    #: 识别结果大字（#resultBox）会整段变衬线 —— 是全面板最"旧"的一处观感。
+    MONO_FAMILY: str = ('Consolas, "Cascadia Mono", '
+                        '"Microsoft YaHei UI", "Microsoft YaHei", monospace')
     FONT_SIZE: str = "12px"
     FONT_SIZE_SMALL: str = "11px"
 
@@ -391,6 +394,12 @@ QPushButton:hover {
 QPushButton:pressed {
     background-color: {PRESSED};
     color: {TEXT_DIM};
+}
+
+/* 键盘焦点环：Tab 到达时边框换强调色（FOCUS_RING=强调色）。
+   鼠标点击的瞬时 focus 一并生效，但边框变化足够克制不干扰。 */
+QPushButton:focus {
+    border-color: {FOCUS_RING};
 }
 
 QPushButton:disabled {
@@ -945,6 +954,33 @@ QStatusBar QLabel {
     background-color: {PRESSED};
 }
 
+/* 模式分段控件：胶囊容器 + 互斥选中片（选中片用强调色） */
+#audioSegment {
+    background-color: {INPUT_BG};
+    border: 1px solid {BORDER};
+    border-radius: {CONTROL_RADIUS}px;
+}
+
+#segmentBtn {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 12px;
+    min-height: 20px;
+    color: {TEXT_MUTED};
+}
+
+#segmentBtn:hover {
+    color: {TEXT};
+    background-color: {HOVER};
+}
+
+#segmentBtn:checked {
+    background-color: {ACCENT_DIM};
+    color: {ACCENT_TEXT};
+    font-weight: 600;
+}
+
 /* 右侧 OCR 面板：一条左细线分隔，不用卡片边框 */
 #ocrPanel {
     background-color: {DOCK_BG};
@@ -1036,6 +1072,10 @@ QStatusBar QLabel {
 /* 会话识别历史：无边框列表，选中用明度差 */
 /* 本次会话历史：面板里唯一可伸缩的区域，用一层很浅的内嵌底色把它标成
    "一块有边界的列表"，这样它在没有记录时是一处明确的空状态，而不是一条空白。 */
+#sessionList:focus {
+    border-color: {FOCUS_RING};
+}
+
 #sessionList {
     background-color: {INPUT_BG};
     border: 1px solid {BORDER_SOFT};

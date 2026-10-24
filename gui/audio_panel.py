@@ -17,7 +17,8 @@ AudioPanel：音频控制条（音量滑块 + 模式选择 + 状态显示）
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget
+from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel,
+                               QPushButton, QSlider, QWidget)
 
 from gui.widgets import IconButton, icon_pixmap
 from audio.models import AudioMode, AudioState
@@ -85,18 +86,25 @@ class AudioPanel(QWidget):
         self._slider.valueChanged.connect(self._on_slider)
         row.addWidget(self._slider)
 
-        self._mode_box = QComboBox()
-        self._mode_box.setObjectName("audioModeBox")
+        # 模式分段控件：两个互斥选项用分段按钮而不是下拉 —— 选项全部可见、
+        # 单击即切、选中态一眼可辨（LightC 设置页同款交互语汇）。
+        self._mode_box = QFrame()
+        self._mode_box.setObjectName("audioSegment")
+        seg_lay = QHBoxLayout(self._mode_box)
+        seg_lay.setContentsMargins(2, 2, 2, 2)
+        seg_lay.setSpacing(2)
+        self._mode_buttons: list[QPushButton] = []
         for text, _mode in _MODE_ITEMS:
-            self._mode_box.addItem(text)
-        # 宽度按内容自适应（Qt 最佳实践：AdjustToContents + 最少可见字符数），
-        # 不写死像素 —— "极速模式"/"同步模式"完整显示，未来新增更长名称的
-        # 模式也不会被截断或撑破布局。
-        self._mode_box.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToContents)
-        self._mode_box.setMinimumContentsLength(5)   # "极速模式" 4 字 + 余量
-        self._mode_box.setToolTip("极速模式（默认）：最新声音优先；同步模式：声音连贯优先")
-        self._mode_box.currentIndexChanged.connect(self._on_mode_index)
+            btn = QPushButton(text)
+            btn.setObjectName("segmentBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFocusPolicy(Qt.TabFocus)
+            btn.setToolTip("极速模式：最新声音优先；同步模式：声音连贯优先")
+            btn.clicked.connect(self._on_mode_clicked)
+            seg_lay.addWidget(btn)
+            self._mode_buttons.append(btn)
+        self._mode_buttons[0].setChecked(True)
         row.addWidget(self._mode_box)
 
         self._status = QLabel("音频 --")
@@ -127,6 +135,15 @@ class AudioPanel(QWidget):
                               else IconButton.SPEAKER, 16)))
         self._mute_btn.setToolTip("取消静音" if muted else "静音（点击图标）")
 
+    def _on_mode_clicked(self) -> None:
+        """分段按钮点击：保持互斥，向服务转发新选中的模式。"""
+        sender = self.sender()
+        if sender not in self._mode_buttons:
+            return
+        index = self._mode_buttons.index(sender)
+        if not self._building:
+            self.modeChanged.emit(_MODE_ITEMS[index][1])
+
     def _on_mode_index(self, index: int) -> None:
         if not self._building and 0 <= index < len(_MODE_ITEMS):
             self.modeChanged.emit(_MODE_ITEMS[index][1])
@@ -156,6 +173,7 @@ class AudioPanel(QWidget):
         for index, (_text, m) in enumerate(_MODE_ITEMS):
             if m is mode:
                 self._building = True
-                self._mode_box.setCurrentIndex(index)
+                for i, btn in enumerate(self._mode_buttons):
+                    btn.setChecked(i == index)
                 self._building = False
                 return

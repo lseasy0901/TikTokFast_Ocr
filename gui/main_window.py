@@ -596,9 +596,23 @@ class _ActivationOverlay(QWidget):
         self._activate_btn.show()
 
     # -- 呼吸动画生命周期 --------------------------------------------------
+    def set_suspended(self, suspended: bool) -> None:
+        """窗口最小化 / 完全被遮挡时挂起呼吸动画。
+
+        QGraphicsOpacityEffect 的重绘范围是整个品牌标签所在的遮罩区域，
+        动画跑一轮就是 2.4s × 60fps 的持续重绘；窗口反正看不见，
+        白烧 1~2.6% CPU（Phase 7 实测）。pause/resume 保留相位，
+        恢复时从断点继续而不是跳回起点。
+        """
+        if suspended:
+            self._anim.pause()
+        elif self.isVisible() and not self._anim.state():
+            self._anim.resume()
+
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
-        self._anim.start()
+        if not getattr(self, "_suspended", False):
+            self._anim.start()
 
     def hideEvent(self, event):  # noqa: N802
         self._anim.stop()
@@ -2208,6 +2222,9 @@ class MainWindow(QMainWindow):
             if getattr(self, "_fullscreen_action", None) is not None:
                 self._fullscreen_action.setText(
                     "退出全屏工作台" if self.isFullScreen() else "全屏工作台")
+            # 最小化时挂起未激活遮罩的呼吸动画（60fps 常驻重绘白烧 CPU）
+            if getattr(self, "_activation_overlay", None) is not None:
+                self._activation_overlay.set_suspended(self.isMinimized())
 
     # ------------------------------------------------------------------
     # 直播间历史（数据层见 stream/history.py，UI 见 gui/history_panel.py）
