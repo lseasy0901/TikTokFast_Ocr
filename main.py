@@ -173,14 +173,14 @@ def main() -> int:
     # 接手更新并结束进程）。
     _velopack_bootstrap()
 
-    # 配置日志（DEBUG 级别，便于排查 GUI 黑屏）
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format="[%(asctime)s %(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    # 日志与崩溃捕获(2026-10-25):UTF-8 控制台+滚动文件落盘
+    # (%LOCALAPPDATA%/LiveLens/logs/),未捕获异常(主线程+子线程)写崩溃报告。
+    from utils.logger import install_crash_hooks, setup_logging
+
+    log_path = setup_logging(level=logging.DEBUG)
+    install_crash_hooks()
     logger = logging.getLogger("DouyinLowLatencyViewer")
-    logger.info("启动 Douyin Low Latency Stream Viewer")
+    logger.info("启动 Douyin Low Latency Stream Viewer(日志:%s)", log_path)
 
     # 更新状态机（Phase 4B）。必须在 Qt 之前，理由见 _advance_update_state。
     from utils import update_state

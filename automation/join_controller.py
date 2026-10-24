@@ -25,6 +25,9 @@ from automation.win32 import (
     click_point,
     find_game_window,
     is_foreground,
+    process_elevation,
+    self_elevation,
+    window_pid,
 )
 
 logger = logging.getLogger("DouyinLowLatencyViewer.automation.join_controller")
@@ -97,6 +100,20 @@ class JoinController(QObject):
         geo = client_geometry(win.hwnd)
         if geo is None:
             self.finished.emit(JoinResult(False, "游戏窗口无效"))
+            return False
+
+        # UIPI 前置(2026-10-25 补):游戏被反作弊以管理员运行而本进程
+        # 普通权限时,SendInput 会被系统静默拒绝(实测"输入系统拒绝")。
+        # 提前给出能看懂的原因,而不是序列开始后才莫名失败。
+        game_pid = window_pid(win.hwnd)
+        game_elevated = process_elevation(game_pid) if game_pid else None
+        if game_elevated and not self_elevation():
+            self.finished.emit(JoinResult(
+                False,
+                "游戏以管理员权限运行(反作弊要求),LiveLens 需以管理员"
+                "身份运行才能自动点击;请右键以管理员身份重新启动"))
+            logger.warning("[JOIN] UIPI 前置拦截:游戏 pid=%s 提权,自身普通权限",
+                           game_pid)
             return False
 
         # 宽高比漂移检测(布局变了比例点可能不准;警告不阻断)

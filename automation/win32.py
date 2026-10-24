@@ -23,6 +23,7 @@ logger = logging.getLogger("DouyinLowLatencyViewer.automation.win32")
 __all__ = [
     "WindowInfo", "find_game_window", "client_geometry",
     "activate_window", "is_foreground", "click_point", "cursor_pos",
+    "process_elevation", "self_elevation", "window_pid",
 ]
 
 user32 = ctypes.windll.user32
@@ -233,3 +234,44 @@ def window_from_point(x: int, y: int) -> int:
     """物理坐标下的顶层窗口句柄(校准落点验证用)。"""
     pt = wt.POINT(x, y)
     return user32.WindowFromPoint(pt)
+
+
+# ----------------------------------------------------------------------
+# 权限检测(UIPI 前置)
+# ----------------------------------------------------------------------
+def process_elevation(pid: int):
+    """进程是否以管理员(高完整性)运行;查询失败返回 None(不猜)。"""
+    advapi32 = ctypes.windll.advapi32
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    TOKEN_QUERY = 0x0008
+    TokenElevation = 20
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        token = wt.HANDLE()
+        if not advapi32.OpenProcessToken(h, TOKEN_QUERY, ctypes.byref(token)):
+            return None
+        try:
+            elev = ctypes.c_ulong()
+            length = ctypes.c_ulong()
+            if not advapi32.GetTokenInformation(
+                    token, TokenElevation, ctypes.byref(elev), 4,
+                    ctypes.byref(length)):
+                return None
+            return bool(elev.value)
+        finally:
+            kernel32.CloseHandle(token)
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def window_pid(hwnd: int) -> int:
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
+def self_elevation() -> bool:
+    """本进程是否管理员(对自己查询不会失败;极端失败按普通权限)。"""
+    return bool(process_elevation(kernel32.GetCurrentProcessId()))

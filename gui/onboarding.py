@@ -1009,7 +1009,10 @@ class GuideSpotlight(QObject):
         for target in self._targets:
             if not target.isVisible():
                 continue
-            top_left = target.mapTo(self._window, QPoint(0, 0))
+            # 目标控件个别会被 reparent 到弹层(不在主窗口层级内),
+            # mapTo(非父级) 会告警;经 global 中转对任意控件合法。
+            top_left = self._window.mapFromGlobal(
+                target.mapToGlobal(QPoint(0, 0)))
             holes.append(
                 QRect(top_left, target.size()).adjusted(
                     -_HOLE_PADDING, -_HOLE_PADDING, _HOLE_PADDING, _HOLE_PADDING))

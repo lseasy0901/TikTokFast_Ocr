@@ -19,6 +19,13 @@
 
 import csv
 import os
+
+import pytest
+
+# 本文件是自研 check 风格脚本(window 由本地 main 构造),pytest 收集会缺
+# 夹具报错;显式声明仅直跑:python tests/test_copy_log_export.py
+pytestmark = pytest.mark.skip(
+    reason="自研脚本型测试,请直跑:python tests/test_copy_log_export.py")
 import re
 import sys
 import tempfile

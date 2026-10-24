@@ -1,0 +1,36 @@
+# 最小持续集成:每次 push/PR 跑"不依赖真实桌面/网络"的单元层。
+# 直跑型(自研 check 脚本)与真实输入验收(input_boundary_live)不在此列,
+# 运行方式见 README「测试」。
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Unit tests (client, offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          pytest tests/automation/test_join_unit.py tests/test_clipboard.py tests/test_copy_log_export.py tests/test_phase_ui3_activation_settings.py -q
+      - name: License server tests (stale-ACTIVE regression)
+        env:
+          # susi_helper.exe 与 test_rsa_key.pem 均已入库,可离线跑
+          DATABASE_URL: sqlite:///./ci_license_server.db
+        run: |
+          cd license_server
+          pip install -r requirements.txt
+          pytest tests/test_stale_active_renewal.py -q

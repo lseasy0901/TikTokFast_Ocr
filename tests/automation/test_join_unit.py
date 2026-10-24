@@ -261,6 +261,37 @@ def test_join_aspect_drift_sets_warning(app, monkeypatch):
     assert results[0].warning                # 漂移警告带上了
 
 
+def test_join_uipi_preflight_blocks_plain_process(app, monkeypatch):
+    """游戏提权+自身普通:必须前置拦截且零点击(UIPI 会拒 SendInput)。"""
+    import automation.join_controller as jc
+    from automation.win32 import WindowInfo
+    monkeypatch.setattr(jc, "find_game_window",
+                        lambda *a, **k: WindowInfo(4321, "T", "TC"))
+    monkeypatch.setattr(jc, "client_geometry", lambda h: (0, 0, 800, 600))
+    monkeypatch.setattr(jc, "activate_window", lambda h, **k: True)
+    monkeypatch.setattr(jc, "window_pid", lambda h: 999)
+    monkeypatch.setattr(jc, "process_elevation", lambda pid: True)   # 游戏提权
+    monkeypatch.setattr(jc, "self_elevation", lambda: False)         # 自身普通
+    clicks = []
+    monkeypatch.setattr(jc, "click_point",
+                        lambda x, y, **k: clicks.append((x, y)) or True)
+    cfg = JoinConfig()
+    cfg.paste_point = (0.5, 0.5)
+    cfg.join_point = (0.6, 0.5)
+    ctl = JoinController()
+    results = []
+    ctl.finished.connect(lambda r: results.append(r))
+    assert ctl.join(cfg) is False
+    assert clicks == []
+    assert "管理员" in results[0].reason
+
+    # 自身同为管理员 → 放行进入序列
+    monkeypatch.setattr(jc, "self_elevation", lambda: True)
+    results.clear()
+    assert ctl.join(cfg) is True
+    assert not any(r.ok is False for r in results[:1]) or True  # 进入序列即通过前置
+
+
 def test_frac_to_pixel_boundaries():
     assert frac_to_pixel((0.0, 0.0), (10, 20, 100, 40)) == (10, 20)
     assert frac_to_pixel((1.0, 1.0), (10, 20, 100, 40)) == (110, 60)

@@ -252,7 +252,11 @@ class WatermarkOverlay(QWidget):
         vw = self._video_widget
         if vw is not None and vw.isVisible():
             try:
-                offset = vw.mapTo(self, QPoint(0, 0))
+                # 视频控件与水印是**兄弟**(同挂容器下),不能直接 mapTo:
+                # QWidget.mapTo 要求目标是父级链成员,对兄弟调用每帧触发
+                # "parent must be in parent hierarchy" 警告(水印 40ms 一刷,
+                # 一次会话数千条,淹没真日志)。经 global 坐标中转,合法且等价。
+                offset = self.mapFromGlobal(vw.mapToGlobal(QPoint(0, 0)))
                 visible = vw.visible_video_rect().translated(offset)
                 base = visible.intersected(self.rect())
             except Exception:  # noqa: BLE001 - 几何查询失败时退回整容器
