@@ -448,9 +448,16 @@ def lookup_license(db, license_key: str) -> dict:
             "FROM authorizations WHERE id = :i"
         ), {"i": row.authorization_id}).first()
         if arow:
+            # 状态展示与设备页同一口径（_device_state 按时间判定）：
+            # 库里的 state 从不惰性翻转，过期设备的 state 仍是 ACTIVE，
+            # 直接回显会把已过期设备标成「有效授权」误导运维判断。
+            if (arow.state or "").upper() == "REVOKED":
+                st = "revoked"
+            else:
+                st = _device_state(arow.expires_at, now_utc())
             device = {
                 "device_id": arow.device_id,
-                "state": arow.state.lower(),
+                "state": st,
                 "expires_at_bj": to_bj(arow.expires_at),
                 "activated_at_bj": to_bj(arow.activated_at),
             }

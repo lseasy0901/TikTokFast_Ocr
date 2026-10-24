@@ -145,11 +145,21 @@ class RedemptionService:
             license.duration_days
         )
 
+        # STEP 3.2: SQLite 读回的 datetime 不带时区（写入侧统一 UTC）。
+        # 与 server_time（aware）比较前必须补上 UTC，否则
+        # TypeError: can't compare offset-naive and offset-aware datetimes。
+        # 提到快照之前做：保证事件流的 before/after 时区一致。
+        if (authorization.expires_at is not None
+                and authorization.expires_at.tzinfo is None):
+            authorization.expires_at = authorization.expires_at.replace(
+                tzinfo=timezone.utc)
+
         # STEP 3.5 (Phase 3): capture pre-mutation state for the audit event.
         # The event itself is inserted below and committed in the SAME
         # transaction as the License/Authorization mutation (STEP 6).
         auth_state_before = None if created else authorization.state
         expires_before = None if created else authorization.expires_at
+        stale_active = False  # 名义 ACTIVE 但已过期（见 STEP 4 的重启分支）
 
         # STEP 4: Update Authorization based on its current state
         if created:
@@ -159,8 +169,22 @@ class RedemptionService:
             # duration a second time and grant new devices 2x their key.
             pass
         elif authorization.state == AuthorizationState.ACTIVE:
-            # Extend from current expiry (accumulation)
-            authorization.expires_at = authorization.expires_at + timedelta(days=license.duration_days)
+            # 续期。但「名义 ACTIVE、实际已过期」的授权必须视为过期重启：
+            # 状态从不惰性翻转（validate/stats 都是只读比较时间），设备
+            # 过期后 state 会一直停在 ACTIVE。若照旧从 expires_at 累加，
+            # 新有效期 = 旧过期日 + duration 仍然在过去 —— 签出的
+            # SignedLicense 一到手就是过期的（2026-10-24 真实事故：
+            # 设备 10-17 到期，10-24 兑换天卡得到 10-18 到期）。
+            if (authorization.expires_at is None
+                    or authorization.expires_at <= server_time):
+                authorization.activated_at = server_time
+                authorization.expires_at = server_time + timedelta(
+                    days=license.duration_days)
+                stale_active = True
+            else:
+                # Extend from current expiry (accumulation)
+                authorization.expires_at = authorization.expires_at + timedelta(days=license.duration_days)
+                stale_active = False
         elif authorization.state == AuthorizationState.EXPIRED:
             # Reactivate from server_time (restart)
             authorization.state = AuthorizationState.ACTIVE
@@ -182,9 +206,9 @@ class RedemptionService:
 
         if created:
             event_type, result = "first", "new"
-        elif auth_state_before == AuthorizationState.ACTIVE:
+        elif auth_state_before == AuthorizationState.ACTIVE and not stale_active:
             event_type, result = "renewal", "extend"
-        else:  # EXPIRED -> restart
+        else:  # EXPIRED（或名义 ACTIVE 实际已过期）-> restart
             event_type, result = "renewal", "reset"
         _event_stmt = (
             _sqlite_insert(RedemptionEvent)
