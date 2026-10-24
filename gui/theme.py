@@ -262,6 +262,26 @@ _TONE_DOT = {
 }
 
 
+def solid_color(color: str, base: str) -> str:
+    """把带 alpha 的颜色合成到 base 上，返回**完全不透明**的 hex。
+
+    用途：悬浮卡片/弹层这类"底下必须是实底"的表面 —— 0.9x 的 rgba 在
+    内容复杂的区域会透底变得不可读（2026-10-24 诊断弹层实测）。
+    """
+    top, bottom = QColor(color), QColor(base)
+    if not top.isValid() or not bottom.isValid():
+        return color
+    a = top.alphaF()
+    if a >= 1.0:
+        return top.name()
+    blended = QColor(
+        round(top.redF() * a + bottom.redF() * (1 - a)),
+        round(top.greenF() * a + bottom.greenF() * (1 - a)),
+        round(top.blueF() * a + bottom.blueF() * (1 - a)),
+    )
+    return blended.name()
+
+
 def tone_color(tone: str) -> str:
     """取状态语气对应的圆点颜色。"""
     return _TONE_DOT.get(tone, _TONE_DOT["neutral"])
@@ -1136,13 +1156,8 @@ QStatusBar QLabel {
     font-family: {MONO_FAMILY};
 }
 
-/* 「诊断」弹层：状态栏上方悬浮的指标卡（默认收纳四组性能指标） */
-#perfPopup {
-    background-color: {POPUP_BG};
-    border: 1px solid {BORDER_STRONG};
-    border-radius: {RADIUS}px;
-}
-
+/* 「诊断」弹层：状态栏上方悬浮的指标卡。背景由控件自身样式提供
+   （solid_color 合成的不透明色），这里只管标题与分隔线 */
 #perfPopupTitle {
     color: {TEXT_MUTED};
     font-size: {FONT_SIZE_SMALL};

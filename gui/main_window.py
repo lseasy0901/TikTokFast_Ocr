@@ -50,6 +50,7 @@ from PySide6.QtCore import (QEvent, QEasingCurve, QObject, QPoint,
 from PySide6.QtGui import QAction, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QGridLayout,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -1516,19 +1517,11 @@ class MainWindow(QMainWindow):
             ("OCR", (("ocr_cost", "耗时 —", "OCR 单次耗时：当前无测量源"),
                      ("ocr_frames", "帧数 —", "本次会话识别次数"))),
         )
-        # 组与组之间插一条细分隔线：四组指标在没有分隔时会连成一整行密集字符串，
-        # 用户分不清哪些数字属于哪一段（Phase UI-3.1）。
+        # 四个组容器保存引用：常驻(单行+分隔线)与弹层(2×2 网格)两种
+        # 布局共用同一批组控件，切换时由 _relayout_perf 重排。
+        self._perf_groups = [self._perf_group(name, items)
+                             for name, items in groups]
         self._perf_bar_widget = QWidget()
-        perf_lay = QHBoxLayout(self._perf_bar_widget)
-        perf_lay.setContentsMargins(0, 0, 0, 0)
-        perf_lay.setSpacing(8)
-        for index, (name, items) in enumerate(groups):
-            if index:
-                divider = QFrame()
-                divider.setObjectName("perfDivider")
-                divider.setFixedWidth(1)
-                perf_lay.addWidget(divider)
-            perf_lay.addWidget(self._perf_group(name, items))
         self._perf_bar_widget.hide()
 
         # 诊断弹层（Qt.Popup：点击外部自动关闭）；指标容器平时住在这里
@@ -1537,11 +1530,13 @@ class MainWindow(QMainWindow):
         self._perf_popup.setObjectName("perfPopup")
         popup_lay = QVBoxLayout(self._perf_popup)
         popup_lay.setContentsMargins(1, 1, 1, 1)
+        popup_lay.setSpacing(2)
         title = QLabel("诊断 · 性能指标")
         title.setObjectName("perfPopupTitle")
         popup_lay.addWidget(title)
         popup_lay.addWidget(self._perf_bar_widget)
         self._perf_popup.hide()
+        self._apply_perf_popup_qss()
 
         # 「诊断」入口：一枚低调的状态栏按钮（不与授权/OCR 状态抢注意力）
         self._perf_toggle_btn = QPushButton("诊断")
@@ -1566,6 +1561,59 @@ class MainWindow(QMainWindow):
         # 统一 toast 通知（右下角浮出；连接成败 / 复制 / 导出等共用）
         self._toast = Toast(self)
         self._set_perf_pinned(bool(get_pref(PERF_PINNED, False)), persist=False)
+
+    def _apply_perf_popup_qss(self) -> None:
+        """诊断弹层背景用 solid_color 合成的不透明色。
+
+        POPUP_BG 0.97 的 rgba 在视频工具条这种内容复杂的区域会透底，
+        指标和工具栏控件糊在一起不可读 —— 弹层底下必须是实底。
+        主题切换时重设一次。
+        """
+        solid = theme.solid_color(Palette.POPUP_BG, Palette.APP_BG)
+        self._perf_popup.setStyleSheet(
+            f"#perfPopup {{ background-color: {solid};"
+            f" border: 1px solid {Palette.BORDER_STRONG};"
+            f" border-radius: {Metrics.CARD_RADIUS}px; }}")
+
+    def _relayout_perf(self, pinned: bool) -> None:
+        """指标容器重排：常驻=状态栏单行(带分隔线)；弹层=2×2 网格卡。
+
+        一条 900px 的横行在弹层里既难读又会压到工具栏控件；
+        网格卡约 420×130，一眼可读。
+        """
+        widget = self._perf_bar_widget
+        old = widget.layout()
+        if old is not None:
+            # 1) 逐项取出组控件（保活；分隔线随旧布局一起丢弃）
+            while old.count():
+                item = old.takeAt(0)
+                child = item.widget()
+                if child is not None:
+                    child.setParent(None)
+            # 2) 旧布局本体必须从 widget 上卸掉，否则新布局装不进去
+            #    （"already has a layout"，组会被加进孤儿布局——实测踩过）。
+            #    Qt 没有卸载 API：转移到临时容器再 deleteLater。
+            tmp = QWidget()
+            tmp.setLayout(old)
+            tmp.deleteLater()
+        if pinned:
+            lay = QHBoxLayout(widget)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(8)
+            for index, group in enumerate(self._perf_groups):
+                if index:
+                    divider = QFrame()
+                    divider.setObjectName("perfDivider")
+                    divider.setFixedWidth(1)
+                    lay.addWidget(divider)
+                lay.addWidget(group)
+        else:
+            lay = QGridLayout(widget)
+            lay.setContentsMargins(12, 4, 12, 8)
+            lay.setHorizontalSpacing(20)
+            lay.setVerticalSpacing(2)
+            for index, group in enumerate(self._perf_groups):
+                lay.addWidget(group, index // 2, index % 2)
 
     def _toggle_perf_popup(self) -> None:
         """「诊断」按钮：在按钮上方弹出 / 收起指标弹层。
@@ -1602,6 +1650,7 @@ class MainWindow(QMainWindow):
         widget = self._perf_bar_widget
         if pinned:
             self._perf_popup.hide()
+            self._relayout_perf(True)
             self.statusBar().insertPermanentWidget(
                 0, widget)  # 指标放最左：与"常驻读数"的旧位置一致
             widget.show()
@@ -1610,6 +1659,7 @@ class MainWindow(QMainWindow):
         else:
             if widget.parent() is not self._perf_popup:
                 self._perf_popup.layout().insertWidget(1, widget)
+            self._relayout_perf(False)
             widget.setVisible(self._perf_popup.isVisible())
             self._perf_toggle_btn.setToolTip(
                 "性能指标：延迟 / 帧率 / 渲染耗时 / OCR")
@@ -1624,6 +1674,8 @@ class MainWindow(QMainWindow):
         """
         theme.set_theme(name)
         theme.apply_theme()
+        if getattr(self, "_perf_popup", None) is not None:
+            self._apply_perf_popup_qss()
         if getattr(self, "_backdrop", None) == "acrylic":
             try:
                 theme.enable_backdrop(int(self.winId()), "acrylic")
