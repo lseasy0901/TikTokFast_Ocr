@@ -1568,22 +1568,30 @@ class MainWindow(QMainWindow):
         self._set_perf_pinned(bool(get_pref(PERF_PINNED, False)), persist=False)
 
     def _toggle_perf_popup(self) -> None:
-        """「诊断」按钮：在按钮上方弹出 / 收起指标弹层。"""
+        """「诊断」按钮：在按钮上方弹出 / 收起指标弹层。
+
+        必须先 show 再取尺寸定位：隐藏状态下指标容器尚未布局，
+        height()≈0，按它算出的 y 会把弹层定位到按钮正下方 —— 内容
+        撑开后整个垂到窗口外（2026-10-24 用户实测）。
+        """
         popup = self._perf_popup
         if popup.isVisible():
             popup.close()
             return
         # 弹层模式：容器上次可能随"常驻→弹层"切换被 hide 过，弹出前拉起
         self._perf_bar_widget.setVisible(True)
-        popup.adjustSize()
         btn = self._perf_toggle_btn
-        pos = btn.mapToGlobal(QPoint(
-            0, -(popup.height() + 8)))
-        # 右缘对齐按钮右缘，避免弹层往左铺出屏幕
-        x = min(pos.x(),
-                self.screen().geometry().right() - popup.width() - 8)
-        popup.move(max(8, x), pos.y())
-        popup.show()
+        popup.show()               # 先显示拿到真实布局
+        popup.adjustSize()
+        anchor = btn.mapToGlobal(QPoint(0, 0))
+        screen = btn.screen().availableGeometry()
+        # 右缘对齐按钮右缘；整体夹进按钮所在屏幕的可用区（避开任务栏）
+        x = max(screen.left() + 8,
+                min(anchor.x() + btn.width() - popup.width(),
+                    screen.right() - popup.width() - 8))
+        y = max(screen.top() + 8, anchor.y() - popup.height() - 8)
+        popup.move(x, y)
+        popup.raise_()
 
     def _set_perf_pinned(self, pinned: bool, persist: bool = True) -> None:
         """常驻显示指标（True）或收进诊断弹层（False，默认）。

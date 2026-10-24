@@ -17,8 +17,8 @@ AudioPanel：音频控制条（音量滑块 + 模式选择 + 状态显示）
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QComboBox, QFrame, QHBoxLayout, QLabel,
-                               QPushButton, QSlider, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout,
+                               QLabel, QPushButton, QSlider, QWidget)
 
 from gui.widgets import IconButton, icon_pixmap
 from audio.models import AudioMode, AudioState
@@ -94,6 +94,10 @@ class AudioPanel(QWidget):
         seg_lay.setContentsMargins(2, 2, 2, 2)
         seg_lay.setSpacing(2)
         self._mode_buttons: list[QPushButton] = []
+        # 互斥组：普通布局里的可勾选按钮不会自动互斥（QSS 只管观感），
+        # 缺了这组就会出现「两个模式同时高亮」。
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.setExclusive(True)
         for text, _mode in _MODE_ITEMS:
             btn = QPushButton(text)
             btn.setObjectName("segmentBtn")
@@ -102,8 +106,10 @@ class AudioPanel(QWidget):
             btn.setFocusPolicy(Qt.TabFocus)
             btn.setToolTip("极速模式：最新声音优先；同步模式：声音连贯优先")
             btn.clicked.connect(self._on_mode_clicked)
+            self._mode_group.addButton(btn)
             seg_lay.addWidget(btn)
             self._mode_buttons.append(btn)
+        self._mode_index = 0
         self._mode_buttons[0].setChecked(True)
         row.addWidget(self._mode_box)
 
@@ -136,12 +142,13 @@ class AudioPanel(QWidget):
         self._mute_btn.setToolTip("取消静音" if muted else "静音（点击图标）")
 
     def _on_mode_clicked(self) -> None:
-        """分段按钮点击：保持互斥，向服务转发新选中的模式。"""
+        """分段按钮点击：互斥由 QButtonGroup 保证，这里只在模式变化时转发。"""
         sender = self.sender()
         if sender not in self._mode_buttons:
             return
         index = self._mode_buttons.index(sender)
-        if not self._building:
+        if not self._building and index != self._mode_index:
+            self._mode_index = index
             self.modeChanged.emit(_MODE_ITEMS[index][1])
 
     def _on_mode_index(self, index: int) -> None:
@@ -175,5 +182,6 @@ class AudioPanel(QWidget):
                 self._building = True
                 for i, btn in enumerate(self._mode_buttons):
                     btn.setChecked(i == index)
+                self._mode_index = index
                 self._building = False
                 return
