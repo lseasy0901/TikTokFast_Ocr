@@ -25,6 +25,11 @@ logger = logging.getLogger("DouyinLowLatencyViewer.automation.join_config")
 __all__ = ["JoinConfig", "default_config_path", "Point"]
 
 _FILENAME = "join_config.json"
+
+#: 合法热键名白名单(与 automation.hotkey.VK_NAMES 保持同步;在那里定义
+#: 会引入 Qt 依赖,配置层只需要名字集合)。load 时校验,非法名回默认,
+#: 不让坏值存到运行时才炸。
+HOTKEY_CHOICES = frozenset(f"F{i}" for i in range(1, 13))
 #: 校准点:相对游戏窗口**客户区**的比例坐标 (fx, fy),0..1
 Point = Tuple[float, float]
 
@@ -126,7 +131,8 @@ class JoinConfig:
                 return cfg
             if isinstance(data.get("enabled"), bool):
                 cfg.enabled = data["enabled"]
-            if isinstance(data.get("hotkey"), str):
+            if (isinstance(data.get("hotkey"), str)
+                    and data["hotkey"] in HOTKEY_CHOICES):
                 cfg.hotkey = data["hotkey"]
             for key, attr in (("window_class", "window_class"),
                               ("window_title", "window_title")):
