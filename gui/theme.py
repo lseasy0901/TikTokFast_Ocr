@@ -86,8 +86,6 @@ class Palette:
     SCRIM: str = "rgba(10, 12, 14, 0.86)"
     #: 主操作（强调色实心按钮）上的文字色
     ACCENT_INK: str = "#062330"
-    #: 玻璃卡对话框在 Acrylic 生效时的卡面填充（暗主题深磨砂/浅主题白磨砂）
-    GLASS_CARD_FILL: str = "rgba(32, 35, 40, 0.72)"
 
     # ---- 边框：低对比，1px + 顶部微亮边区分层级 ----
     BORDER: str = "rgba(255, 255, 255, 0.10)"
@@ -156,7 +154,6 @@ _LIGHT_OVERRIDES = {
     "PRESSED": "rgba(0, 0, 0, 0.10)",
     "DISABLED_BG": "rgba(0, 0, 0, 0.04)",
     "CHROME": "rgba(255, 255, 255, 0.50)",
-    "GLASS_CARD_FILL": "rgba(255, 255, 255, 0.60)",
     "BORDER": "rgba(0, 0, 0, 0.10)",
     "BORDER_TOP": "rgba(0, 0, 0, 0.14)",
     "BORDER_SOFT": "rgba(0, 0, 0, 0.06)",
@@ -214,20 +211,6 @@ def set_theme(name: str) -> None:
     for token in _LIGHT_OVERRIDES:
         if token not in overrides and hasattr(Palette, token):
             setattr(Palette, token, _DARK_DEFAULTS[token])
-
-
-#: set_theme 时同步维护的别名（widgets.glass_dialog_qss 的 f-string 用）
-def _sync_glass_alias() -> None:
-    Palette.GlassCardFill = Palette.GLASS_CARD_FILL
-
-
-_sync_glass_alias()
-_orig_set_theme = set_theme
-
-
-def set_theme(name: str) -> None:  # noqa: F811 - 包装原实现以同步别名
-    _orig_set_theme(name)
-    _sync_glass_alias()
 
 
 #: 深色主题出厂值（模块导入时抓快照；set_theme 用它还原）

@@ -577,10 +577,6 @@ QDialog {{ background: transparent; }}
     border: 1px solid {Palette.BORDER_STRONG};
     border-radius: {Metrics.CARD_RADIUS}px;
 }}
-/* Acrylic 生效：卡片底色改半透明，桌面模糊透进卡面 —— 真·玻璃浮层 */
-#glassCard[acrylic="true"] {{
-    background-color: {Palette.GlassCardFill};
-}}
 #glassCard QLabel {{ background: none; }}
 #glassCardTitle {{
     font-size: 14px; font-weight: 600; color: {Palette.TEXT};
@@ -599,9 +595,10 @@ class GlassDialog(QDialog):
 
     - FramelessWindowHint + WA_TranslucentBackground：窗口本体只画一张
       圆角卡片 + 投影，四角透明。
-    - 显示后尝试一次 DWM Acrylic：成功时卡片底色转半透明（桌面模糊透进
-      卡面），失败保持近不透明 —— 不做视觉欺骗。WA_TranslucentBackground
-      在构造期设置、DWM 在显示后设置，顺序天然成立。
+    - **刻意不启用窗口级 Acrylic**：卡片四周必须留出投影边距，而 Acrylic
+      材质在深色下本身是发灰白的 —— 边距处露出的就是一层灰白图层
+      （2026-10-24 用户实测截图指认）。边距改为全透明，露出主窗口，
+      深度感交给投影，观感与 Win11 标准浮层一致。
     - 整卡可拖动；右上角自绘关闭；Esc 走 QDialog 默认 reject。
       子类往 :attr:`card_layout` 里放内容即可。
     """
@@ -613,7 +610,6 @@ class GlassDialog(QDialog):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
         self._drag_pos: QPoint | None = None
-        self._acrylic_done = False
 
         outer = QVBoxLayout(self)
         # 外圈留白给投影；底部多留一点（视觉重心）
@@ -664,20 +660,6 @@ class GlassDialog(QDialog):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         self._drag_pos = None
         super().mouseReleaseEvent(event)
-
-    # -- Acrylic（一次） --------------------------------------------------
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        if not self._acrylic_done:
-            self._acrylic_done = True
-            try:
-                ok = theme.enable_backdrop(int(self.winId()), "acrylic")
-            except Exception:  # noqa: BLE001 - 回退为不透明卡片
-                ok = False
-            if ok:
-                self._card.setProperty("acrylic", "true")
-                self._card.style().unpolish(self._card)
-                self._card.style().polish(self._card)
 
 
 

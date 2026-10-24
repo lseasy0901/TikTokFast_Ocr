@@ -167,10 +167,7 @@ class ActivationDialog(GlassDialog):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(10)
 
-        title = QLabel("激活 LiveLens")
-        title.setObjectName("actTitle")
-        col.addWidget(title)
-
+        # 卡片头已有「激活 LiveLens」（GlassDialog 基类），内层不再重复
         hint = QLabel("输入许可证密钥后点击「立即激活」。密钥与设备绑定，激活后凭据保存在本机。")
         hint.setObjectName("actHint")
         hint.setWordWrap(True)
