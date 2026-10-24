@@ -61,21 +61,25 @@ class Palette:
     """
 
     # ---- 背景层级 ----
+    # 磨砂玻璃的关键（参照 LightC 液态玻璃观感，用户 2026-10-24 指认）：
+    # 表面填充用**白色低透明度**而不是暗色半透明 —— 叠在窗口级 Acrylic
+    # 模糊上，面板本身就会"亮起来"成为磨砂玻璃；无 Acrylic 的回退机器上，
+    # 白色低透明叠在 APP_BG 上仍是"比底亮一档的面板"，层级不变。
     APP_BG: str = "#101214"          # 窗口底色（中性石墨）
-    CHROME_BG: str = "#17191C"       # 标题栏 / 状态栏
-    DOCK_BG: str = "rgba(32, 35, 39, 0.72)"   # 玻璃面板基色（半透明）
-    DOCK_HEADER_BG: str = "rgba(255, 255, 255, 0.04)"  # 玻璃面板标题条
+    CHROME_BG: str = "rgba(255, 255, 255, 0.04)"  # 标题栏 / 状态栏
+    DOCK_BG: str = "rgba(255, 255, 255, 0.065)"   # 磨砂面板基色
+    DOCK_HEADER_BG: str = "rgba(255, 255, 255, 0.05)"  # 磨砂面板标题条
     PANEL_BG: str = "#0C0E10"        # 预览区（最暗，让画面成为焦点）
-    POPUP_BG: str = "rgba(25, 27, 31, 0.96)"  # 下拉弹层（悬浮玻璃，更实）
-    INPUT_BG: str = "rgba(10, 12, 14, 0.60)"  # 输入框（比玻璃更深，形成凹陷）
-    ELEVATED: str = "#202327"        # 面板之上的控件
-    HOVER: str = "rgba(255, 255, 255, 0.07)"
-    PRESSED: str = "rgba(255, 255, 255, 0.11)"
-    DISABLED_BG: str = "#151719"
+    POPUP_BG: str = "rgba(36, 39, 44, 0.97)"  # 下拉弹层（悬浮面，更实更暗）
+    INPUT_BG: str = "rgba(0, 0, 0, 0.28)"     # 输入框（凹井：比面板暗一档）
+    ELEVATED: str = "rgba(255, 255, 255, 0.10)"   # 面板之上的控件（更亮一档）
+    HOVER: str = "rgba(255, 255, 255, 0.08)"
+    PRESSED: str = "rgba(0, 0, 0, 0.22)"
+    DISABLED_BG: str = "rgba(255, 255, 255, 0.04)"
     CHIP_BG: str = "transparent"
-    #: 「框架层」（标题栏/地址栏/性能栏）：半透明深色 —— Acrylic 生效时
-    #: 让系统模糊透出来；回退时叠在 APP_BG 上成为普通深色框架。
-    CHROME: str = "rgba(13, 15, 17, 0.66)"
+    #: 「框架层」（标题栏/地址栏/性能栏）：白色低透明 —— Acrylic 生效时是
+    #: 磨砂条，回退时是比底色亮一点点的深灰条。
+    CHROME: str = "rgba(255, 255, 255, 0.04)"
     #: 视频井：最暗的一层，让画面成为绝对视觉中心
     WELL: str = "#090B0C"
     #: 浮层遮罩：盖在视频井之上的半透明深色（未激活遮罩用它压暗画面）
@@ -144,7 +148,11 @@ class Metrics:
     DOCK_MAX_WIDTH: int = 380
     SPLITTER_HANDLE: int = 8
     RESIZE_MARGIN: int = 5          # 无边框窗口的边角拖拽热区
-    RADIUS: int = 6
+    RADIUS: int = 10                # 面板/弹层圆角（磨砂玻璃语言：大圆角）
+    #: 控件圆角（按钮/输入框/下拉）：比面板小一档
+    CONTROL_RADIUS: int = 8
+    #: 悬浮卡片圆角（OCR 面板等"浮在窗口上的卡"）
+    CARD_RADIUS: int = 12
     #: 右侧 OCR 面板宽度（Studio Minimal 工作台）。DOCK_WIDTH_RIGHT 是
     #: 旧三栏布局的常量，保留以免影响其它引用。
     OCR_PANEL_WIDTH: int = 310
@@ -208,7 +216,7 @@ QToolTip {
     background-color: {POPUP_BG};
     color: {TEXT};
     border: 1px solid {BORDER_STRONG};
-    border-radius: 4px;
+    border-radius: 6px;
     padding: 4px 8px;
     font-size: {FONT_SIZE_SMALL};
 }
@@ -241,7 +249,7 @@ QToolTip {
 #titleIconBtn {
     background: transparent;
     border: 1px solid transparent;
-    border-radius: {RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
     padding: 0px;
     min-height: 0px;
     min-width: 0px;
@@ -369,7 +377,7 @@ QPushButton {
     background-color: {ELEVATED};
     border: 1px solid {BORDER};
     border-top: 1px solid {BORDER_TOP};
-    border-radius: 5px;
+    border-radius: {CONTROL_RADIUS}px;
     color: {TEXT};
     padding: 4px 12px;
     min-height: 24px;
@@ -455,7 +463,7 @@ QLineEdit {
     background-color: {INPUT_BG};
     border: 1px solid {BORDER};
     border-bottom: 1px solid {BORDER_STRONG};
-    border-radius: 5px;
+    border-radius: {CONTROL_RADIUS}px;
     color: {TEXT};
     padding: 3px 9px;
     min-height: 24px;
@@ -534,7 +542,7 @@ QComboBox {
     background-color: {ELEVATED};
     border: 1px solid {BORDER};
     border-top: 1px solid {BORDER_TOP};
-    border-radius: 5px;
+    border-radius: {CONTROL_RADIUS}px;
     color: {TEXT};
     padding: 3px 26px 3px 9px;
     min-height: 24px;
@@ -596,7 +604,7 @@ QComboBox QAbstractItemView {
 QComboBox QAbstractItemView::item {
     min-height: 24px;
     padding: 3px 8px;
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
 QComboBox QAbstractItemView::item:hover {
@@ -616,7 +624,7 @@ QListWidget {
 }
 
 QListWidget::item {
-    border-radius: 5px;
+    border-radius: {CONTROL_RADIUS}px;
     padding: 6px 8px;
     margin: 1px 0px;
     color: {TEXT_DIM};
@@ -823,7 +831,7 @@ QStatusBar QLabel {
 #addressBar QLineEdit {
     background-color: {INPUT_BG};
     border: 1px solid {BORDER};
-    border-radius: {RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
     padding: 6px 10px;
     color: {TEXT};
 }
@@ -835,7 +843,7 @@ QStatusBar QLabel {
 #addressBar QComboBox {
     background-color: {INPUT_BG};
     border: 1px solid {BORDER};
-    border-radius: {RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
     padding: 5px 8px;
 }
 
@@ -843,7 +851,7 @@ QStatusBar QLabel {
 #historyGroup {
     background-color: {INPUT_BG};
     border: 1px solid {BORDER};
-    border-radius: {RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
 }
 
 #historyGroup QPushButton, #historyGroup QToolButton {
@@ -864,7 +872,7 @@ QStatusBar QLabel {
 #historyMenuBtn {
     background-color: {INPUT_BG};
     border: 1px solid {BORDER};
-    border-radius: {RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
     color: {TEXT_DIM};
     padding: 0px;
     min-height: 0px;
@@ -926,7 +934,7 @@ QStatusBar QLabel {
 #audioMuteBtn {
     background: transparent;
     border: none;
-    border-radius: {RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
 }
 
 #audioMuteBtn:hover {
@@ -940,7 +948,13 @@ QStatusBar QLabel {
 /* 右侧 OCR 面板：一条左细线分隔，不用卡片边框 */
 #ocrPanel {
     background-color: {DOCK_BG};
-    border-left: 1px solid {BORDER};
+    border: 1px solid {BORDER};
+    border-top: 1px solid {BORDER_TOP};
+    border-radius: {CARD_RADIUS}px;
+    /* 悬浮卡片：与窗口右/上/下缘各留 8px 缝，缝里透出窗口级 Acrylic
+       模糊 —— 面板读作"浮在桌面上的一块玻璃"，而不是贴死的侧栏。
+       margin 是 QSS 盒模型的一部分，只缩小背景绘制区，不改布局尺寸。 */
+    margin: 8px 8px 8px 0px;
 }
 
 /* 面板内小节标题右侧的窄操作入口（如「识别区域」旁的「说明」）。
@@ -951,7 +965,7 @@ QStatusBar QLabel {
 #sectionAction {
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 4px;
+    border-radius: 6px;
     color: {TEXT_MUTED};
     font-size: {FONT_SIZE_SMALL};
     padding: 0px 6px;
@@ -1035,7 +1049,7 @@ QStatusBar QLabel {
 
 #sessionList::item {
     padding: 3px 6px;
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
 #sessionList::item:hover {
@@ -1058,7 +1072,7 @@ QStatusBar QLabel {
 
 #sceneList::item {
     padding: 4px 6px;
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
 #sceneList::item:hover {
@@ -1076,7 +1090,7 @@ QStatusBar QLabel {
     color: {TEXT_MUTED};
     background: transparent;
     border: none;
-    border-radius: {RADIUS}px;
+    border-radius: {CONTROL_RADIUS}px;
     padding: 2px 6px;
 }
 
@@ -1120,7 +1134,7 @@ QMenu {
 
 QMenu::item {
     padding: 5px 18px;
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
 QMenu::item:selected {

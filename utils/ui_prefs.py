@@ -26,9 +26,11 @@ _cache: dict[str, Any] | None = None
 
 
 def _file_path():
+    import pathlib
+
     from utils.stream_history import default_data_dir
 
-    return default_data_dir() / _FILENAME
+    return pathlib.Path(default_data_dir()) / _FILENAME
 
 
 def _load() -> dict[str, Any]:
