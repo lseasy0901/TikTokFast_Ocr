@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.widgets import GlassDialog
 from gui.theme import Palette
 from utils.update_service import UpdateService, UpdateError
 
@@ -100,7 +101,7 @@ class _DownloadWorker:
             self._on_done(self, None)
 
 
-class UpdateDialog(QDialog):
+class UpdateDialog(GlassDialog):
     """「发现新版本」→「下载」→「已就绪，重启生效」。"""
 
     #: 更新包已下载完成（Velopack 已落盘并校验），可以应用了。
@@ -123,16 +124,14 @@ class UpdateDialog(QDialog):
         :param service: utils.update_service.UpdateService
         :param info: velopack.UpdateInfo（check() 的返回值）
         """
-        super().__init__(parent)
+        super().__init__("发现新版本", parent)
         self._service = service
         self._info = info
         self._asset = info.TargetFullRelease
         self._worker: Optional[_DownloadWorker] = None
         self._downloaded = False
 
-        self.setWindowTitle("发现新版本")
-        self.setModal(True)
-        self.setFixedSize(460, 360)
+        self.setFixedSize(460, 380)
 
         self._progress_sig.connect(self._on_progress)
         self._done_sig.connect(self._on_done)
@@ -155,24 +154,17 @@ class UpdateDialog(QDialog):
     # 构建
     # ------------------------------------------------------------------
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
+        layout = self.card_layout
+        layout.setContentsMargins(20, 4, 20, 4)
 
-        title = QLabel("发现新版本")
-        title.setStyleSheet(
-            f"QLabel {{ font-size: 15px; font-weight: 600;"
-            f" color: {Palette.ACCENT_TEXT}; background: none; }}"
-        )
-        layout.addWidget(title)
-
-        versions = QLabel(
+        self._version_label = QLabel(
             f"当前版本 {self._service.current_version()}　→　最新版本 {self._asset.Version}"
         )
         versions.setStyleSheet(
             f"QLabel {{ font-size: 13px; color: {Palette.TEXT}; background: none; }}"
         )
-        layout.addWidget(versions)
+        self._version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._version_label)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_notes_page())        # 0

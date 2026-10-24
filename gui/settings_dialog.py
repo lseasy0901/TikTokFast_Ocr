@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui import theme
+from gui.widgets import GlassDialog
 from gui.activation_dialog import ActivationDialog
 from gui.theme import Metrics, Palette
 from utils.license_manager import LicenseManager, LicenseStatus
@@ -82,7 +83,7 @@ QLabel {{ background: none; }}
 """
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(GlassDialog):
     """居中设置中心。
 
     Acrylic 与激活弹窗同一套策略：首次显示尝试一次，失败即保持不透明深色
@@ -102,32 +103,23 @@ class SettingsDialog(QDialog):
         :param perf_pinned_callback: 「常驻显示性能指标」开关变化时的回调
             （布尔值 = 是否常驻；主窗口用它即时切换状态栏/诊断弹层）
         """
-        super().__init__(parent)
+        super().__init__("设置", parent)
         self._manager = manager
         self._version = version
         self._access_status = access_status
         self._on_appended = append_license_callback
         self._on_perf_pinned = perf_pinned_callback
 
-        self.setWindowTitle("设置")
-        self.setModal(True)
-        self.setFixedSize(560, 380)
-        self._acrylic_done = False
+        self.setFixedSize(560, 420)
         self._setup_ui()
-
-    def showEvent(self, event):  # noqa: N802
-        super().showEvent(event)
-        if not self._acrylic_done:
-            self._acrylic_done = True
-            if not theme.apply_dialog_acrylic(self):
-                logger.info("[UI] 设置弹窗 Acrylic 不可用，保持不透明深色")
 
     # ------------------------------------------------------------------
     def _setup_ui(self):
-        self.setStyleSheet(_QSS)
-        outer = QHBoxLayout(self)
+        self.setStyleSheet(self.styleSheet() + _QSS)
+        outer = QHBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        self.card_layout.addLayout(outer, 1)
 
         # 左侧分类
         nav_box = QWidget()
@@ -135,9 +127,6 @@ class SettingsDialog(QDialog):
         nav_col = QVBoxLayout(nav_box)
         nav_col.setContentsMargins(14, 18, 8, 14)
         nav_col.setSpacing(8)
-        head = QLabel("设置")
-        head.setObjectName("setTitle")
-        nav_col.addWidget(head)
         self._nav = QListWidget()
         self._nav.setObjectName("setNav")
         self._nav.setFrameShape(QFrame.NoFrame)

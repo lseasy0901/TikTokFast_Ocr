@@ -1069,6 +1069,28 @@ QStatusBar QLabel {
     margin: 4px 6px;
 }
 
+/* Toast 通知：右下角浮出的轻量反馈（语气=边框色+状态圆点） */
+#toastLabel {
+    background-color: {POPUP_BG};
+    border: 1px solid {BORDER_STRONG};
+    border-radius: 10px;
+    color: {TEXT};
+    padding: 10px 18px;
+    font-size: 13px;
+}
+
+#toastLabel[tone="ok"] {
+    border-color: {OK_BORDER};
+}
+
+#toastLabel[tone="warn"] {
+    border-color: {WARN_BORDER};
+}
+
+#toastLabel[tone="error"] {
+    border-color: {DANGER_BORDER};
+}
+
 /* 会话识别历史：无边框列表，选中用明度差 */
 /* 本次会话历史：面板里唯一可伸缩的区域，用一层很浅的内嵌底色把它标成
    "一块有边界的列表"，这样它在没有记录时是一处明确的空状态，而不是一条空白。 */

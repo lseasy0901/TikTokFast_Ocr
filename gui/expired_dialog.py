@@ -15,44 +15,30 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from gui.widgets import GlassDialog
 from gui.theme import Palette
 
 
-class ExpiredDialog(QDialog):
+class ExpiredDialog(GlassDialog):
     """许可证过期对话框"""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("使用期限已到期")
-        self.setModal(True)
-        self.setFixedSize(400, 200)
+        super().__init__("使用期限已到期", parent)
+        self.setFixedSize(400, 220)
         self._setup_ui()
 
     def _setup_ui(self):
         """设置UI"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        layout = self.card_layout
+        layout.setContentsMargins(20, 4, 20, 4)
 
         # 消息区域
         message_layout = QVBoxLayout()
         message_layout.setSpacing(12)
 
-        # 标题
-        title_label = QLabel("使用期限已到期")
-        title_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 15px;
-                font-weight: 600;
-                color: {Palette.DANGER_TEXT};
-                background: none;
-            }}
-        """)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        message_layout.addWidget(title_label)
-
         # 详细消息
-        detail_label = QLabel("许可证已到期，请续费后继续使用")
+        detail_label = QLabel("许可证已到期，请续费后继续使用。\n"
+                              "续费后无需重装，激活即可恢复使用。")
         detail_label.setStyleSheet(f"""
             QLabel {{
                 font-size: 13px;

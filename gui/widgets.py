@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QDialog,
+    QGraphicsDropShadowEffect,
 )
 
 from gui import theme
@@ -558,6 +560,125 @@ class IconButton(QPushButton):
 
         _draw_icon_glyph(painter, self._kind, cx, cy, s)
         painter.end()
+
+
+
+
+# ======================================================================
+# 玻璃卡对话框基类（LightC 同款浮层语言，玻璃 3.2）
+# ======================================================================
+def glass_dialog_qss() -> str:
+    """玻璃卡对话框样式。做成函数而不是模块级 f-string：
+    C9 双主题切换后，新打开的对话框要取**当前**主题的令牌值。"""
+    return f"""
+QDialog {{ background: transparent; }}
+#glassCard {{
+    background-color: {Palette.POPUP_BG};
+    border: 1px solid {Palette.BORDER_STRONG};
+    border-radius: {Metrics.CARD_RADIUS}px;
+}}
+/* Acrylic 生效：卡片底色改半透明，桌面模糊透进卡面 —— 真·玻璃浮层 */
+#glassCard[acrylic="true"] {{
+    background-color: rgba(32, 35, 40, 0.72);
+}}
+#glassCard QLabel {{ background: none; }}
+#glassCardTitle {{
+    font-size: 14px; font-weight: 600; color: {Palette.TEXT};
+}}
+#glassClose {{
+    background: transparent; border: none; border-radius: 6px;
+    color: {Palette.TEXT_MUTED}; font-size: 13px;
+    min-width: 26px; min-height: 0px; max-height: 26px; padding: 2px 6px;
+}}
+#glassClose:hover {{ background-color: {Palette.HOVER}; color: {Palette.TEXT}; }}
+"""
+
+
+class GlassDialog(QDialog):
+    """无边框圆角玻璃卡对话框（设置 / 激活 / 更新 / 过期共用基类）。
+
+    - FramelessWindowHint + WA_TranslucentBackground：窗口本体只画一张
+      圆角卡片 + 投影，四角透明。
+    - 显示后尝试一次 DWM Acrylic：成功时卡片底色转半透明（桌面模糊透进
+      卡面），失败保持近不透明 —— 不做视觉欺骗。WA_TranslucentBackground
+      在构造期设置、DWM 在显示后设置，顺序天然成立。
+    - 整卡可拖动；右上角自绘关闭；Esc 走 QDialog 默认 reject。
+      子类往 :attr:`card_layout` 里放内容即可。
+    """
+
+    def __init__(self, title: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+        self._drag_pos: QPoint | None = None
+        self._acrylic_done = False
+
+        outer = QVBoxLayout(self)
+        # 外圈留白给投影；底部多留一点（视觉重心）
+        outer.setContentsMargins(24, 20, 24, 32)
+        self._card = QFrame()
+        self._card.setObjectName("glassCard")
+        outer.addWidget(self._card)
+
+        card_lay = QVBoxLayout(self._card)
+        card_lay.setContentsMargins(20, 14, 14, 16)
+        card_lay.setSpacing(12)
+
+        head = QHBoxLayout()
+        title_lbl = QLabel(title)
+        title_lbl.setObjectName("glassCardTitle")
+        head.addWidget(title_lbl)
+        head.addStretch(1)
+        close_btn = QPushButton("✕")
+        close_btn.setObjectName("glassClose")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setToolTip("关闭")
+        close_btn.clicked.connect(self.close)
+        head.addWidget(close_btn)
+        card_lay.addLayout(head)
+
+        self.card_layout = card_lay
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(36)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 130))
+        self._card.setGraphicsEffect(shadow)
+
+        self.setStyleSheet(glass_dialog_qss())
+
+    # -- 拖动（整卡） ----------------------------------------------------
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = (event.globalPosition().toPoint()
+                              - self.frameGeometry().topLeft())
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
+    # -- Acrylic（一次） --------------------------------------------------
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._acrylic_done:
+            self._acrylic_done = True
+            try:
+                ok = theme.enable_backdrop(int(self.winId()), "acrylic")
+            except Exception:  # noqa: BLE001 - 回退为不透明卡片
+                ok = False
+            if ok:
+                self._card.setProperty("acrylic", "true")
+                self._card.style().unpolish(self._card)
+                self._card.style().polish(self._card)
+
 
 
 # ======================================================================

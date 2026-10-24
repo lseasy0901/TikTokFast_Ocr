@@ -115,6 +115,7 @@ from gui.onboarding import (
 from utils import update_state
 from utils import ffmpeg7_runtime
 from utils.ui_prefs import PERF_PINNED, get_pref, set_pref
+from gui.toast import Toast
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
@@ -477,7 +478,7 @@ SHOW_INTERNAL_DIAGNOSTICS = False
 OCR_RESULT_PLACEHOLDER = "尚未识别"
 
 #: 本次会话历史为空时的说明（占位项，不参与业务）。
-SESSION_EMPTY_HINT = "复制成功的房间号会出现在这里"
+SESSION_EMPTY_HINT = "暂无记录 —— 复制成功的房间号会出现在这里"
 
 #: 窗口宽度低于此值时自动收起右侧 OCR 面板，把宽度让给视频。
 #:
@@ -1561,6 +1562,8 @@ class MainWindow(QMainWindow):
         self._clipboard_chip_timer.timeout.connect(self._reset_clipboard_chip)
         self._reset_clipboard_chip()
 
+        # 统一 toast 通知（右下角浮出；连接成败 / 复制 / 导出等共用）
+        self._toast = Toast(self)
         self._set_perf_pinned(bool(get_pref(PERF_PINNED, False)), persist=False)
 
     def _toggle_perf_popup(self) -> None:
@@ -1603,6 +1606,11 @@ class MainWindow(QMainWindow):
                 "性能指标：延迟 / 帧率 / 渲染耗时 / OCR")
         if persist:
             set_pref(PERF_PINNED, bool(pinned))
+
+    def show_toast(self, text: str, tone: str = "neutral") -> None:
+        """右下角 toast：不抢焦点、2.6s 自动消退（gui/toast.py）。"""
+        if getattr(self, "_toast", None) is not None:
+            self._toast.popup(text, tone)
 
     def _perf_group(self, name: str, items) -> QWidget:
         box = QWidget()
@@ -2388,6 +2396,7 @@ class MainWindow(QMainWindow):
         # _on_bare_resolved()；虎牙 / B 站直接使用适配器给出的候选。
         self._failover = CandidateFailover(info)
         self._playback_info = info
+        self.show_toast("已解析直播间，正在连接视频流…", "ok")
 
         # RELEASE-02-B5-CLEANUP：唯一取流入口。运行时校验与裸流页面直取都在
         # 后台线程完成（不阻塞 GUI），拿到结果后才开始播放 —— 全程只有一条
@@ -2731,6 +2740,7 @@ class MainWindow(QMainWindow):
         self._disconnect()
         # 写在 _disconnect() 之后：否则会被它结尾的"已断开"覆盖掉
         self.statusBar().showMessage("连接失败：所有候选流均不可用")
+        self.show_toast("连接失败：所有候选流均不可用", "error")
 
     def _handle_playback_failure(self, status_message: str):
         """一次播放尝试失败：先判断该不该换候选，再决定是否结束连接。
@@ -2795,6 +2805,7 @@ class MainWindow(QMainWindow):
         self._disconnect()
         # 同上：写在 _disconnect() 之后才不会被"已断开"覆盖
         self.statusBar().showMessage("连接失败：所有候选流均不可用")
+        self.show_toast("连接失败：所有候选流均不可用", "error")
 
     def _on_connect_error(self, error_msg: str):
         """连接失败回调（从后台线程调用，通过 Signal 安全回到 GUI 线程）"""

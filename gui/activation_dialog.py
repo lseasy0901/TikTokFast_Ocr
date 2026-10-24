@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui import theme
+from gui.widgets import GlassDialog
 from gui.theme import Metrics, Palette
 from utils.license_manager import (
     STATUS_TEXT,
@@ -117,7 +118,7 @@ def _format_expiry(result: LicenseResult) -> str:
         return str(expires)[:16]
 
 
-class ActivationDialog(QDialog):
+class ActivationDialog(GlassDialog):
     """统一的激活 / 追加授权弹窗。
 
     Acrylic 只尝试一次（首次显示时），失败即保持 QSS 的不透明深色 —— 见
@@ -127,29 +128,17 @@ class ActivationDialog(QDialog):
     _activation_done_sig = Signal(object)
 
     def __init__(self, manager: LicenseManager, parent=None):
-        super().__init__(parent)
+        super().__init__("激活 LiveLens", parent)
         self._manager = manager
         self._worker: LicenseWorker | None = None
         self._result: LicenseResult | None = None
 
-        self.setWindowTitle("激活 LiveLens")
-        self.setModal(True)
-        self.setFixedSize(440, 300)
+        self.setFixedSize(440, 320)
 
-        self._acrylic_done = False
         self._activation_done_sig.connect(self._on_activation_done)
         self._setup_ui()
         self._refresh_state_line()
         self._key_input.setFocus()
-
-    def showEvent(self, event):  # noqa: N802
-        super().showEvent(event)
-        # 必须在有原生窗口句柄之后才能设 DWM 属性，因此放在 showEvent；
-        # 只试一次，失败就一直是不透明深色。
-        if not self._acrylic_done:
-            self._acrylic_done = True
-            if not theme.apply_dialog_acrylic(self):
-                logger.info("[UI] 激活弹窗 Acrylic 不可用，保持不透明深色")
 
     # ------------------------------------------------------------------
     # 对外接口（调用方只依赖这两个）
@@ -162,10 +151,9 @@ class ActivationDialog(QDialog):
     # UI
     # ------------------------------------------------------------------
     def _setup_ui(self):
-        self.setStyleSheet(_QSS)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 22, 24, 20)
-        outer.setSpacing(12)
+        # 基类玻璃卡 QSS + 本对话框的控件细节（拼接而非覆盖）
+        self.setStyleSheet(self.styleSheet() + _QSS)
+        outer = self.card_layout
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_input_page())
