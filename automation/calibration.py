@@ -41,11 +41,10 @@ _CLICK_COOLDOWN_S = 0.30     # 双击/抖动防重
 user32 = ctypes.windll.user32
 _GA_ROOT = 2
 
-#: 三步的提示文案;第 N 步(N=1..3)
+#: 两步的提示文案(2026-10-25 用户截图澄清:粘贴是常驻小按钮,两步即达)
 STEP_PROMPTS = (
-    "第 1/3 步:切到游戏,点击「请输入房间码」输入框",
-    "第 2/3 步:点击浮层里的「粘贴」项(把剪贴板内容贴入的那一项)",
-    "第 3/3 步:点击「加入房间」按钮",
+    "第 1/2 步:点击输入框旁的「粘贴」小按钮(点击即贴入剪贴板内容)",
+    "第 2/2 步:点击「加入房间」按钮",
 )
 
 
@@ -174,14 +173,14 @@ class CalibrationOverlay(QObject):
                     self._step + 1, frac[0], frac[1], x, y)
 
         self._step += 1
-        if self._step < 3:
+        if self._step < 2:
             self.stepChanged.emit(self._step, STEP_PROMPTS[self._step])
             return
 
-        # 三点齐:写回配置并保存
+        # 两点齐:写回配置并保存
         cfg = self._config
-        cfg.input_point, cfg.paste_point, cfg.join_point = (
-            self._points[0], self._points[1], self._points[2])
+        cfg.paste_point, cfg.join_point = (
+            self._points[0], self._points[1])
         cfg.calibrated_aspect = w / h
         cfg.calibrated_at = datetime.now(timezone.utc).isoformat(
             timespec="seconds")

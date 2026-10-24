@@ -31,7 +31,7 @@ Point = Tuple[float, float]
 #: 校准参考点(2026-10-24 实测量取,仅用于校准引导的高亮提示;
 #: 不作为可执行点——执行必须以用户校准的三点为准)
 REFERENCE_POINTS = {
-    "input": (0.47, 0.435),   # 「请输入房间码」输入框中部
+    "paste": (0.62, 0.435),   # 输入框右侧的「粘贴」小按钮(2026-10-25 截图)
     "join": (0.505, 0.58),    # 「加入房间」按钮
 }
 
@@ -58,10 +58,12 @@ class JoinConfig:
     window_title: str = "VALORANT"
     #: 点击粘贴后是否自动点「加入房间」
     auto_confirm: bool = True
-    #: 三处校准点;None = 未校准该点
-    input_point: Optional[Point] = None    # 房间码输入框
-    paste_point: Optional[Point] = None    # 输入框浮层里的粘贴项
+    #: 两处校准点(2026-10-25 用户截图澄清:粘贴是输入框旁**常驻小按钮**,
+    #: 点击即贴入剪贴板内容,无需先点输入框弹浮层);None = 未校准该点
+    paste_point: Optional[Point] = None    # 输入框旁的「粘贴」小按钮
     join_point: Optional[Point] = None     # 「加入房间」按钮
+    #: 旧三步流程的字段(点输入框)。已废弃仅作向后兼容读取,序列不再使用
+    input_point: Optional[Point] = None
     #: 校准时间(RFC3339),展示用
     calibrated_at: str = ""
     #: 校准时记录的客户区宽高比;执行时偏差>5% 视为布局漂移(警告)
@@ -73,18 +75,17 @@ class JoinConfig:
     # ------------------------------------------------------------------
     @property
     def is_calibrated(self) -> bool:
-        """三点齐全才算校准完成(缺任一点都无法执行完整序列)。"""
-        return all(p is not None for p in
-                   (self.input_point, self.paste_point, self.join_point))
+        """两点齐全才算校准完成(粘贴按钮 + 加入按钮)。"""
+        return self.paste_point is not None and self.join_point is not None
 
     def points_summary(self) -> str:
         if not self.is_calibrated:
             missing = [n for n, p in (
-                ("输入框", self.input_point), ("粘贴项", self.paste_point),
+                ("粘贴按钮", self.paste_point),
                 ("加入按钮", self.join_point)) if p is None]
             return f"未校准(缺:{'/'.join(missing)})"
         when = f",{self.calibrated_at[:10]}" if self.calibrated_at else ""
-        return f"已校准三点{when}"
+        return f"已校准两点{when}"
 
     # ------------------------------------------------------------------
     def save(self, path: Optional[str] = None) -> None:

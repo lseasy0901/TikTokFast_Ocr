@@ -117,8 +117,7 @@ class JoinController(QObject):
         self._geo = geo
         self._config = config
         steps: list[tuple[int, callable]] = [
-            (config.delay_activate_ms, self._click_input),
-            (config.delay_click_ms, self._click_paste),
+            (config.delay_activate_ms, self._click_paste),
         ]
         if config.auto_confirm and config.join_point:
             steps.append((config.delay_click_ms, self._click_join))
@@ -170,11 +169,8 @@ class JoinController(QObject):
             return False, f"点击{label}失败(输入系统拒绝)"
         return True, ""
 
-    def _click_input(self):
-        return self._guard_click(self._config.input_point, "输入框")
-
     def _click_paste(self):
-        return self._guard_click(self._config.paste_point, "粘贴项")
+        return self._guard_click(self._config.paste_point, "粘贴按钮")
 
     def _click_join(self):
         return self._guard_click(self._config.join_point, "加入按钮")

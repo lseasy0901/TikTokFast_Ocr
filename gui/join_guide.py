@@ -52,7 +52,7 @@ class JoinGuideBar(QWidget):
         row.setContentsMargins(14, 10, 10, 10)
         row.setSpacing(10)
 
-        self._step = QLabel("1/3")
+        self._step = QLabel("1/2")
         self._step.setObjectName("joinGuideStep")
         row.addWidget(self._step)
 
@@ -70,7 +70,8 @@ class JoinGuideBar(QWidget):
     # ------------------------------------------------------------------
     def show_step(self, index: int, prompt: str) -> None:
         """显示第 index(0 基)步并贴到主屏右上角(避开游戏主区域)。"""
-        self._step.setText(f"{index + 1}/3")
+        from automation.calibration import STEP_PROMPTS
+        self._step.setText(f"{index + 1}/{len(STEP_PROMPTS)}")
         self._prompt.setText(prompt)
         self.adjustSize()
         screen = self.screen() or QWidget.screen(self)

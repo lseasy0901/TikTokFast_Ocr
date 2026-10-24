@@ -1584,6 +1584,22 @@ class MainWindow(QMainWindow):
         self._join_guide = JoinGuideBar()
         self._join_guide.close()
         self._sync_join_hotkey()
+        # 测试钩子(与 LIVELENS_E2E_UPDATE 同一先例):显式设置环境变量
+        # 或项目根下存在 _test_pending_code.txt,即预置一个待加入码,
+        # 便于不连直播验证 F8 序列。仅测试用途。
+        _fake = os.environ.get("DLV_TEST_PENDING_CODE", "").strip()
+        _fake_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "_test_pending_code.txt")
+        if not _fake and os.path.isfile(_fake_file):
+            try:
+                with open(_fake_file, encoding="utf-8-sig") as fh:
+                    _fake = fh.read().strip()
+            except OSError:
+                pass
+        if _fake:
+            self._pending_join_code = _fake
+            logger.info("[JOIN] 测试钩子:预置待加入码 %r", _fake)
 
     def _apply_perf_popup_qss(self) -> None:
         """诊断弹层背景用 solid_color 合成的不透明色。

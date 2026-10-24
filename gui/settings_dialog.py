@@ -304,16 +304,18 @@ class SettingsDialog(GlassDialog):
         self._aj_cal_btn.setObjectName("fbCopyBtn")
         self._aj_cal_btn.setCursor(Qt.PointingHandCursor)
         self._aj_cal_btn.setToolTip(
-            "在游戏「自定义房间」页面依次点击三处,记录相对窗口位置")
+            "在游戏「自定义房间」页面依次点击两处(粘贴按钮/加入按钮),记录相对窗口位置")
         self._aj_cal_btn.clicked.connect(self._on_start_calibration)
         cal_row.addWidget(self._aj_cal_btn)
         col.addLayout(cal_row)
 
         hint = QLabel(
             "使用前提:游戏以窗口模式运行,并停留在「加入房间」页面。"
-            "识别到房间码会自动复制;按热键即自动切换到游戏,依次完成"
-            "「输入框 → 粘贴 → 加入」三步点击。\n"
-            "注意:自动操作游戏存在被反作弊判定的风险,请自行评估后使用。")
+            "识别到房间码会自动复制;按热键即自动切换到游戏,依次点击"
+            "「粘贴」小按钮(贴入房间码)与「加入房间」。\n"
+            "注意:游戏若以管理员权限运行,LiveLens 也需以管理员运行"
+            "(否则点击会被系统拒绝);自动操作游戏存在被反作弊判定的风险,"
+            "请自行评估后使用。")
         hint.setObjectName("setHint")
         hint.setWordWrap(True)
         col.addWidget(hint)
