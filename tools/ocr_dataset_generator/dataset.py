@@ -24,7 +24,7 @@ import datetime as _dt
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from .code_generator import GenerationPlan
 from .dedupe import find_exact_duplicates, sha256_file

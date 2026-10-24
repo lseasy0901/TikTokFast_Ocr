@@ -31,7 +31,7 @@ os.environ["APPDATA"] = tempfile.mkdtemp(prefix="dlv-ui31-appdata-")
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="dlv-ui31-local-")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,

@@ -58,7 +58,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import gui.main_window as mw  # noqa: E402
 from ocr.dataset_capture import (  # noqa: E402
-    DATASET_CAPTURE_ENABLED, CaptureFanout, DatasetRecorder, match_format,
+    CaptureFanout, DatasetRecorder, match_format,
     raw_text_from_readings,
 )
 from ocr.sample_capture import SampleCapture  # noqa: E402

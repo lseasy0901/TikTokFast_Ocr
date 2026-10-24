@@ -2,7 +2,6 @@
 """HistoryPopup 生命周期：打开 → 关闭 → 重开，连续 20 次无 RuntimeError"""
 
 import os
-import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 _app = QApplication.instance() or QApplication([])
 
-from gui.history_panel import HistoryButton, HistoryPopup   # noqa: E402
+from gui.history_panel import HistoryButton   # noqa: E402
 from stream.history import HistoryService, HistoryRepository  # noqa: E402
 
 

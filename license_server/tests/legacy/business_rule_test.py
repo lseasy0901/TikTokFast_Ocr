@@ -1,3 +1,5 @@
+# [legacy] 2026-10-25 归档:Phase 7.2-5 时代脚本,使用了 Python 3.12 f-string 语法,
+# 3.11 下 SyntaxError;保留作历史参考,不参与任何收集/回归。
 #!/usr/bin/env python3
 """
 Focused tests for the License Key redemption business rule fix
@@ -5,7 +7,7 @@ Focused tests for the License Key redemption business rule fix
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'app'))
 
 from database import SessionLocal
 from models import License, LicenseState, Authorization, AuthorizationState

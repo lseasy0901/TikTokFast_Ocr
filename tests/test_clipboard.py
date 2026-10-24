@@ -5,7 +5,6 @@
 """
 
 import sys
-import time
 from PySide6.QtWidgets import QApplication
 from ocr.clipboard import ClipboardManager
 

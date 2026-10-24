@@ -15,9 +15,7 @@ import sys
 import os
 import time
 import numpy as np
-from unittest.mock import Mock, MagicMock
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QTimer
 
 # Add project root to path
 project_root = os.path.dirname(os.path.abspath('.'))

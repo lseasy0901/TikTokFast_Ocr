@@ -21,11 +21,9 @@ PP-OCRv6 Teacher 适配器（Phase 2: Dataset Collector）。
 
 from __future__ import annotations
 
-import os
 import re
-import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 __all__ = [

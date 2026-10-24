@@ -66,8 +66,8 @@ def pump(app, rounds: int = 40) -> None:
 
 def capture_guide_spotlight(app, window, out_dir: str, suffix: str):
     """抓聚光灯的前两步，并在真实平台上复核"遮罩不拦截鼠标"。"""
-    from PySide6.QtCore import QPoint, Qt
-    from gui.onboarding import GUIDE_ADVANCE, GUIDE_NEVER
+    from PySide6.QtCore import QPoint
+    from gui.onboarding import GUIDE_NEVER
     from utils.first_run import FirstRunStore
 
     window.showNormal()
@@ -141,7 +141,7 @@ def capture_step3_and_roi(app, window, out_dir: str, suffix: str):
     import numpy as np
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QMouseEvent
-    from gui.onboarding import GUIDE_ADVANCE, GUIDE_NEVER
+    from gui.onboarding import GUIDE_NEVER
     from utils.first_run import FirstRunStore
 
     window.showNormal()
@@ -327,7 +327,6 @@ def capture_unactivated_overlay(app, window, out_dir: str, suffix: str):
     RELEASE-01 起遮罩的次要入口已由「联系作者」改为「购买授权」，
     点击会调用系统浏览器跳转购买页——因此本函数**只截图、不点击**该按钮。
     """
-    from PySide6.QtGui import QPixmap
 
     window.showNormal()
     window.move(60, 60)

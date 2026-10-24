@@ -46,6 +46,7 @@ OCR 诊断日志（默认关闭）
 import csv
 import io
 import logging
+import os
 import threading
 from collections import deque
 from dataclasses import dataclass, field

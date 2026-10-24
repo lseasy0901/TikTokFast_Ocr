@@ -63,7 +63,7 @@ os.environ["LOCALAPPDATA"] = _TEMP_LOCALAPPDATA
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QCheckBox, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 import gui.main_window as mw  # noqa: E402
 import utils.first_run as first_run  # noqa: E402

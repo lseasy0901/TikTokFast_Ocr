@@ -33,7 +33,6 @@ import re
 import sys
 import tempfile
 import textwrap
-import threading
 import time
 from unittest import mock
 

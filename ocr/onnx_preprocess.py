@@ -43,7 +43,6 @@ PP-OCRv6 生产引擎（`ppocr_engine.PPOCREngine`）把预处理放在模型内
 """
 
 import math
-import re
 
 import cv2
 import numpy as np

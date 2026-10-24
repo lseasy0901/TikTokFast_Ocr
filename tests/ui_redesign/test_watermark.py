@@ -300,7 +300,6 @@ def test_bounds(window) -> None:
     check(bad is None, f"3000 步真实推进不越界（越界样本={bad}）")
 
     # 有帧时：边界应收缩到视频可视矩形（letterbox 内），不落到黑边
-    from PySide6.QtGui import QImage
     frame = np.zeros((1080, 1920, 3), dtype=np.uint8)   # 16:9
     window._video_widget.set_frame(frame, 1)
     pump(20)

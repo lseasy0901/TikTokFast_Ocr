@@ -602,7 +602,6 @@ def cmd_extras(args):
             return [prod_run(card, PSMS[i % 3], engine) for i in range(k)]
 
         def b_k():
-            import itertools
             rt2 = ResidentTesseract(tessdata_dir())
             try:
                 return [rt2.run(card, PSMS[i % 3], OCREngine.DEFAULT_WHITELIST)

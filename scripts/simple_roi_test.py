@@ -7,7 +7,6 @@ Simple ROI Verification Test Phase 4.4
 import sys
 import os
 import numpy as np
-from unittest.mock import Mock
 
 # Add project root to path
 project_root = os.path.dirname(os.path.abspath('.'))

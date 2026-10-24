@@ -21,7 +21,6 @@ Phase 2.5 验证：MainWindow 候选流 failover 生命周期
 
 import os
 import sys
-import threading
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

@@ -33,7 +33,6 @@ from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import text  # noqa: E402
 from database import SessionLocal, engine, Base  # noqa: E402
-import models  # noqa: E402
 from models import Authorization, DeviceDailyActive, License, LicenseState  # noqa: E402
 
 N_LICENSES = 5000
@@ -131,7 +130,6 @@ try:
     # ---- 接口耗时 ----
     print("\n---- 接口耗时（5000 行量级） ----")
     from fastapi.testclient import TestClient
-    from fastapi.testclient import TestClient as _TC
     import config
     config.settings.ADMIN_API_KEY = "perf-key"
     from main import app

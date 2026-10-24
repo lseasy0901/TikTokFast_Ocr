@@ -43,11 +43,10 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from urllib.parse import urlparse
 
 from PySide6.QtCore import (QEvent, QEasingCurve, QObject, QPoint,
                              QPropertyAnimation, QStandardPaths, QTimer, Qt, Signal)
-from PySide6.QtGui import QAction, QColor, QIcon
+from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -66,7 +65,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QMenu,
-    QSizePolicy,
     QSplitter,
     QToolButton,
     QVBoxLayout,
@@ -105,7 +103,6 @@ from gui.onboarding import (
     DIALOG_START_FOR,
     GUIDE_ADVANCE,
     GUIDE_ALWAYS,
-    GUIDE_REVIEW_CLOSED,
     SPOTLIGHT_STEPS,
     STEPS,
     GuideSpotlight,
@@ -155,7 +152,7 @@ from ocr.sample_capture import SampleCapture
 # 线程都在开关为 True 时才（惰性）导入并构造，见 __init__ 里那一段。
 # 开关本体定义在 ocr/dataset_capture.py，全项目只有那一处。
 from ocr.dataset_capture import DATASET_CAPTURE_ENABLED, TARGET_FORMATS
-from ocr.profiles import game_profiles, get_profile
+from ocr.profiles import game_profiles
 from stream.history import HistoryService
 from utils.first_run import FirstRunStore
 from utils.startup_timing import (
@@ -616,8 +613,14 @@ class _ActivationOverlay(QWidget):
         """
         if suspended:
             self._anim.pause()
-        elif self.isVisible() and not self._anim.state():
-            self._anim.resume()
+        elif self.isVisible():
+            # 原条件 `not self._anim.state()` 在 pause 后是 Paused(非 0),
+            # resume 分支永不触发(挂起一次就再也不动了)。正确语义:
+            # Paused→resume(保相位),Stopped(尚未启动,如窗口刚显示)→start。
+            if self._anim.state() == QPropertyAnimation.Paused:
+                self._anim.resume()
+            elif self._anim.state() == QPropertyAnimation.Stopped:
+                self._anim.start()
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
@@ -992,6 +995,14 @@ class MainWindow(QMainWindow):
         self._more_btn.clicked.connect(self._show_more_menu)
 
         return self._title_bar
+
+    def _on_app_state_changed(self, state) -> None:
+        """应用失活/恢复:联动未激活遮罩的呼吸动画(见 _init_ui 注释)。"""
+        if getattr(self, "_activation_overlay", None) is None:
+            return
+        from PySide6.QtCore import Qt as _Qt
+        self._activation_overlay.set_suspended(
+            state != _Qt.ApplicationState.ApplicationActive)
 
     def _show_more_menu(self) -> None:
         """「⋯」溢出菜单：贴着按钮下沿弹出（与联系方式卡片同一锚定习惯）。"""
@@ -1584,6 +1595,10 @@ class MainWindow(QMainWindow):
         self._join_guide = JoinGuideBar()
         self._join_guide.close()
         self._sync_join_hotkey()
+        # 应用整体失活(用户切到别的软件)也挂起呼吸动画:窗口还在但没人在
+        # 看,60fps 透明度重绘纯烧 CPU;配合最小化暂停,把常驻占用压到零。
+        QGuiApplication.instance().applicationStateChanged.connect(
+            self._on_app_state_changed)
         # 测试钩子(与 LIVELENS_E2E_UPDATE 同一先例):显式设置环境变量
         # 或项目根下存在 _test_pending_code.txt,即预置一个待加入码,
         # 便于不连直播验证 F8 序列。仅测试用途。

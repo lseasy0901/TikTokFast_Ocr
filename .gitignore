@@ -110,10 +110,8 @@ LiveLens_Admin.bat
 # user's Documents folder, but the directory is configurable and a dev run can
 # point it here. Machine-specific pixels, never project content.
 /ocr_samples/
-# Stray redirect targets: an empty file, and one holding the output of
-# `git diff --stat` written under an option string. Neither is project content.
+# Stray redirect target: an empty file historically created by a shell slip.
 /bool
-/-files --others --exclude-standard
 
 # OS/editor
 Thumbs.db

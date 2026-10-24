@@ -36,13 +36,11 @@ import numpy as np  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from ocr import worker as worker_mod  # noqa: E402
-from ocr.clipboard import ClipboardManager  # noqa: E402
 from ocr.diagnostics import CSV_HEADER, OCRDiagnostics  # noqa: E402
 from ocr.engine import OCREngineError  # noqa: E402
 from ocr.profiles import DELTA_FORCE_1V1  # noqa: E402
 from ocr.roi_manager import ROI, ROIManager  # noqa: E402
 from ocr.room_code import RoomCodeRecognizer  # noqa: E402
-from ocr.temporal import TemporalResolver  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 

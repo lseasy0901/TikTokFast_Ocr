@@ -9,7 +9,6 @@
 
 全部离线：`_fetch_page` 一律被替换，绝不发起真实网络请求。
 """
-import os
 
 import pytest
 

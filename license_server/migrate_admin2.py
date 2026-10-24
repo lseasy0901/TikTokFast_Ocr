@@ -27,7 +27,6 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "app"))
 
-import config  # noqa: E402
 from database import SessionLocal, engine  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 

@@ -11,7 +11,7 @@ import sys
 import os
 import time
 import statistics
-from typing import List, Dict, Tuple, Set
+from typing import List, Set
 from dataclasses import dataclass
 import numpy as np
 import cv2

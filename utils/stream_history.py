@@ -42,7 +42,7 @@ import os
 import shutil
 import threading
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict
 from pathlib import Path
 
 #: 用户数据目录名。产品名是 LiveLens（窗口标题），与 EXE 名

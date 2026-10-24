@@ -22,7 +22,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import sqlite3
 import subprocess
 import sys
@@ -31,7 +30,6 @@ import time
 import urllib.parse
 import urllib.request
 import http.cookiejar
-from datetime import datetime, timedelta
 from pathlib import Path
 
 LS_DIR = Path(__file__).resolve().parents[2] / "DouyinLowLatencyViewer" / "license_server"

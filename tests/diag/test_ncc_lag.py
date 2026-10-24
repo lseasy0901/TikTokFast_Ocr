@@ -10,7 +10,6 @@
   - 分辨率不一致时自动缩放。
 """
 import numpy as np
-import pytest
 
 from utils.ncc_lag import estimate_lag_s
 

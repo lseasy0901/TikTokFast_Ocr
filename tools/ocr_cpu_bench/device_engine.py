@@ -158,7 +158,6 @@ def _assert_cpu_only(paddle) -> None:
 
 def _assert_gpu_available(paddle) -> None:
     """device="gpu" 用的前置校验：直接复用生产实现（保证 baseline 与生产一致）。"""
-    from ocr.ppocr_engine import PPOCREngine
 
     _PRODUCTION_ASSERT_GPU(paddle)
 

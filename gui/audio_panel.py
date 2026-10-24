@@ -17,7 +17,7 @@ AudioPanel：音频控制条（音量滑块 + 模式选择 + 状态显示）
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout,
                                QLabel, QPushButton, QSlider, QWidget)
 
 from gui.widgets import IconButton, icon_pixmap

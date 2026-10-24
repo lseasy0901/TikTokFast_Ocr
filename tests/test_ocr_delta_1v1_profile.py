@@ -25,11 +25,9 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from ocr.code_format import CharClass, CodeFormat                    # noqa: E402
 from ocr.correction import (                                         # noqa: E402
     MAX_CORRECTIONS,
     max_corrections_for,
-    resolve_candidate,
 )
 from ocr.profiles import (                                           # noqa: E402
     AUTO,

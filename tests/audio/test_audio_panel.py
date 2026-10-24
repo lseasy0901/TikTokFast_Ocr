@@ -2,7 +2,6 @@
 """音频测试（附）：AudioPanel 信号与状态渲染"""
 
 import os
-import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

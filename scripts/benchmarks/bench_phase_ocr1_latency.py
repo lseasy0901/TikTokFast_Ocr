@@ -41,7 +41,7 @@ from PySide6.QtWidgets import QApplication
 import ocr.room_code as room_code_mod
 from ocr.clipboard import ClipboardManager
 from ocr.engine import OCREngine
-from ocr.profiles import DELTA_FORCE, VALORANT
+from ocr.profiles import DELTA_FORCE
 from ocr.roi_manager import ROI, ROIManager
 from ocr.room_code import RoomCodeRecognizer
 from ocr.temporal import TemporalResolver

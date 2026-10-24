@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import random
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Sequence
 
 from .schemas import DEFAULT_FORMAT_IDS, FORMATS, CodeFormat
 

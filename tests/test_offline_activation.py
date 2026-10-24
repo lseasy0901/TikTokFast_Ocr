@@ -21,7 +21,7 @@ import json
 import pathlib
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 ROOT = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))

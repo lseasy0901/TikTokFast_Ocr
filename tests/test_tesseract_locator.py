@@ -15,7 +15,7 @@ import sys
 import tempfile
 import shutil
 from unittest import TestCase, main
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

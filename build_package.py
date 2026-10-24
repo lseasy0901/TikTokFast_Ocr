@@ -9,7 +9,6 @@ import os
 import sys
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 def main():
@@ -131,7 +130,7 @@ def build_with_pyinstaller(spec_file, dist_dir):
     try:
         # Install PyInstaller if not available
         try:
-            import PyInstaller
+            import PyInstaller  # noqa: F401 - 探测可用性即目的
             print("  PyInstaller already installed")
         except ImportError:
             print("  Installing PyInstaller...")

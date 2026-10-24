@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from PySide6.QtWidgets import QApplication
 
-from ocr.profiles import DELTA_FORCE, VALORANT
+from ocr.profiles import DELTA_FORCE
 from ocr.roi_manager import ROI, ROIManager
 from ocr.room_code import RoomCodeRecognizer
 from ocr.temporal import TemporalResolver

@@ -1,0 +1,9 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["venv", "docs", "license_server/tests/legacy", "susi_source", "admin_web"]
+
+[tool.ruff.lint]
+# 起步只开错误级:语法/未定义名/未使用导入等,风格类规则刻意不开
+# (存量代码风格不统一,先保证"新错误进不来")。
+select = ["E9", "F821", "F401", "F811"]

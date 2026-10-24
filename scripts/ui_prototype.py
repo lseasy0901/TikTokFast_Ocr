@@ -32,8 +32,7 @@ import os
 import sys
 
 import numpy as np
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -45,7 +44,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QPushButton,
-    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -54,7 +52,7 @@ from PySide6.QtWidgets import (
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gui import theme
-from gui.theme import Metrics, Palette
+from gui.theme import Metrics
 from gui.video_widget import VideoWidget
 from gui.widgets import OverlayHost, WindowButton, chip_html, h_line, set_property
 

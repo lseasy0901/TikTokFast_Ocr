@@ -23,7 +23,6 @@ import threading
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -33,7 +32,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import theme
 from gui.widgets import GlassDialog
 from gui.theme import Metrics, Palette
 from utils.license_manager import (

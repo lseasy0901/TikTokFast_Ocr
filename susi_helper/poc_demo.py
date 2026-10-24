@@ -8,8 +8,6 @@ would communicate with Susi core.
 """
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 def get_machine_code():

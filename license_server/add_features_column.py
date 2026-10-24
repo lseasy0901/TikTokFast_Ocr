@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
 
-from database import engine, SessionLocal
+from database import engine
 from sqlalchemy import text
 
 # Add features column to licenses table

@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from PySide6.QtWidgets import QApplication
 
-import gui.main_window as mw
 from gui.main_window import MainWindow, _FrameBridge, _FrameNotifier
 from stream.frame_buffer import LatestFrameBuffer
 from utils.performance import PerformanceMonitor

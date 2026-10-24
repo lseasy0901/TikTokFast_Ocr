@@ -14,7 +14,7 @@ Segment 生命周期（Phase 2: Dataset Collector）。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import List, Optional
 
 from .consensus import ConsensusConfig, ConsensusResult, compute_consensus
 

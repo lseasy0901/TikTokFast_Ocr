@@ -2,9 +2,7 @@
 """
 Test script to verify Susi integration without building
 """
-import json
 import subprocess
-import sys
 from pathlib import Path
 
 def test_susi_source():

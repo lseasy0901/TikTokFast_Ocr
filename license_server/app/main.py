@@ -12,7 +12,6 @@ import logging
 
 import config
 import database
-import models
 import schemas
 from services import (
     feijipan_resolver,

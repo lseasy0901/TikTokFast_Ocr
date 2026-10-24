@@ -20,13 +20,13 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
-from PySide6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPen,  # noqa: E402
+from PySide6.QtGui import (QColor, QFont, QPainter, QPen,  # noqa: E402
                            QPixmap)
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gui import theme  # noqa: E402
 from gui.theme import Palette  # noqa: E402
-from gui.widgets import IconButton, _draw_icon_glyph, icon_pixmap  # noqa: E402
+from gui.widgets import IconButton, _draw_icon_glyph  # noqa: E402
 
 CELL = 96          # 每格边长
 PAD = 14

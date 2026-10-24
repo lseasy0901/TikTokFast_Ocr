@@ -8,7 +8,7 @@ import secrets
 import hashlib
 import json
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Set, List
+from typing import Optional, Set
 
 from sqlalchemy.orm import Session
 from models import License, LicenseState, Authorization, AuthorizationState, RedemptionEvent

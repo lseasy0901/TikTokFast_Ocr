@@ -508,7 +508,7 @@ def main() -> int:
     test_activation_dialog()
     test_activation_overlay()
     test_settings_dialog()
-    test_acrylic_fallback()
+    test_glass_dialog_design()
 
     print(f"\n{'=' * 52}")
     print(f"通过 {_PASSED} 项，失败 {_FAILED} 项")

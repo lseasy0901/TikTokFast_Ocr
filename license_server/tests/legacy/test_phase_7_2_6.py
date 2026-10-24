@@ -6,7 +6,7 @@ Tests Susi integration with business licensing while preserving all Phase 7.2-5 
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'app'))
 
 # Import actual SusiSecurityService
 from services.susi_security_service import SusiSecurityService

@@ -27,7 +27,6 @@
 import argparse
 import logging
 import statistics
-import sys
 import time
 
 from stream.models import StreamInfo

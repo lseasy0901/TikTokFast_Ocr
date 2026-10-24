@@ -7,11 +7,10 @@ Generates license keys and manages license lifecycle
 import secrets
 import hashlib
 import json
-from datetime import datetime, timezone
 from typing import Optional, List
 
 from sqlalchemy.orm import Session
-from models import License, LicenseState, Authorization
+from models import License, LicenseState
 from schemas import LicenseCreate
 
 

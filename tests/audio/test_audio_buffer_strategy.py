@@ -3,10 +3,10 @@
 
 import unittest
 
-from audio.models import BYTES_PER_SECOND, AudioMode, ms_to_bytes
+from audio.models import AudioMode, ms_to_bytes
 from audio.strategy import LowLatencyStrategy, SyncStrategy
 from audio_test_utils import SILENCE_100MS, wait_for, FakeOutput
-from audio import AudioService, AudioState
+from audio import AudioService
 
 CHUNK = SILENCE_100MS          # 100ms = 19200B
 

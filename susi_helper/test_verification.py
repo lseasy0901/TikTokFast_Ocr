@@ -10,7 +10,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
 
 # Path to the built binary
 BINARY_PATH = Path(r"D:\TIikTok_Ocr\DouyinLowLatencyViewer\susi_helper\target\release\susi_helper.exe")

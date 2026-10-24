@@ -7,12 +7,11 @@
     - ``window.*`` 的分子分母同源；``cumulative.*`` 为累计量
 """
 
-import os
 import unittest
 
 from utils import diag_trace
 from utils.diag_trace import (
-    DiagTrace, S_STORE, S_BRIDGE, S_CONSUME, S_SET, S_PAINT, PAIRS,
+    DiagTrace, S_STORE, S_BRIDGE, S_CONSUME, PAIRS,
 )
 
 

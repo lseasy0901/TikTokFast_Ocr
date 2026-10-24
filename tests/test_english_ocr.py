@@ -8,7 +8,6 @@ import sys
 import os
 import numpy as np
 import cv2
-from unittest.mock import Mock, patch
 
 # 添加项目根目录到Python路径
 project_root = os.path.dirname(os.path.abspath('.'))

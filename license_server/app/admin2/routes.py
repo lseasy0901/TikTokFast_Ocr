@@ -20,9 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-import database
 import services.stats_service as stats
-from admin.auth import SESSION_KEY
 from admin2 import auth as a2auth
 from admin2 import TEMPLATES_DIR, STATIC_DIR
 from database import get_db

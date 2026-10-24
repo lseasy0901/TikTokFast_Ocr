@@ -49,7 +49,6 @@ GPU 约束（无回退）
 import logging
 import os
 import site
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Tuple

@@ -6,7 +6,7 @@ Tests all business rules and atomic transaction requirements
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'app'))
 
 # Mock SusiSecurityService for Phase 7.2-5 business logic tests
 class MockSusiSecurityService:

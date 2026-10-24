@@ -9,7 +9,7 @@ import uvicorn
 from unittest.mock import patch
 
 # Add the app directory to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'app'))
 
 from database import SessionLocal, Base, engine
 from models import License

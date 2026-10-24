@@ -1,0 +1,22 @@
+# 直接依赖的精确版本锁定(由本仓库开发环境生成,复现用):
+#   pip install -r requirements.txt -r requirements-lock.txt
+# 锁的是"已知良好"版本;升级时在此文件更新。
+
+PySide6==6.11.2
+PySide6-Addons==6.11.2
+PySide6-Essentials==6.11.2
+PyYAML==6.0.2
+fastapi==0.104.1
+numpy==2.3.5
+opencv-python==5.0.0.93
+psutil==7.2.2
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-multipart==0.0.6
+requests==2.34.2
+shiboken6==6.11.2
+sqlalchemy==2.1.1
+tqdm==4.70.1
+urllib3==2.8.0
+uvicorn==0.24.0
+velopack==1.2.0

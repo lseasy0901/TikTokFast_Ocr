@@ -7,7 +7,7 @@ import sys
 import os
 
 # Add the app directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'app'))
 
 try:
     from config import settings

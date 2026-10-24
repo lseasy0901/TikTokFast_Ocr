@@ -185,7 +185,6 @@ def _run_collect(argv: Sequence[str]) -> int:
                   file=sys.stderr)
             return 5
     else:
-        from .capture import imread_unicode
         exts = (".png", ".jpg", ".jpeg", ".bmp")
         paths = [os.path.join(args.replay_dir, f)
                  for f in sorted(os.listdir(args.replay_dir))

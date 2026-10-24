@@ -5,7 +5,6 @@ SQLAlchemy database models
 
 from datetime import datetime, timedelta
 from sqlalchemy import (
-    Boolean,
     Column,
     Date,
     DateTime,
@@ -18,10 +17,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-import hashlib
 import enum
 
-import database
 from database import Base
 
 

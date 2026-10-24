@@ -26,7 +26,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 import numpy as np  # noqa: E402
 
-from ocr.code_format import CodeFormat, CharClass  # noqa: E402
+from ocr.code_format import CodeFormat  # noqa: E402
 from ocr.correction import resolve_candidate  # noqa: E402
 from ocr.engine import OCREngine, OCREngineError  # noqa: E402
 from ocr.room_code import RoomCodeCandidate, RoomCodeRecognizer  # noqa: E402

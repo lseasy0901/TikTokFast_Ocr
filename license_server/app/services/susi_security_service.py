@@ -6,11 +6,9 @@ Handles Susi security operations using the existing susi_helper subprocess inter
 
 import subprocess
 import json
-import base64
 import logging
 from typing import Tuple, Dict, Optional
 from datetime import datetime, timezone
-import tempfile
 import os
 
 logger = logging.getLogger(__name__)

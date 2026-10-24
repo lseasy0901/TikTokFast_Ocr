@@ -20,8 +20,7 @@
 from __future__ import annotations
 
 import hashlib
-import os
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 __all__ = [
     "sha256_file",

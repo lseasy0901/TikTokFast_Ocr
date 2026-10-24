@@ -41,7 +41,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from ocr.clipboard import ClipboardManager  # noqa: E402
 from ocr.copy_log import CSV_HEADER, CopyLog, format_copy_time  # noqa: E402
 import gui.main_window as mw  # noqa: E402
 

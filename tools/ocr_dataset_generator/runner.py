@@ -28,8 +28,8 @@ import numpy as np
 
 from .capture import ROIRect, SampleWriter, crop_roi
 from .consensus import ConsensusConfig
-from .dataset import walk_dataset_files, write_manifest
-from .dedupe import find_exact_duplicates, perceptual_hash, sha256_file
+from .dataset import write_manifest
+from .dedupe import find_exact_duplicates
 from .review import decide_review, decide_sample_review
 from .schemas import (
     REAL_SAMPLE_FIELDS,

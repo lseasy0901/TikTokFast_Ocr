@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -36,7 +35,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import theme
 from gui.widgets import GlassDialog, IconButton, icon_pixmap, open_external_url
 from automation.hotkey import VK_NAMES
 from gui.activation_dialog import ActivationDialog

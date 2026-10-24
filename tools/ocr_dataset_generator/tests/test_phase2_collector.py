@@ -9,7 +9,6 @@ Phase 2 采集链路测试：capture / teacher / consensus / segment / review / 
 """
 
 import csv
-import json
 import os
 import shutil
 import subprocess

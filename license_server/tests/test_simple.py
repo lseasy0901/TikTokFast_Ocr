@@ -3,11 +3,9 @@
 Simple integration tests for the license server
 """
 
-import pytest
 from fastapi.testclient import TestClient
 from main import app  # noqa: 与生产 --app-dir app 的顶层模块布局一致
 from database import SessionLocal, get_db
-from models import License, LicenseState
 from services.license_service import generate_secure_key, generate_key_hash
 
 # Override get_db to use test database

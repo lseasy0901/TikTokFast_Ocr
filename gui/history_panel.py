@@ -15,9 +15,8 @@
     btn.enterRequested.connect(on_enter)  # 用户点了某张卡片的 [进入]
 """
 
-from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal, QEvent
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,

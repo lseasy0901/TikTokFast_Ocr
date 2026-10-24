@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 
 from .consensus import ConsensusConfig, compute_consensus
 from .review import decide_review, decide_sample_review
-from .schemas import REAL_SAMPLE_FIELDS, REVIEW_FIELDS
+from .schemas import REVIEW_FIELDS
 from .runner import _write_csv, teacher_audit
 
 __all__ = ["finalize_dataset", "load_dataset"]

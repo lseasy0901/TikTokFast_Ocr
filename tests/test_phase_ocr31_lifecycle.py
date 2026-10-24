@@ -26,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PySide6.QtWidgets import QApplication
 
 from bench_phase_ocr1_latency import make_card
-from ocr import engine as engine_mod
 from ocr.engine import OCREngine
 from ocr.profiles import DELTA_FORCE
 from ocr.roi_manager import ROI, ROIManager
