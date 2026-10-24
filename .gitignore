@@ -16,10 +16,16 @@ env/
 *.env
 license_server/.env
 
-# Signing key material - never commit private keys
+# Signing key material - never commit PRODUCTION private keys.
+# Exception: license_server/test_rsa_key.pem is the development-only signing
+# key (production keys live outside this repo); tracked so a fresh clone can
+# run a local license server end to end.
 license_server/*.pem
-# Client-side verification public key (provisioned per deployment, Phase 7.2-6.5)
-license_public_key.pem
+!license_server/test_rsa_key.pem
+# Client-side verification public key: tracked on purpose since 2026-10-25 —
+# a public key is not a secret and ships with every client; committing it makes
+# a fresh clone usable without hunting per-deployment assets.
+# license_public_key.pem
 
 # Local databases
 *.db
