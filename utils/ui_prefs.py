@@ -21,6 +21,9 @@ logger = logging.getLogger("DouyinLowLatencyViewer.utils.ui_prefs")
 #: 键：状态栏是否常驻显示性能指标（默认 False = 收进「诊断」弹层）
 PERF_PINNED = "perf_pinned"
 
+#: 键：界面主题（"dark" | "light"，默认 dark）
+UI_THEME = "theme"
+
 _FILENAME = "ui_prefs.json"
 _cache: dict[str, Any] | None = None
 

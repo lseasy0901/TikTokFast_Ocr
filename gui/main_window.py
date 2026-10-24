@@ -114,7 +114,7 @@ from gui.onboarding import (
 )
 from utils import update_state
 from utils import ffmpeg7_runtime
-from utils.ui_prefs import PERF_PINNED, get_pref, set_pref
+from utils.ui_prefs import PERF_PINNED, UI_THEME, get_pref, set_pref
 from gui.toast import Toast
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
@@ -878,6 +878,7 @@ class MainWindow(QMainWindow):
         所有业务信号接线与定时器都在 _start_playback / _start_ocr 等处完成，
         这里只摆放控件 —— 与改动前的职责划分一致。
         """
+        theme.set_theme(str(get_pref(UI_THEME, "dark")))
         theme.apply_theme()
 
         self._syncing_games = True  # 构建期间不响应列表/下拉框联动
@@ -1606,6 +1607,22 @@ class MainWindow(QMainWindow):
                 "性能指标：延迟 / 帧率 / 渲染耗时 / OCR")
         if persist:
             set_pref(PERF_PINNED, bool(pinned))
+
+    def _apply_theme_switch(self, name: str) -> None:
+        """设置中心切主题：重建应用样式 + 重设系统背景明暗调。
+
+        自绘控件（DockPanel 高光 / 水印 / 图标）在下一帧 paintEvent 直接
+        读到新 Palette 值；已打开的对话框下次打开时取新令牌。
+        """
+        theme.set_theme(name)
+        theme.apply_theme()
+        if getattr(self, "_backdrop", None) == "acrylic":
+            try:
+                theme.enable_backdrop(int(self.winId()), "acrylic")
+            except Exception:  # noqa: BLE001 - 明暗重设失败不影响主题切换
+                pass
+        self.show_toast("已切换到浅色主题" if name == "light" else "已切换到深色主题",
+                        "ok")
 
     def show_toast(self, text: str, tone: str = "neutral") -> None:
         """右下角 toast：不抢焦点、2.6s 自动消退（gui/toast.py）。"""
@@ -4037,6 +4054,7 @@ class MainWindow(QMainWindow):
             access_status=self._access_status,
             append_license_callback=self._on_license_appended,
             perf_pinned_callback=self._set_perf_pinned,
+            theme_callback=self._apply_theme_switch,
             parent=self,
         )
         dialog.exec()

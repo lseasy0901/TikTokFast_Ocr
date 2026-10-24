@@ -86,6 +86,8 @@ class Palette:
     SCRIM: str = "rgba(10, 12, 14, 0.86)"
     #: 主操作（强调色实心按钮）上的文字色
     ACCENT_INK: str = "#062330"
+    #: 玻璃卡对话框在 Acrylic 生效时的卡面填充（暗主题深磨砂/浅主题白磨砂）
+    GLASS_CARD_FILL: str = "rgba(32, 35, 40, 0.72)"
 
     # ---- 边框：低对比，1px + 顶部微亮边区分层级 ----
     BORDER: str = "rgba(255, 255, 255, 0.10)"
@@ -133,6 +135,106 @@ class Palette:
                         '"Microsoft YaHei UI", "Microsoft YaHei", monospace')
     FONT_SIZE: str = "12px"
     FONT_SIZE_SMALL: str = "11px"
+
+
+# ======================================================================
+# 双主题：默认（深色石墨）+ 浅色覆盖表
+# ======================================================================
+#: 浅色主题覆盖表。只列与深色不同的令牌；set_theme 直接改写 Palette 的
+#: 类属性 —— 所有运行时读取 Palette.X 的自绘/样式随之生效。
+#: 视频井 WELL 保持深色：视频画布在任何主题下都应是暗场（LightC 同款）。
+_LIGHT_OVERRIDES = {
+    "APP_BG": "#F2F3F5",
+    "CHROME_BG": "rgba(255, 255, 255, 0.50)",
+    "DOCK_BG": "rgba(255, 255, 255, 0.62)",
+    "DOCK_HEADER_BG": "rgba(0, 0, 0, 0.03)",
+    "PANEL_BG": "#E8EAED",
+    "POPUP_BG": "rgba(250, 251, 252, 0.97)",
+    "INPUT_BG": "rgba(0, 0, 0, 0.055)",
+    "ELEVATED": "rgba(255, 255, 255, 0.90)",
+    "HOVER": "rgba(0, 0, 0, 0.05)",
+    "PRESSED": "rgba(0, 0, 0, 0.10)",
+    "DISABLED_BG": "rgba(0, 0, 0, 0.04)",
+    "CHROME": "rgba(255, 255, 255, 0.50)",
+    "GLASS_CARD_FILL": "rgba(255, 255, 255, 0.60)",
+    "BORDER": "rgba(0, 0, 0, 0.10)",
+    "BORDER_TOP": "rgba(0, 0, 0, 0.14)",
+    "BORDER_SOFT": "rgba(0, 0, 0, 0.06)",
+    "BORDER_STRONG": "rgba(0, 0, 0, 0.16)",
+    "TEXT": "#1B1F24",
+    "TEXT_DIM": "#4A5158",
+    "TEXT_MUTED": "#6E767E",
+    "TEXT_DISABLED": "#9AA1A8",
+    "ICON": "#3D444B",
+    "FOCUS_RING": "#0987C9",
+    "ACCENT": "#33B4F4",
+    "ACCENT_HOVER": "#1EA7EC",
+    "ACCENT_PRESSED": "#0E97DB",
+    "ACCENT_TEXT": "#0672AE",
+    "ACCENT_DIM": "rgba(9, 135, 200, 0.12)",
+    "ACCENT_EDGE": "rgba(9, 135, 200, 0.30)",
+    "OK_TEXT": "#0B7546",
+    "OK_BG": "rgba(11, 117, 70, 0.10)",
+    "OK_BORDER": "rgba(11, 117, 70, 0.28)",
+    "WARN_TEXT": "#8A5A00",
+    "WARN_BG": "rgba(138, 90, 0, 0.10)",
+    "WARN_BORDER": "rgba(138, 90, 0, 0.28)",
+    "DANGER": "#D3453A",
+    "DANGER_TEXT": "#B3261E",
+    "DANGER_BG": "rgba(211, 69, 58, 0.10)",
+    "DANGER_BORDER": "rgba(211, 69, 58, 0.30)",
+    "DANGER_HOVER": "#E05A50",
+}
+
+#: 当前主题名（"dark" | "light"）。由 set_theme 维护。
+_theme_name: str = "dark"
+
+
+def current_theme() -> str:
+    """当前主题名。"""
+    return _theme_name
+
+
+def set_theme(name: str) -> None:
+    """切换主题：把覆盖值写进 Palette 类属性。
+
+    应用样式需再调 :func:`apply_theme` 重建 QSS/QPalette；已打开窗口的
+    系统背景明暗（Acrylic 暗色调）由调用方用 :func:`enable_backdrop` 重设。
+    传入未知名字按 "dark" 处理（不抛异常，主题切换永远不该弄崩程序）。
+    """
+    global _theme_name
+    if name not in ("dark", "light"):
+        name = "dark"
+    _theme_name = name
+    overrides = _LIGHT_OVERRIDES if name == "light" else {}
+    for token, value in overrides.items():
+        if hasattr(Palette, token):
+            setattr(Palette, token, value)
+    # 深色 = 出厂值：浅色切回深色时必须完整还原，不能残留上一次的覆盖
+    for token in _LIGHT_OVERRIDES:
+        if token not in overrides and hasattr(Palette, token):
+            setattr(Palette, token, _DARK_DEFAULTS[token])
+
+
+#: set_theme 时同步维护的别名（widgets.glass_dialog_qss 的 f-string 用）
+def _sync_glass_alias() -> None:
+    Palette.GlassCardFill = Palette.GLASS_CARD_FILL
+
+
+_sync_glass_alias()
+_orig_set_theme = set_theme
+
+
+def set_theme(name: str) -> None:  # noqa: F811 - 包装原实现以同步别名
+    _orig_set_theme(name)
+    _sync_glass_alias()
+
+
+#: 深色主题出厂值（模块导入时抓快照；set_theme 用它还原）
+_DARK_DEFAULTS = {
+    _t: getattr(Palette, _t)
+    for _t in (*_LIGHT_OVERRIDES.keys(),)
+}
 
 
 # ======================================================================
@@ -1316,12 +1418,15 @@ def _win11_22h2_or_newer() -> bool:
         return False
 
 
-def enable_backdrop(hwnd: int, kind: str = "mica") -> bool:
+def enable_backdrop(hwnd: int, kind: str = "mica", dark: bool | None = None) -> bool:
     """给窗口启用 DWM 系统背景（mica / acrylic），失败返回 False。
 
     这不是 PySide6 的能力，需要 Win32 的 DwmSetWindowAttribute
     （38=系统背景类型 / 20=深色 / 33=圆角）。任何失败都返回 False，
-    由调用方退回不透明深色 —— 不做视觉上的欺骗。
+    由调用方退回不透明底色 —— 不做视觉上的欺骗。
+
+    :param dark: 系统背景的明暗调（浅色主题传 False → Acrylic 走亮色调）；
+        None = 跟随当前主题（:func:`current_theme`）。
     """
     if not _win11_22h2_or_newer():
         return False
@@ -1333,7 +1438,8 @@ def enable_backdrop(hwnd: int, kind: str = "mica") -> bool:
 
         dwm = ctypes.windll.dwmapi
         # 顺序：先声明深色，再设背景类型（反之 DWM 会先按浅色合成且不重算）
-        dark = ctypes.c_int(1)
+        dark = (_theme_name == "dark") if dark is None else bool(dark)
+        dark = ctypes.c_int(1 if dark else 0)
         dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
         value = ctypes.c_int(backdrop)
         if dwm.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(value),

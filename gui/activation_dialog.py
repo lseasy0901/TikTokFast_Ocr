@@ -46,7 +46,8 @@ from utils.offline_activation import OFFLINE_KEYS, normalize_key
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.activation")
 
-_QSS = f"""
+def _qss() -> str:
+    return f"""
 QLabel {{ background: none; }}
 #actTitle {{ font-size: 16px; font-weight: 600; color: {Palette.TEXT}; }}
 #actHint {{ font-size: 12px; color: {Palette.TEXT_DIM}; }}
@@ -152,7 +153,7 @@ class ActivationDialog(GlassDialog):
     # ------------------------------------------------------------------
     def _setup_ui(self):
         # 基类玻璃卡 QSS + 本对话框的控件细节（拼接而非覆盖）
-        self.setStyleSheet(self.styleSheet() + _QSS)
+        self.setStyleSheet(self.styleSheet() + _qss())
         outer = self.card_layout
 
         self._stack = QStackedWidget()

@@ -579,7 +579,7 @@ QDialog {{ background: transparent; }}
 }}
 /* Acrylic 生效：卡片底色改半透明，桌面模糊透进卡面 —— 真·玻璃浮层 */
 #glassCard[acrylic="true"] {{
-    background-color: rgba(32, 35, 40, 0.72);
+    background-color: {Palette.GlassCardFill};
 }}
 #glassCard QLabel {{ background: none; }}
 #glassCardTitle {{
@@ -684,7 +684,9 @@ class GlassDialog(QDialog):
 # ======================================================================
 # 就近弹出的小卡片（标题栏按钮下方）
 # ======================================================================
-_POPUP_QSS = f"""
+def popup_qss() -> str:
+    """InfoPopup 样式。函数化：主题切换后新开的弹窗取当前主题令牌。"""
+    return f"""
 #infoPopup {{
     background-color: {Palette.POPUP_BG};
     border: 1px solid {Palette.BORDER_STRONG};
@@ -721,7 +723,7 @@ class InfoPopup(QFrame):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setObjectName("infoPopup")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet(_POPUP_QSS)
+        self.setStyleSheet(popup_qss())
         self.setFixedWidth(self.WIDTH)
 
         col = QVBoxLayout(self)

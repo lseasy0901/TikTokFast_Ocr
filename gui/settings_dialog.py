@@ -39,7 +39,8 @@ from gui.widgets import GlassDialog
 from gui.activation_dialog import ActivationDialog
 from gui.theme import Metrics, Palette
 from utils.license_manager import LicenseManager, LicenseStatus
-from utils.ui_prefs import PERF_PINNED, get_pref, set_pref
+from gui.theme import current_theme
+from utils.ui_prefs import PERF_PINNED, UI_THEME, get_pref, set_pref
 from utils.update_source import DEFAULT_UPDATE_SOURCE
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.settings")
@@ -66,7 +67,8 @@ def website_url() -> str:
     return ""
 
 
-_QSS = f"""
+def _qss() -> str:
+    return f"""
 QLabel {{ background: none; }}
 #setNav {{ background: transparent; border: none; outline: none;
            color: {Palette.TEXT_DIM}; font-size: 12px; }}
@@ -94,7 +96,7 @@ class SettingsDialog(GlassDialog):
 
     def __init__(self, manager: LicenseManager, version: str,
                  access_status=None, append_license_callback=None,
-                 perf_pinned_callback=None, parent=None):
+                 perf_pinned_callback=None, theme_callback=None, parent=None):
         """
         :param manager:   LicenseManager（只读它的 last_result 展示真实状态）
         :param version:   真实版本号（由调用方给出，弹窗不自行推断）
@@ -109,13 +111,14 @@ class SettingsDialog(GlassDialog):
         self._access_status = access_status
         self._on_appended = append_license_callback
         self._on_perf_pinned = perf_pinned_callback
+        self._on_theme_switch = theme_callback
 
         self.setFixedSize(560, 420)
         self._setup_ui()
 
     # ------------------------------------------------------------------
     def _setup_ui(self):
-        self.setStyleSheet(self.styleSheet() + _QSS)
+        self.setStyleSheet(self.styleSheet() + _qss())
         outer = QHBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -164,19 +167,44 @@ class SettingsDialog(GlassDialog):
         title.setObjectName("setTitle")
         col.addWidget(title)
 
+        col.addWidget(self._label("外观主题"))
+        theme_row = QHBoxLayout()
+        self._theme_buttons: list[QPushButton] = []
+        for value, label in (("dark", "深色"), ("light", "浅色")):
+            btn = QPushButton(label)
+            btn.setObjectName("segmentBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setChecked(current_theme() == value)
+            btn.clicked.connect(lambda _=False, v=value: self._on_theme_clicked(v))
+            theme_row.addWidget(btn)
+            self._theme_buttons.append(btn)
+        theme_row.addStretch(1)
+        col.addLayout(theme_row)
+
         self._perf_pinned_cb = QCheckBox("在状态栏常驻显示性能指标")
         self._perf_pinned_cb.setChecked(bool(get_pref(PERF_PINNED, False)))
         self._perf_pinned_cb.toggled.connect(self._on_perf_pinned_toggled)
         col.addWidget(self._perf_pinned_cb)
 
-        hint = QLabel("关闭时，延迟 / 帧率 / 渲染等诊断指标收纳在"
-                      "状态栏右下角的「诊断」弹层里。")
+        hint = QLabel("浅色主题下视频画布仍为暗场（观感与 LightC 一致）；"
+                      "延迟 / 帧率等诊断指标默认收纳在状态栏「诊断」弹层里。")
         hint.setObjectName("setHint")
         hint.setWordWrap(True)
         col.addWidget(hint)
 
         col.addStretch(1)
         return page
+
+    def _on_theme_clicked(self, value: str) -> None:
+        """外观主题分段按钮：互斥选中 + 即时切换。"""
+        for btn in self._theme_buttons:
+            btn.setChecked(False)
+        sender = self.sender()
+        sender.setChecked(True)
+        set_pref(UI_THEME, value)
+        if self._on_theme_switch is not None:
+            self._on_theme_switch(value)
 
     def _on_perf_pinned_toggled(self, checked: bool) -> None:
         set_pref(PERF_PINNED, bool(checked))
