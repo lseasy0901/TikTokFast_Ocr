@@ -18,7 +18,7 @@
 import logging
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui import theme
-from gui.widgets import GlassDialog
+from gui.widgets import GlassDialog, IconButton, icon_pixmap
 from gui.activation_dialog import ActivationDialog
 from gui.theme import Metrics, Palette
 from utils.license_manager import LicenseManager, LicenseStatus
@@ -47,6 +47,9 @@ logger = logging.getLogger("DouyinLowLatencyViewer.gui.settings")
 
 #: 作者联系方式（RELEASE-01：统一为 QQ，不再使用微信）
 CONTACT_QQ = "1752924057"
+#: 意见反馈渠道（2026-10-24 用户指定）
+CONTACT_EMAIL = "1752924057@qq.com"
+CONTACT_QQ_GROUP = "1035921366"
 
 #: 购买授权跳转（未激活界面「购买授权」按钮打开的淘宝链接）
 PURCHASE_URL = "https://m.tb.cn/h.jaMe2gX?tk=CfF8TI9nJew"
@@ -81,6 +84,20 @@ QLabel {{ background: none; }}
 #setMono {{ font-size: 12px; color: {Palette.TEXT_DIM};
             font-family: {Palette.MONO_FAMILY}; }}
 #setHint {{ font-size: 11px; color: {Palette.TEXT_MUTED}; }}
+#fbCard {{
+    background-color: {Palette.INPUT_BG};
+    border: 1px solid {Palette.BORDER};
+    border-radius: {Metrics.CONTROL_RADIUS}px;
+}}
+#fbIcon {{
+    background-color: {Palette.ELEVATED};
+    border-radius: 8px;
+}}
+#fbTitle {{ font-size: 13px; font-weight: 600; color: {Palette.TEXT};
+            background: none; }}
+#fbSub {{ font-size: 12px; color: {Palette.TEXT_DIM};
+          font-family: {Palette.MONO_FAMILY}; background: none; }}
+#fbCopyBtn {{ min-width: 64px; padding: 4px 12px; }}
 
 """
 
@@ -89,7 +106,6 @@ class SettingsDialog(GlassDialog):
     """居中设置中心。
 
     Acrylic 与激活弹窗同一套策略：首次显示尝试一次，失败即保持不透明深色
-    （见 :func:`gui.theme.apply_dialog_acrylic`）。
     """
 
     NAV_WIDTH = 132
@@ -134,7 +150,7 @@ class SettingsDialog(GlassDialog):
         self._nav.setObjectName("setNav")
         self._nav.setFrameShape(QFrame.NoFrame)
         self._nav.setFocusPolicy(Qt.NoFocus)
-        for label in ("授权", "偏好", "关于"):
+        for label in ("授权", "偏好", "意见反馈", "关于"):
             self._nav.addItem(QListWidgetItem(label))
         self._nav.currentRowChanged.connect(self._on_nav_changed)
         nav_col.addWidget(self._nav, 1)
@@ -144,6 +160,7 @@ class SettingsDialog(GlassDialog):
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_license_page())
         self._stack.addWidget(self._build_prefs_page())
+        self._stack.addWidget(self._build_feedback_page())
         self._stack.addWidget(self._build_about_page())
         outer.addWidget(self._stack, 1)
 
@@ -205,6 +222,80 @@ class SettingsDialog(GlassDialog):
         set_pref(UI_THEME, value)
         if self._on_theme_switch is not None:
             self._on_theme_switch(value)
+
+    # ------------------------------------------------------------------
+    # 意见反馈页
+    # ------------------------------------------------------------------
+    def _copy_text(self, text: str, button: QPushButton, done: str = "已复制 ✓") -> None:
+        """复制到剪贴板，按钮短暂显示「已复制」作为就地反馈。"""
+        QApplication.clipboard().setText(text)
+        original = button.text()
+        button.setText(done)
+        button.setEnabled(False)
+        QTimer.singleShot(1600, lambda: (
+            button.setText(original), button.setEnabled(True)))
+
+    def _feedback_card(self, icon_kind: str, title: str, subtitle: str,
+                       copy_value: str, action_text: str = "复制") -> QFrame:
+        """反馈渠道卡片：图标 + 标题/副标 + 复制动作（参照 LightC 样式）。"""
+        card = QFrame()
+        card.setObjectName("fbCard")
+        row = QHBoxLayout(card)
+        row.setContentsMargins(14, 12, 12, 12)
+        row.setSpacing(12)
+
+        icon = QLabel()
+        icon.setPixmap(icon_pixmap(icon_kind, 18, Palette.TEXT))
+        icon.setFixedSize(36, 36)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setObjectName("fbIcon")
+        row.addWidget(icon)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        t = QLabel(title)
+        t.setObjectName("fbTitle")
+        col.addWidget(t)
+        sub = QLabel(subtitle)
+        sub.setObjectName("fbSub")
+        col.addWidget(sub)
+        row.addLayout(col, 1)
+
+        btn = QPushButton(action_text)
+        btn.setObjectName("fbCopyBtn")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip(f"复制 {copy_value} 到剪贴板")
+        btn.clicked.connect(
+            lambda _=False, v=copy_value, b=btn: self._copy_text(v, b))
+        row.addWidget(btn)
+        return card
+
+    def _build_feedback_page(self) -> QWidget:
+        page = QWidget()
+        col = QVBoxLayout(page)
+        col.setContentsMargins(20, 18, 20, 18)
+        col.setSpacing(10)
+
+        title = QLabel("意见反馈")
+        title.setObjectName("setTitle")
+        col.addWidget(title)
+
+        col.addWidget(self._label("问题反馈"))
+        hint = QLabel("使用中遇到问题或有改进建议，欢迎通过以下方式联系我：")
+        hint.setObjectName("setHint")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+
+        col.addWidget(self._feedback_card(
+            IconButton.CONTACT, "邮件反馈", CONTACT_EMAIL, CONTACT_EMAIL))
+
+        col.addSpacing(6)
+        col.addWidget(self._label("交流"))
+        col.addWidget(self._feedback_card(
+            IconButton.CONTACT, "QQ 群", CONTACT_QQ_GROUP, CONTACT_QQ_GROUP))
+
+        col.addStretch(1)
+        return page
 
     def _on_perf_pinned_toggled(self, checked: bool) -> None:
         set_pref(PERF_PINNED, bool(checked))

@@ -32,7 +32,7 @@ os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="dlv-ui3-local-")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from gui import theme  # noqa: E402
 import gui.main_window as mw  # noqa: E402
@@ -67,6 +67,10 @@ def check(condition, message: str) -> bool:
         return True
     _FAILED += 1
     print(f"  [FAIL] {message}")
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # pytest 下必须真抛断言：check 只打印不抛错，失败会被 pytest 的
+        # "5 passed" 静默吞掉（偏好页加入后导航断言静默失败的教训）。
+        raise AssertionError(message)
     return False
 
 
@@ -357,11 +361,28 @@ def test_settings_dialog() -> None:
 
     # D1. 导航只放真实存在的分类，且切换联动内容页
     labels = [dialog._nav.item(i).text() for i in range(dialog._nav.count())]
-    check(labels == ["授权", "关于"], f"导航分类为 {labels}")
-    dialog._nav.setCurrentRow(1)
-    check(dialog._stack.currentIndex() == 1, "切到「关于」时内容页联动")
+    check(labels == ["授权", "偏好", "意见反馈", "关于"], f"导航分类为 {labels}")
+    dialog._nav.setCurrentRow(3)
+    check(dialog._stack.currentIndex() == 3, "切到「关于」时内容页联动")
     dialog._nav.setCurrentRow(0)
     check(dialog._stack.currentIndex() == 0, "切回「授权」时内容页联动")
+
+    # D1b. 意见反馈页：邮箱 / QQ 群与复制动作
+    dialog._nav.setCurrentRow(2)
+    page = dialog._stack.currentWidget()
+    texts = [q.text() for q in page.findChildren(QLabel)]
+    check("1752924057@qq.com" in texts, f"反馈页包含邮箱 {texts}")
+    check("1035921366" in texts, "反馈页包含 QQ 群号")
+    copy_btns = page.findChildren(QPushButton, name="fbCopyBtn")         if hasattr(page.findChildren(QPushButton, name="fbCopyBtn"), "__len__")         else page.findChildren(QPushButton)
+    copy_btns = [b for b in page.findChildren(QPushButton)
+                 if b.objectName() == "fbCopyBtn"]
+    check(len(copy_btns) == 2, f"两张反馈卡各有一个复制按钮，实际 {len(copy_btns)}")
+    from PySide6.QtWidgets import QApplication as _QA
+    _QA.clipboard().setText("sentinel")
+    copy_btns[0].click()
+    check(_QA.clipboard().text() == "1752924057@qq.com",
+          "点复制后剪贴板为邮箱")
+    dialog._nav.setCurrentRow(0)
 
     # D2. 授权页展示真实状态：没有凭据就直说未激活
     manager.last_result = None
@@ -435,34 +456,28 @@ def test_settings_dialog() -> None:
 # ======================================================================
 # E. Acrylic 回退
 # ======================================================================
-def test_acrylic_fallback() -> None:
-    section("E. apply_dialog_acrylic 回退")
+def test_glass_dialog_design() -> None:
+    """玻璃卡对话框设计契约（替代已移除的 apply_dialog_acrylic 测试）。
 
-    check(theme.apply_dialog_acrylic(None) is False, "传入 None 返回 False")
+    GlassDialog 不再启用窗口级 Acrylic（投影边距会露出发灰白的系统材质），
+    改为：无边框 + 半透明窗口 + 近不透明卡片 + 投影。
+    """
+    section("E. GlassDialog 设计契约")
 
     dialog = ActivationDialog(_RecordingManager())
-    dialog.show()
-    pump(20)
-
-    ok = theme.apply_dialog_acrylic(dialog)
-    check(isinstance(ok, bool), "返回值是布尔（不抛异常）")
-
-    if not ok:
-        # 回退路径：什么都【没有】被改动，对话框仍是不透明深色
-        check(not dialog.testAttribute(Qt.WA_TranslucentBackground),
-              "Acrylic 失败时不设置 WA_TranslucentBackground（保持不透明）")
-        check(not dialog.property("acrylic"),
-              "Acrylic 失败时不打 acrylic 属性")
-    else:
-        check(True, "本机 Acrylic 可用（回退分支在本机不适用）")
-
-    # 非 Windows / 老系统上的行为：enable_backdrop 恒为 False
-    check(theme.enable_backdrop(0, "nonsense") is False,
-          "未知 backdrop 类型返回 False")
-
+    check(dialog.windowFlags() & Qt.FramelessWindowHint != 0,
+          "激活卡是无边框窗口")
+    check(bool(dialog.testAttribute(Qt.WA_TranslucentBackground)),
+          "窗口半透明（圆角与投影需要）")
+    check(dialog._card.styleSheet() == "" or "glassCard" not in dialog._card.styleSheet(),
+          "卡片样式来自对话框级 QSS（控件级未覆盖）")
+    from gui.widgets import glass_dialog_qss
+    qss = glass_dialog_qss()
+    check("#glassCard" in qss and "acrylic" not in qss,
+          "卡片 QSS 不含 Acrylic 规则（灰白图层根因已移除）")
+    from gui.theme import Palette as _P
+    check(_P.POPUP_BG in qss, "卡片底色取 POPUP_BG（近不透明实底）")
     dialog.close()
-    pump(10)
-
 
 def main() -> int:
     test_dispatch()

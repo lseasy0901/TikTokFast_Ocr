@@ -41,7 +41,6 @@ __all__ = [
     "configure_high_dpi",
     "tone_color",
     "enable_backdrop",
-    "apply_dialog_acrylic",
 ]
 
 
@@ -1468,26 +1467,4 @@ def enable_backdrop(hwnd: int, kind: str = "mica", dark: bool | None = None) -> 
         return False
 
 
-def apply_dialog_acrylic(dialog) -> bool:
-    """给对话框启用 Acrylic 系统背景（Phase UI-3）。
 
-    「适度使用」的落地方式刻意保守：**只调用 DWM**，不动 QSS、不动窗口属性。
-    保留原生边框，因此拖动 / 关闭 / 阴影 / 缩放行为与不做这件事时完全一致；
-    对话框本体仍由 ``QDialog { background-color: APP_BG }`` 绘制。
-
-    任何失败（非 Win11 22H2+ / 无 dwmapi / DWM 返回非 0）都返回 False，
-    此时什么都【没有】被改过 —— 即需求里的「回退为不透明深色」。
-
-    刻意不使用 ``WA_TranslucentBackground`` 把本体挖空：该属性必须在窗口显示
-    之前设置才生效，而 DWM 句柄又必须等显示之后才有，两者顺序天然冲突；
-    强行用「构造期先设透明属性」去凑，会让对话框在 Acrylic 不可用的机器上
-    也变成无边框无阴影的半透明窗口 —— 那不是回退，是把失败路径做得更糟。
-
-    :return: True 表示 DWM 已接受 Acrylic 设置。
-    """
-    if dialog is None:
-        return False
-    try:
-        return enable_backdrop(int(dialog.winId()), "acrylic")
-    except Exception:  # noqa: BLE001 - 任何失败都退回不透明深色
-        return False
