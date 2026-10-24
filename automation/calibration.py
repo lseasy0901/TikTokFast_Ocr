@@ -49,17 +49,6 @@ STEP_PROMPTS = (
 )
 
 
-def _root_window_at(x: int, y: int) -> int:
-    """物理坐标处的顶层窗口(WindowFromPoint 可能给子窗口,取根)。"""
-    import ctypes.wintypes as wt
-
-    pt = wt.POINT(x, y)
-    hwnd = user32.WindowFromPoint(pt)
-    if not hwnd:
-        return 0
-    root = user32.GetAncestor(hwnd, _GA_ROOT)
-    return root or hwnd
-
 
 class _ClickPollThread(QThread):
     """后台左键点击检测(纯 Win32 只读调用,线程安全)。
@@ -160,11 +149,6 @@ class CalibrationOverlay(QObject):
         """轮询线程报告一次点击(本槽在主线程执行,可安全动 UI/状态)。"""
         if not self._active:
             return
-        if _root_window_at(x, y) != self._window.hwnd:
-            logger.info("[CAL] 点击落点不在游戏窗口 px=(%d,%d)", x, y)
-            self.invalidClick.emit("点击没落在游戏窗口内,请点游戏界面(要校准的位置)")
-            return
-
         geo = client_geometry(self._window.hwnd)
         if geo is None:
             self._end(False, "游戏窗口已关闭", None)
@@ -172,6 +156,17 @@ class CalibrationOverlay(QObject):
         ox, oy, w, h = geo
         if w <= 0 or h <= 0:
             self.invalidClick.emit("游戏窗口尺寸无效,请重试")
+            return
+        # 落点验证 v2:坐标是否落在游戏客户区矩形内。
+        # v1 用 WindowFromPoint 比对根窗口 hwnd,实机翻车:主线程满载时
+        # 点击信号延迟数百毫秒才处理,期间游戏在点击处弹出了浮层
+        # (独立顶层窗),WindowFromPoint 返回浮层而非游戏根窗口,全部被
+        # 误拒(2026-10-24 实测,5 次点击全被拒)。矩形包含判定与"谁盖在
+        # 上面"无关,坐标是点击时刻抓的,延迟处理不影响正确性。
+        if not (ox <= x < ox + w and oy <= y < oy + h):
+            logger.info("[CAL] 点击落点不在游戏客户区 px=(%d,%d) rect=(%d,%d,%d,%d)",
+                        x, y, ox, oy, w, h)
+            self.invalidClick.emit("点击没落在游戏窗口内,请点游戏界面(要校准的位置)")
             return
         frac = ((x - ox) / w, (y - oy) / h)
         self._points.append(frac)
