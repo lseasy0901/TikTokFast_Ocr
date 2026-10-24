@@ -1386,6 +1386,23 @@ def configure_high_dpi() -> None:
         pass
 
 
+def _prepend_brand_font() -> None:
+    """把品牌字体（gui.fonts 注册成功的第一个 family）前置进字体栈。
+
+    幂等：已前置过就不再叠加；没有品牌字体则字体栈原样不动。
+    """
+    try:
+        from gui.fonts import brand_family
+
+        family = brand_family()
+    except Exception:  # noqa: BLE001 - 字体是纯增强，失败不阻断
+        return
+    if not family:
+        return
+    if not Palette.FONT_FAMILY.startswith(f'"{family}"'):
+        Palette.FONT_FAMILY = f'"{family}", {Palette.FONT_FAMILY}'
+
+
 def apply_theme(app: QApplication | None = None) -> None:
     """把主题应用到整个应用（幂等，可重复调用）。
 
@@ -1398,6 +1415,7 @@ def apply_theme(app: QApplication | None = None) -> None:
         return
 
     app.setStyle("Fusion")
+    _prepend_brand_font()
     app.setPalette(_build_palette())
     app.setStyleSheet(build_stylesheet())
 
