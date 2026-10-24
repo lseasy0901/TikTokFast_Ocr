@@ -22,10 +22,12 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -35,7 +37,8 @@ from PySide6.QtWidgets import (
 )
 
 from gui import theme
-from gui.widgets import GlassDialog, IconButton, icon_pixmap
+from gui.widgets import GlassDialog, IconButton, icon_pixmap, open_external_url
+from automation.hotkey import VK_NAMES
 from gui.activation_dialog import ActivationDialog
 from gui.theme import Metrics, Palette
 from utils.license_manager import LicenseManager, LicenseStatus
@@ -112,7 +115,9 @@ class SettingsDialog(GlassDialog):
 
     def __init__(self, manager: LicenseManager, version: str,
                  access_status=None, append_license_callback=None,
-                 perf_pinned_callback=None, theme_callback=None, parent=None):
+                 perf_pinned_callback=None, theme_callback=None,
+                 automation_callback=None, automation_config=None,
+                 start_calibration_callback=None, parent=None):
         """
         :param manager:   LicenseManager（只读它的 last_result 展示真实状态）
         :param version:   真实版本号（由调用方给出，弹窗不自行推断）
@@ -128,6 +133,16 @@ class SettingsDialog(GlassDialog):
         self._on_appended = append_license_callback
         self._on_perf_pinned = perf_pinned_callback
         self._on_theme_switch = theme_callback
+        #: 自动加入:配置对象(主窗口持有的 JoinConfig,改动即时生效)+
+        #: 变更回调(热键重注册)+ 校准启动回调(关闭设置弹窗并开始校准)
+        # None(测试/独立构造)时自建一份:页面构建只读常规字段,
+        # 不会因此写盘;改动回调为 None 时也无副作用。
+        if automation_config is None:
+            from automation.join_config import JoinConfig
+            automation_config = JoinConfig.load()
+        self._automation_cfg = automation_config
+        self._on_automation_changed = automation_callback
+        self._start_calibration = start_calibration_callback
 
         self.setFixedSize(560, 420)
         self._setup_ui()
@@ -150,7 +165,7 @@ class SettingsDialog(GlassDialog):
         self._nav.setObjectName("setNav")
         self._nav.setFrameShape(QFrame.NoFrame)
         self._nav.setFocusPolicy(Qt.NoFocus)
-        for label in ("授权", "偏好", "意见反馈", "关于"):
+        for label in ("授权", "偏好", "自动加入", "意见反馈", "关于"):
             self._nav.addItem(QListWidgetItem(label))
         self._nav.currentRowChanged.connect(self._on_nav_changed)
         nav_col.addWidget(self._nav, 1)
@@ -160,6 +175,7 @@ class SettingsDialog(GlassDialog):
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_license_page())
         self._stack.addWidget(self._build_prefs_page())
+        self._stack.addWidget(self._build_auto_join_page())
         self._stack.addWidget(self._build_feedback_page())
         self._stack.addWidget(self._build_about_page())
         outer.addWidget(self._stack, 1)
@@ -222,6 +238,110 @@ class SettingsDialog(GlassDialog):
         set_pref(UI_THEME, value)
         if self._on_theme_switch is not None:
             self._on_theme_switch(value)
+
+    # ------------------------------------------------------------------
+    # 自动加入页
+    # ------------------------------------------------------------------
+    def _build_auto_join_page(self) -> QWidget:
+        """自动加入:开关/热键/窗口匹配/校准入口。
+
+        这里只改 self._automation_cfg(主窗口持有的同一对象)并通知回调;
+        持久化由 JoinConfig.save 在回调里统一做(单点落盘)。
+        """
+        cfg = self._automation_cfg
+        page = QWidget()
+        col = QVBoxLayout(page)
+        col.setContentsMargins(20, 18, 20, 18)
+        col.setSpacing(10)
+
+        title = QLabel("自动加入")
+        title.setObjectName("setTitle")
+        col.addWidget(title)
+
+        self._aj_enabled = QCheckBox("启用:识别到房间码后按热键自动加入")
+        self._aj_enabled.setChecked(bool(cfg.enabled))
+        self._aj_enabled.toggled.connect(
+            lambda v: self._aj_apply("enabled", v))
+        col.addWidget(self._aj_enabled)
+
+        # 热键
+        row1 = QHBoxLayout()
+        row1.addWidget(self._label("加入热键"))
+        self._aj_hotkey = QComboBox()
+        for name in VK_NAMES:
+            self._aj_hotkey.addItem(name)
+        self._aj_hotkey.setCurrentText(cfg.hotkey)
+        self._aj_hotkey.currentTextChanged.connect(
+            lambda t: self._aj_apply("hotkey", t))
+        row1.addWidget(self._aj_hotkey)
+        row1.addStretch(1)
+        col.addLayout(row1)
+
+        # 窗口匹配
+        row2 = QHBoxLayout()
+        row2.addWidget(self._label("窗口标题"))
+        self._aj_title = QLineEdit(cfg.window_title)
+        self._aj_title.setFixedWidth(200)
+        self._aj_title.textChanged.connect(
+            lambda t: self._aj_apply("window_title", t))
+        row2.addWidget(self._aj_title)
+        row2.addStretch(1)
+        col.addLayout(row2)
+
+        self._aj_confirm = QCheckBox("粘贴后自动点击「加入房间」")
+        self._aj_confirm.setChecked(bool(cfg.auto_confirm))
+        self._aj_confirm.toggled.connect(
+            lambda v: self._aj_apply("auto_confirm", v))
+        col.addWidget(self._aj_confirm)
+
+        # 校准
+        col.addWidget(self._label("点击位置校准"))
+        cal_row = QHBoxLayout()
+        self._aj_cal_status = QLabel(cfg.points_summary())
+        self._aj_cal_status.setObjectName("setValue")
+        cal_row.addWidget(self._aj_cal_status, 1)
+        self._aj_cal_btn = QPushButton("开始校准…")
+        self._aj_cal_btn.setObjectName("fbCopyBtn")
+        self._aj_cal_btn.setCursor(Qt.PointingHandCursor)
+        self._aj_cal_btn.setToolTip(
+            "在游戏「自定义房间」页面依次点击三处,记录相对窗口位置")
+        self._aj_cal_btn.clicked.connect(self._on_start_calibration)
+        cal_row.addWidget(self._aj_cal_btn)
+        col.addLayout(cal_row)
+
+        hint = QLabel(
+            "使用前提:游戏以窗口模式运行,并停留在「加入房间」页面。"
+            "识别到房间码会自动复制;按热键即自动切换到游戏,依次完成"
+            "「输入框 → 粘贴 → 加入」三步点击。\n"
+            "注意:自动操作游戏存在被反作弊判定的风险,请自行评估后使用。")
+        hint.setObjectName("setHint")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+
+        col.addStretch(1)
+        return page
+
+    def _aj_apply(self, key: str, value) -> None:
+        """把设置页的改动写回共享配置并通知主窗口(热键重注册/落盘)。"""
+        if self._automation_cfg is None:
+            return
+        if getattr(self._automation_cfg, key) == value:
+            return
+        setattr(self._automation_cfg, key, value)
+        if key in ("enabled", "hotkey"):
+            self._aj_refresh_status()
+        if self._on_automation_changed is not None:
+            self._on_automation_changed()
+
+    def _aj_refresh_status(self) -> None:
+        if self._automation_cfg is not None and hasattr(self, "_aj_cal_status"):
+            self._aj_cal_status.setText(self._automation_cfg.points_summary())
+
+    def _on_start_calibration(self) -> None:
+        """开始校准:关闭设置弹窗(腾出屏幕),由主窗口接管引导条。"""
+        if self._start_calibration is not None:
+            self._start_calibration()
+        self.close()
 
     # ------------------------------------------------------------------
     # 意见反馈页
@@ -401,7 +521,7 @@ class SettingsDialog(GlassDialog):
         site = website_url()
         if site:
             col.addWidget(self._label("官网"))
-            col.addLayout(self._copy_row(site, site))
+            col.addLayout(self._site_row(site))
 
         # 联系方式已迁到主窗口标题栏的「联系作者」按钮，这里不再重复一份
         col.addStretch(1)
@@ -413,34 +533,31 @@ class SettingsDialog(GlassDialog):
         label.setObjectName("setLabel")
         return label
 
-    def _copy_row(self, label: str, value: str) -> QHBoxLayout:
-        """一行「标签 + 值 + 复制按钮」；复制走系统剪贴板（与 OCR 规则无关）。"""
+    def _site_row(self, url: str) -> QHBoxLayout:
+        """关于页官网行：URL + 「打开」按钮，点击走系统默认浏览器。
+
+        历史注记：这一行原本是「复制」按钮，且调用时把 URL 误当行标签
+        传入（_copy_row(site, site)），左侧出现一截截断的 URL —— 2026-10-24
+        用户指认。现标签固定「官网」，动作为浏览器打开（open_external_url
+        失败时会弹窗给出 URL 原文，不静默假报成功）；URL 仍可鼠标选中复制。
+        """
         row = QHBoxLayout()
         row.setSpacing(8)
-        name = QLabel(f"{label}  ")
+        name = QLabel("官网")
         name.setObjectName("setMono")
         row.addWidget(name)
 
-        text = QLabel(value)
+        text = QLabel(url)
         text.setObjectName("setMono")
         text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        row.addWidget(text)
+        row.addWidget(text, 1)
 
-        hint = QLabel("")
-        hint.setObjectName("setHint")
-        row.addWidget(hint)
-
-        btn = QPushButton("复制")
+        btn = QPushButton("打开")
         btn.setFixedHeight(26)
         btn.setMinimumWidth(56)
-
-        def _copy():
-            clipboard = QApplication.clipboard()
-            if clipboard is not None:
-                clipboard.setText(value)
-                hint.setText("已复制")
-
-        btn.clicked.connect(_copy)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip("用系统默认浏览器打开官网")
+        btn.clicked.connect(lambda _=False: open_external_url(url, self))
         row.addWidget(btn)
         row.addStretch(1)
         return row

@@ -361,14 +361,38 @@ def test_settings_dialog() -> None:
 
     # D1. 导航只放真实存在的分类，且切换联动内容页
     labels = [dialog._nav.item(i).text() for i in range(dialog._nav.count())]
-    check(labels == ["授权", "偏好", "意见反馈", "关于"], f"导航分类为 {labels}")
-    dialog._nav.setCurrentRow(3)
-    check(dialog._stack.currentIndex() == 3, "切到「关于」时内容页联动")
+    check(labels == ["授权", "偏好", "自动加入", "意见反馈", "关于"],
+          f"导航分类为 {labels}")
+    dialog._nav.setCurrentRow(4)
+    check(dialog._stack.currentIndex() == 4, "切到「关于」时内容页联动")
+    # D1c. 关于页官网行:标签不再误传 URL,动作是浏览器打开
+    dialog._nav.setCurrentRow(4)
+    about = dialog._stack.currentWidget()
+    about_btns = [b for b in about.findChildren(QPushButton)
+                  if b.text() == "打开"]
+    check(len(about_btns) == 1, "官网行动作是「打开」按钮")
+    from utils.update_source import DEFAULT_UPDATE_SOURCE as _DUS
+    from urllib.parse import urlsplit as _split
+    _site = f"{_split(_DUS).scheme}://{_split(_DUS).netloc}"
+    about_labels = [q.text() for q in about.findChildren(QLabel)]
+    check(_site in about_labels and about_labels.count(_site) == 1,
+          f"官网 URL 只显示一次：{about_labels}")
+    # 不真点「打开」:offscreen 下 openUrl 必失败,open_external_url 会弹
+    # 模态 QMessageBox,无人关闭导致测试挂死;行为已由按钮语义+tooltip 覆盖,
+    # 打开动作留给真机验收。
+    check("浏览器" in (about_btns[0].toolTip() or ""),
+          "「打开」按钮 tooltip 说明走浏览器")
     dialog._nav.setCurrentRow(0)
     check(dialog._stack.currentIndex() == 0, "切回「授权」时内容页联动")
 
-    # D1b. 意见反馈页：邮箱 / QQ 群与复制动作
+    # D1b. 自动加入页:开关/热键/校准入口存在
     dialog._nav.setCurrentRow(2)
+    check(dialog._aj_enabled.text().startswith("启用"), "自动加入页有启用开关")
+    check(dialog._aj_hotkey.currentText() == "F8", "默认热键 F8")
+    check(dialog._aj_cal_btn.text().startswith("开始校准"), "有校准入口")
+
+    # D1b2. 意见反馈页:邮箱 / QQ 群与复制动作
+    dialog._nav.setCurrentRow(3)
     page = dialog._stack.currentWidget()
     texts = [q.text() for q in page.findChildren(QLabel)]
     check("1752924057@qq.com" in texts, f"反馈页包含邮箱 {texts}")

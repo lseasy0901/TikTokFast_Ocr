@@ -117,6 +117,14 @@ from utils import update_state
 from utils import ffmpeg7_runtime
 from utils.ui_prefs import PERF_PINNED, UI_THEME, get_pref, set_pref
 from gui.toast import Toast
+from gui.join_guide import JoinGuideBar
+from automation import (
+    STEP_PROMPTS,
+    CalibrationOverlay,
+    GlobalHotkey,
+    JoinConfig,
+    JoinController,
+)
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
@@ -1562,6 +1570,21 @@ class MainWindow(QMainWindow):
         self._toast = Toast(self)
         self._set_perf_pinned(bool(get_pref(PERF_PINNED, False)), persist=False)
 
+        # ---- 自动加入(automation):配置/热键/执行器/校准 ----------------
+        self._pending_join_code: str | None = None
+        self._automation_cfg = JoinConfig.load()
+        self._join_hotkey = GlobalHotkey(self)
+        self._join_hotkey.activated.connect(self._on_join_hotkey)
+        self._join_controller = JoinController(self)
+        self._join_controller.finished.connect(self._on_join_finished)
+        self._calibration = CalibrationOverlay(self)
+        self._calibration.stepChanged.connect(self._on_cal_step)
+        self._calibration.invalidClick.connect(self._on_cal_invalid)
+        self._calibration.finished.connect(self._on_cal_finished)
+        self._join_guide = JoinGuideBar()
+        self._join_guide.close()
+        self._sync_join_hotkey()
+
     def _apply_perf_popup_qss(self) -> None:
         """诊断弹层背景用 solid_color 合成的不透明色。
 
@@ -1683,6 +1706,74 @@ class MainWindow(QMainWindow):
                 pass
         self.show_toast("已切换到浅色主题" if name == "light" else "已切换到深色主题",
                         "ok")
+
+    # ------------------------------------------------------------------
+    # 自动加入(automation)
+    # ------------------------------------------------------------------
+    def _sync_join_hotkey(self) -> None:
+        """按配置注册/注销全局热键(启用才注册;改键后重注册)。"""
+        cfg = self._automation_cfg
+        if not cfg.enabled:
+            self._join_hotkey.unregister()
+            return
+        if not self._join_hotkey.register(cfg.hotkey):
+            self.show_toast(self._join_hotkey.last_error or "热键注册失败",
+                            "error")
+
+    def _on_automation_config_changed(self) -> None:
+        """设置页·自动加入有改动:落盘 + 热键重注册。"""
+        self._automation_cfg.save()
+        self._sync_join_hotkey()
+
+    def _on_join_hotkey(self) -> None:
+        """热键触发:预检 → 刷新剪贴板 → 启动三步点击序列。"""
+        cfg = self._automation_cfg
+        if not cfg.enabled:
+            return
+        if not cfg.is_calibrated:
+            self.show_toast("自动加入尚未校准:设置 → 自动加入 → 开始校准",
+                            "warn")
+            return
+        code = getattr(self, "_pending_join_code", None)
+        if not code:
+            self.show_toast("还没有可加入的房间码(等 OCR 识别到新码)", "warn")
+            return
+        # 重写剪贴板,确保粘贴的是目标码(用户可能中途复制过别的)
+        if not self._clipboard_manager.copy(code):
+            self.show_toast("无法写入剪贴板,自动加入中止", "error")
+            return
+        self._join_controller.join(cfg)   # 结果统一走 _on_join_finished
+
+    def _on_join_finished(self, result) -> None:
+        """序列结束:toast 反馈(成功含比例漂移警告,失败给原因)。"""
+        if result.ok:
+            self.show_toast(
+                f"自动加入已执行:{result.reason}"
+                + (f"(注意:{result.warning})" if result.warning else ""),
+                "ok" if not result.warning else "warn")
+        else:
+            self.show_toast(f"自动加入失败:{result.reason}", "error")
+
+    def _start_join_calibration(self) -> None:
+        """设置页「开始校准」入口(设置弹窗已自行关闭腾出屏幕)。"""
+        self._calibration.start(self._automation_cfg)
+
+    def _on_cal_step(self, index: int, prompt: str) -> None:
+        self._join_guide.show_step(index, prompt)
+
+    def _on_cal_invalid(self, message: str) -> None:
+        self._join_guide.show_message(message)
+        QTimer.singleShot(1500, lambda: (
+            self._join_guide.show_step(self._calibration._step,
+                                       STEP_PROMPTS[self._calibration._step])
+            if self._calibration.active else None))
+
+    def _on_cal_finished(self, ok: bool, message: str, cfg) -> None:
+        self._join_guide.close()
+        self.show_toast(message, "ok" if ok else "error")
+        if ok and cfg is not None:
+            cfg.save()
+            self._sync_join_hotkey()
 
     def show_toast(self, text: str, tone: str = "neutral") -> None:
         """右下角 toast：不抢焦点、2.6s 自动消退（gui/toast.py）。"""
@@ -3327,6 +3418,9 @@ class MainWindow(QMainWindow):
 
         if copied:
             logger.info("[CLIPBOARD] copy success")
+            # 自动加入:复制成功的码就是"待加入码"(主播换码自然覆盖;
+            # 按热键时还会重写一次剪贴板,防用户中途复制了别的东西)
+            self._pending_join_code = text
             # 显示复制成功反馈
             self._show_copy_feedback(text)
             # 状态栏芯片同步点亮，2 秒后自动回落到待命
@@ -4115,6 +4209,9 @@ class MainWindow(QMainWindow):
             append_license_callback=self._on_license_appended,
             perf_pinned_callback=self._set_perf_pinned,
             theme_callback=self._apply_theme_switch,
+            automation_callback=self._on_automation_config_changed,
+            automation_config=self._automation_cfg,
+            start_calibration_callback=self._start_join_calibration,
             parent=self,
         )
         dialog.exec()
