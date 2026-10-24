@@ -36,17 +36,22 @@ class ClipboardManager:
 
         logger.info("ClipboardManager 初始化完成")
 
-    def copy(self, text: str) -> bool:
+    def copy(self, text: str, force: bool = False) -> bool:
         """
         复制文本到剪切板（带智能过滤）
 
         过滤条件：
             1. 空文本
             2. 纯空格
-            3. 与上一次复制相同的文本
+            3. 与上一次复制相同的文本（force=True 时跳过——见下）
 
         参数：
             text: 要复制的文本
+            force: 强制写入,跳过"重复文本过滤"。给"确保剪贴板是目标值"
+                的调用方用(自动加入按 F8 时重写房间码):那种场景下"和上次
+                相同"恰恰是预期结果,必须成功;用户中途可能复制过别的东西,
+                无论如何都要把目标码写回去(2026-10-25 第二次按 F8 被误拦
+                的实测事故)。
 
         返回：
             True 如果成功复制，False 如果被过滤或失败
@@ -70,8 +75,8 @@ class ClipboardManager:
             logger.info("result=False (纯空格)")
             return False
 
-        # 3. 重复文本过滤
-        if stripped == self._last_copied:
+        # 3. 重复文本过滤（force 场景跳过：见 docstring）
+        if not force and stripped == self._last_copied:
             self._filter_count += 1
             logger.debug("剪切板: 过滤重复文本: '%s'", stripped)
             logger.info("result=False (重复文本)")

@@ -1754,8 +1754,10 @@ class MainWindow(QMainWindow):
         if not code:
             self.show_toast("还没有可加入的房间码(等 OCR 识别到新码)", "warn")
             return
-        # 重写剪贴板,确保粘贴的是目标码(用户可能中途复制过别的)
-        if not self._clipboard_manager.copy(code):
+        # 重写剪贴板,确保粘贴的是目标码(用户可能中途复制过别的;
+        # force=True:与上次相同也必须写成功——重复过滤曾把第二次按 F8
+        # 误判成"无法写入剪贴板"而中止)
+        if not self._clipboard_manager.copy(code, force=True):
             self.show_toast("无法写入剪贴板,自动加入中止", "error")
             return
         self._join_controller.join(cfg)   # 结果统一走 _on_join_finished
