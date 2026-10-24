@@ -1,26 +1,30 @@
 # -*- coding: utf-8 -*-
-"""三点校准:用户在游戏里真实点击三次,LiveLens 轮询捕获并记录。
+"""三点校准:用户在游戏里真实点击三次,后台线程轮询捕获并记录。
 
-设计(2026-10-24 评审定稿,取代最初的"透明覆盖层"方案):
-    - **轮询而非钩子**:15ms QTimer 轮询 GetAsyncKeyState(VK_LBUTTON)
-      上升沿 + GetCursorPos。低级鼠标钩子在 Python 里有回调超时约束,
-      轮询零依赖、零风险。
+设计(2026-10-24 评审定稿 + 实机故障修正):
+    - **独立线程轮询**(v2 修正):第一版把 15ms QTimer 挂在 GUI 主线程,
+      实机直播流+OCR 运行时主线程被视频帧占满,轮询间隔被拉长到远超
+      一次点击的持续时间(~100ms),点击全部漏检(2026-10-24 用户实测
+      "卡在第 1 步")。现在用专用 QThread 做 5ms 纯 Win32 轮询
+      (GetAsyncKeyState/GetCursorPos 线程安全),点击信号发回主线程。
+    - **轮询而非钩子**:WH_MOUSE_LL 在 Python 有回调超时约束;线程轮询
+      简单可靠。5ms 间隔 + 300ms 冷却(防一次双击被记成两点)。
     - **所见即所得**:用户直接点游戏(真实点击、游戏真实响应),
       第一步点完输入框,粘贴浮层真的弹出,第二步才能校到浮层里的粘贴项。
-      不存在"覆盖层吃掉点击导致浮层弹不出"的问题。
-    - **坐标单轨**:GetCursorPos 是物理像素,与执行时(SendInput)同轨,
-      DPI 缩放屏上不会出现 1.5 倍偏差。
+    - **坐标单轨**:GetCursorPos 是物理像素,与执行时(SendInput)同轨。
     - **落点验证**:点击必须落在游戏窗口客户区内(WindowFromPoint
       取根窗口比对),点偏(点到别处)不记录、提示重试。
 """
 
 from __future__ import annotations
 
+import ctypes
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 
 from automation.join_config import JoinConfig
 from automation.win32 import WindowInfo, client_geometry, cursor_pos, find_game_window
@@ -31,9 +35,8 @@ __all__ = ["CalibrationOverlay"]
 
 _VK_LBUTTON = 0x01
 _KEY_PRESSED = 0x8000
-_POLL_MS = 15
-
-import ctypes
+_POLL_INTERVAL_S = 0.005     # 5ms:远小于一次点击的按住时长
+_CLICK_COOLDOWN_S = 0.30     # 双击/抖动防重
 
 user32 = ctypes.windll.user32
 _GA_ROOT = 2
@@ -58,6 +61,40 @@ def _root_window_at(x: int, y: int) -> int:
     return root or hwnd
 
 
+class _ClickPollThread(QThread):
+    """后台左键点击检测(纯 Win32 只读调用,线程安全)。
+
+    必须独立于 GUI 线程:主线程在直播流+OCR 下被视频帧回调占满,
+    QTimer 轮询会漏检点击(2026-10-24 实测故障)。
+    """
+
+    #: 检测到一次左键点击(物理像素坐标)
+    clicked = Signal(int, int)
+
+    def __init__(self, parent: QObject | None = None):
+        super().__init__(parent)
+        self._stop = False
+
+    def run(self) -> None:
+        was_down = False
+        last_click = 0.0
+        while not self._stop:
+            down = bool(user32.GetAsyncKeyState(_VK_LBUTTON) & _KEY_PRESSED)
+            now = time.perf_counter()
+            if (down and not was_down
+                    and now - last_click >= _CLICK_COOLDOWN_S):
+                last_click = now
+                x, y = cursor_pos()
+                logger.info("[CAL] 检测到点击 px=(%d,%d)", x, y)
+                self.clicked.emit(x, y)
+            was_down = down
+            time.sleep(_POLL_INTERVAL_S)
+
+    def stop(self) -> None:
+        self._stop = True
+        self.wait(int((_POLL_INTERVAL_S + 0.05) * 1000))
+
+
 class CalibrationOverlay(QObject):
     """校准会话(名字保留 Overlay 是历史叫法;现在没有任何覆盖窗口)。
 
@@ -78,12 +115,9 @@ class CalibrationOverlay(QObject):
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self._timer = QTimer(self)
-        self._timer.setInterval(_POLL_MS)
-        self._timer.timeout.connect(self._poll)
+        self._poller: Optional[_ClickPollThread] = None
         self._active = False
         self._step = 0
-        self._was_down = False
         self._window: Optional[WindowInfo] = None
         self._points: list[tuple[float, float]] = []
         self._config: Optional[JoinConfig] = None
@@ -108,33 +142,26 @@ class CalibrationOverlay(QObject):
         self._config = config
         self._step = 0
         self._points = []
-        self._was_down = False
         self._active = True
+        self._poller = _ClickPollThread(self)
+        self._poller.clicked.connect(self._on_click)
+        self._poller.start()
         self.stepChanged.emit(0, STEP_PROMPTS[0])
-        self._timer.start()
         logger.info("[CAL] 校准开始 target=%s", win)
         return True
 
     def cancel(self) -> None:
         """用户取消(幂等)。"""
         if self._active:
-            self._active = False
-            self._timer.stop()
-            self.finished.emit(False, "已取消校准", None)
+            self._end(False, "已取消校准", None)
 
     # ------------------------------------------------------------------
-    def _poll(self) -> None:
-        """15ms 轮询:左键上升沿 + 光标位置 + 落点验证。"""
+    def _on_click(self, x: int, y: int) -> None:
+        """轮询线程报告一次点击(本槽在主线程执行,可安全动 UI/状态)。"""
         if not self._active:
             return
-        down = bool(user32.GetAsyncKeyState(_VK_LBUTTON) & _KEY_PRESSED)
-        clicked = down and not self._was_down
-        self._was_down = down
-        if not clicked:
-            return
-
-        x, y = cursor_pos()
         if _root_window_at(x, y) != self._window.hwnd:
+            logger.info("[CAL] 点击落点不在游戏窗口 px=(%d,%d)", x, y)
             self.invalidClick.emit("点击没落在游戏窗口内,请点游戏界面(要校准的位置)")
             return
 
@@ -168,5 +195,8 @@ class CalibrationOverlay(QObject):
 
     def _end(self, ok: bool, message: str, cfg: Optional[JoinConfig]) -> None:
         self._active = False
-        self._timer.stop()
+        if self._poller is not None:
+            self._poller.stop()
+            self._poller.deleteLater()
+            self._poller = None
         self.finished.emit(ok, message, cfg)
