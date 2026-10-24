@@ -432,19 +432,23 @@ def test_wiring() -> None:
     # --- 18/19. 入口控件本身 ---
     # 说明：UI-2 把「使用引导 / 激活许可证」从底部状态栏搬到了无边框窗口的
     # 标题栏；UI-3.1 又把标题栏操作区从文字按钮换成自绘图标按钮（文字收进
-    # tooltip）。这里断言的是「落在标题栏操作区、带说明性 tooltip、且保持
-    # 次要样式」这几件事实，而不是某个控件文案或某条 QSS 选择器的名字。
+    # tooltip）。玻璃 2.0 改版（用户确认的交互重构）进一步把低频入口
+    # 「使用引导 / 联系作者 / 全屏工作台」收进「⋯」溢出菜单 —— 这里断言
+    # 「菜单挂在标题栏操作区的图标按钮上、入口仍在菜单里可达」这几件事实。
     check(
-        window._help_btn.objectName() == "titleIconBtn",
-        "帮助按钮在标题栏操作区（titleIconBtn）",
+        window._more_btn.objectName() == "titleIconBtn",
+        "溢出菜单按钮在标题栏操作区（titleIconBtn）",
+    )
+    help_actions = [a for a in window._more_menu.actions()
+                    if a.text() == "使用引导"]
+    check(
+        bool(help_actions),
+        "使用引导入口在「⋯」溢出菜单中",
     )
     check(
-        window._help_btn.toolTip().startswith("使用引导"),
-        f"帮助入口以 tooltip 说明用途：{window._help_btn.toolTip()!r}",
-    )
-    check(
-        window._help_btn.property("variant") is None,
-        "帮助按钮不是 primary（「激活许可证」仍是唯一强调按钮）",
+        window._license_btn.property("variant") == "primary"
+        and window._more_btn.property("variant") is None,
+        "「激活许可证」仍是唯一强调按钮，溢出按钮保持次要样式",
     )
     check(window._roi_help_btn.text() == "说明", "OCR 区域旁有「说明」按钮")
     check(

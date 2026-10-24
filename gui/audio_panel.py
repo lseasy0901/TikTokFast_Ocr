@@ -5,12 +5,21 @@ AudioPanel：音频控制条（音量滑块 + 模式选择 + 状态显示）
 只做展示与输入转发，不含任何音频逻辑；状态由 AudioService 推送，
 经本组件的 Signal 转回 GUI 线程渲染（服务回调来自音频线程）。
 
+交互约定（Phase UI 玻璃 2.0 改版，回应"音量必须一下一下点"的反馈）：
+    - 滑块加宽到 170px、手柄 14px 圆点（QSS ``#audioSlider``），
+      按住即可连续拖动；滚轮直接增减；点击轨道按 PageStep(4) 细步跳转。
+    - 扬声器图标是自绘几何字形（不再是 emoji），点击 = 静音 / 恢复，
+      静音时切换为带斜杠的字形。
+    - 状态文字（音频 -- / 播放中 / 无声音…）排在最右，属于"读数"。
+
 刻意不包含：播放按钮（随直播启停）、进度条、延迟数字。
 """
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSlider, QWidget
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget
 
+from gui.widgets import IconButton, icon_pixmap
 from audio.models import AudioMode, AudioState
 
 __all__ = ["AudioPanel"]
@@ -31,6 +40,9 @@ _STATE_TEXT = {
     AudioState.STOPPED: "音频 已停止",
 }
 
+#: 静音前的记忆音量（应用启动后第一次静音时恢复到这个值）
+_DEFAULT_VOLUME = 0.8
+
 
 class AudioPanel(QWidget):
     """视频工具栏上的音频控制条"""
@@ -45,21 +57,31 @@ class AudioPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._building = True   # 程序化 setValue/setCurrentIndex 不触发信号
+        self._last_volume = _DEFAULT_VOLUME
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
 
-        self._icon = QLabel("🔊")
-        self._icon.setToolTip("直播声音")
-        row.addWidget(self._icon)
+        # 静音键：自绘扬声器字形；点击在"静音 ↔ 恢复"间切换
+        self._mute_btn = QPushButton()
+        self._mute_btn.setObjectName("audioMuteBtn")
+        self._mute_btn.setFlat(True)
+        self._mute_btn.setFixedSize(28, 28)
+        self._mute_btn.setCursor(Qt.PointingHandCursor)
+        self._mute_btn.setToolTip("静音 / 恢复（点击图标）")
+        self._mute_btn.clicked.connect(self._toggle_mute)
+        self._set_mute_icon(False)
+        row.addWidget(self._mute_btn)
 
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setObjectName("audioSlider")
         self._slider.setRange(0, 100)
         self._slider.setValue(80)
-        self._slider.setFixedWidth(110)
-        self._slider.setToolTip("音量")
+        # PageStep=4：点轨道一下只跳 4%，不会从 80 直接跳到 90
+        self._slider.setPageStep(4)
+        self._slider.setFixedWidth(170)
+        self._slider.setToolTip("音量：拖动 / 滚轮 / 点击轨道")
         self._slider.valueChanged.connect(self._on_slider)
         row.addWidget(self._slider)
 
@@ -87,7 +109,23 @@ class AudioPanel(QWidget):
     # ---- GUI 交互（GUI 线程） ----
     def _on_slider(self, value: int) -> None:
         if not self._building:
+            if value > 0:
+                self._last_volume = value / 100.0
+            self._set_mute_icon(value == 0)
             self.volumeChanged.emit(value / 100.0)
+
+    def _toggle_mute(self) -> None:
+        """点击扬声器：有声 → 静音（记忆当前值）；已静音 → 恢复记忆值。"""
+        if self._slider.value() > 0:
+            self._slider.setValue(0)
+        else:
+            self._slider.setValue(int(round(self._last_volume * 100)))
+
+    def _set_mute_icon(self, muted: bool) -> None:
+        self._mute_btn.setIcon(
+            QIcon(icon_pixmap(IconButton.SPEAKER_MUTE if muted
+                              else IconButton.SPEAKER, 16)))
+        self._mute_btn.setToolTip("取消静音" if muted else "静音（点击图标）")
 
     def _on_mode_index(self, index: int) -> None:
         if not self._building and 0 <= index < len(_MODE_ITEMS):
@@ -108,7 +146,10 @@ class AudioPanel(QWidget):
     # ---- 配置回显（未来从设置恢复时用） ----
     def set_volume_silent(self, value: float) -> None:
         self._building = True
+        if value > 0:
+            self._last_volume = value
         self._slider.setValue(int(round(value * 100)))
+        self._set_mute_icon(value == 0)
         self._building = False
 
     def set_mode_silent(self, mode: AudioMode) -> None:

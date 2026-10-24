@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -37,6 +38,7 @@ from gui import theme
 from gui.activation_dialog import ActivationDialog
 from gui.theme import Metrics, Palette
 from utils.license_manager import LicenseManager, LicenseStatus
+from utils.ui_prefs import PERF_PINNED, get_pref, set_pref
 from utils.update_source import DEFAULT_UPDATE_SOURCE
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.settings")
@@ -91,18 +93,21 @@ class SettingsDialog(QDialog):
 
     def __init__(self, manager: LicenseManager, version: str,
                  access_status=None, append_license_callback=None,
-                 parent=None):
+                 perf_pinned_callback=None, parent=None):
         """
         :param manager:   LicenseManager（只读它的 last_result 展示真实状态）
         :param version:   真实版本号（由调用方给出，弹窗不自行推断）
         :param access_status: AccessStatus（取真实状态文案）
         :param append_license_callback: 追加授权成功后的回调（把结果交回主窗口）
+        :param perf_pinned_callback: 「常驻显示性能指标」开关变化时的回调
+            （布尔值 = 是否常驻；主窗口用它即时切换状态栏/诊断弹层）
         """
         super().__init__(parent)
         self._manager = manager
         self._version = version
         self._access_status = access_status
         self._on_appended = append_license_callback
+        self._on_perf_pinned = perf_pinned_callback
 
         self.setWindowTitle("设置")
         self.setModal(True)
@@ -137,7 +142,7 @@ class SettingsDialog(QDialog):
         self._nav.setObjectName("setNav")
         self._nav.setFrameShape(QFrame.NoFrame)
         self._nav.setFocusPolicy(Qt.NoFocus)
-        for label in ("授权", "关于"):
+        for label in ("授权", "偏好", "关于"):
             self._nav.addItem(QListWidgetItem(label))
         self._nav.currentRowChanged.connect(self._on_nav_changed)
         nav_col.addWidget(self._nav, 1)
@@ -146,10 +151,48 @@ class SettingsDialog(QDialog):
         # 右侧内容
         self._stack = QStackedWidget()
         self._stack.addWidget(self._build_license_page())
+        self._stack.addWidget(self._build_prefs_page())
         self._stack.addWidget(self._build_about_page())
         outer.addWidget(self._stack, 1)
 
         self._nav.setCurrentRow(0)
+
+    # ------------------------------------------------------------------
+    # 偏好页
+    # ------------------------------------------------------------------
+    def _build_prefs_page(self) -> QWidget:
+        """偏好：目前只有一项 —— 性能指标常驻还是收进「诊断」弹层。
+
+        「只放实际存在的设置」原则下，这一页随着第一个真实偏好出现；
+        不为凑数摆空开关。
+        """
+        page = QWidget()
+        col = QVBoxLayout(page)
+        col.setContentsMargins(20, 18, 20, 18)
+        col.setSpacing(10)
+
+        title = QLabel("偏好")
+        title.setObjectName("setTitle")
+        col.addWidget(title)
+
+        self._perf_pinned_cb = QCheckBox("在状态栏常驻显示性能指标")
+        self._perf_pinned_cb.setChecked(bool(get_pref(PERF_PINNED, False)))
+        self._perf_pinned_cb.toggled.connect(self._on_perf_pinned_toggled)
+        col.addWidget(self._perf_pinned_cb)
+
+        hint = QLabel("关闭时，延迟 / 帧率 / 渲染等诊断指标收纳在"
+                      "状态栏右下角的「诊断」弹层里。")
+        hint.setObjectName("setHint")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+
+        col.addStretch(1)
+        return page
+
+    def _on_perf_pinned_toggled(self, checked: bool) -> None:
+        set_pref(PERF_PINNED, bool(checked))
+        if self._on_perf_pinned is not None:
+            self._on_perf_pinned(bool(checked))
 
     # ------------------------------------------------------------------
     # 授权页

@@ -119,11 +119,12 @@ def test_title_bar() -> None:
     bar = window._title_bar
 
     # A1. 操作区是可识别、带 tooltip 的紧凑图标按钮
+    # 玻璃 2.0 改版：常驻 [授权][设置]，低频入口（引导/全屏/联系作者）
+    # 收进「⋯」溢出菜单 —— 按钮断言只覆盖常驻三项。
     icons = {
-        "引导": window._help_btn,
         "授权": window._license_btn,
         "设置": window._settings_btn,
-        "全屏": window._fullscreen_btn,
+        "更多": window._more_btn,
     }
     for name, btn in icons.items():
         check(isinstance(btn, IconButton), f"{name}是图标按钮（不再是文字按钮）")
@@ -133,6 +134,11 @@ def test_title_bar() -> None:
             and btn.height() == Metrics.ICON_BUTTON_SIZE,
             f"{name}是 {Metrics.ICON_BUTTON_SIZE}×{Metrics.ICON_BUTTON_SIZE} 紧凑尺寸",
         )
+
+    # A1b. 溢出菜单包含全部低频入口
+    menu_texts = [a.text() for a in window._more_menu.actions()]
+    for entry in ("全屏工作台", "使用引导", "联系作者"):
+        check(entry in menu_texts, f"{entry}在「⋯」溢出菜单中：{menu_texts}")
 
     # A2. 图标各不相同（四个入口不能长成一个样）
     kinds = {b._kind for b in icons.values()}

@@ -288,7 +288,8 @@ def capture_contact_popup(app, window, out_dir: str, suffix: str):
     window.resize(1400, 860)
     pump(app, 40)
 
-    window._contact_btn.click()
+    # 玻璃 2.0：「联系作者」在「⋯」溢出菜单里，直接调用其处理器弹卡片
+    window._on_contact_clicked()
     pump(app, 40)
     popup = window._contact_popup
     if popup is None or not popup.isVisible():

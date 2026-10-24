@@ -99,12 +99,12 @@ def build_window():
 def test_structure(window) -> None:
     section("A. 标题栏结构")
 
+    # 玻璃 2.0 改版：低频入口（引导/联系作者/全屏）收进「⋯」溢出菜单，
+    # 常驻图标按钮只有 授权 / 设置 / 更多 三个。
     buttons = {
-        "使用引导": window._help_btn,
         "激活许可证": window._license_btn,
-        "联系作者": window._contact_btn,
         "设置": window._settings_btn,
-        "全屏工作台": window._fullscreen_btn,
+        "更多(溢出)": window._more_btn,
     }
 
     for name, btn in buttons.items():
@@ -129,10 +129,15 @@ def test_structure(window) -> None:
               for k, b in buttons.items() if k != "激活许可证"),
           "其余图标按钮都不是 primary")
 
-    # 四个主入口图标各不相同
-    kinds = {window._help_btn._kind, window._license_btn._kind,
-             window._settings_btn._kind, window._fullscreen_btn._kind}
-    check(len(kinds) == 4, f"四个主入口使用四种不同图标：{sorted(kinds)}")
+    # 三个常驻入口图标各不相同
+    kinds = {window._license_btn._kind, window._settings_btn._kind,
+             window._more_btn._kind}
+    check(len(kinds) == 3, f"三个常驻入口使用三种不同图标：{sorted(kinds)}")
+
+    # 溢出菜单：低频入口一个不少
+    menu_texts = [a.text() for a in window._more_menu.actions()]
+    for entry in ("全屏工作台", "使用引导", "联系作者"):
+        check(entry in menu_texts, f"{entry} 在「⋯」溢出菜单中：{menu_texts}")
 
     # 分组顺序 + 分隔线
     layout = window._title_bar._actions_layout
@@ -140,8 +145,8 @@ def test_structure(window) -> None:
     for i in range(layout.count()):
         w = layout.itemAt(i).widget()
         order.append(w.objectName() if w is not None else "?")
-    check(order == ["titleIconBtn"] * 3 + ["titleBarSeparator"] + ["titleIconBtn"] * 2,
-          f"操作区分组顺序 = [激活][设置][全屏] │ [引导][联系作者]，实测 {order}")
+    check(order == ["titleIconBtn"] * 2 + ["titleBarSeparator"] + ["titleIconBtn"],
+          f"操作区分组顺序 = [激活][设置] │ [⋯]，实测 {order}")
 
     seps = [layout.itemAt(i).widget() for i in range(layout.count())
             if layout.itemAt(i).widget() is not None
@@ -156,11 +161,9 @@ def test_wiring(window) -> None:
     section("B. 信号接线保全（原有交互项一个不少）")
 
     clickable = {
-        "T1 使用引导": window._help_btn,
         "T2 激活许可证": window._license_btn,
-        "T3 联系作者": window._contact_btn,
         "T4 设置": window._settings_btn,
-        "T5 全屏工作台": window._fullscreen_btn,
+        "T0 溢出菜单": window._more_btn,
         "A1 历史": window._history_btn,
         "A3 连接/断开": window._connect_btn,
         "P1 收起面板": getattr(window, "_collapse_btn", None),
@@ -172,6 +175,14 @@ def test_wiring(window) -> None:
             continue
         n = btn.receivers("2clicked()")
         check(n >= 1, f"{name} 仍有 clicked 连接（receivers={n}）")
+
+    # 低频入口改为菜单动作：triggered 连接一个不少
+    menu_actions = {a.text(): a for a in window._more_menu.actions()}
+    for name, action in menu_actions.items():
+        if not name:
+            continue  # 分隔线
+        n = action.receivers("2triggered(bool)")
+        check(n >= 1, f"菜单项「{name}」仍有 triggered 连接（receivers={n}）")
 
     for name, act in (("A2a 编辑备注…", window._edit_note_action),
                       ("A2b 清除历史记录…", window._clear_recent_action)):
@@ -300,17 +311,18 @@ def test_behaviour(window) -> None:
     window.show()
     pump(30)
 
-    # 全屏切换：图标必须跟着换（set_kind）
-    before = window._fullscreen_btn._kind
-    window._fullscreen_btn.click()
+    # 全屏切换：菜单动作文案必须跟着换（全屏工作台 ↔ 退出全屏工作台）
+    action = window._fullscreen_action
+    before = action.text()
+    window._toggle_fullscreen()
     pump(40)
-    check(window.isFullScreen(), "点全屏按钮 → 进入全屏")
-    check(window._fullscreen_btn._kind != before,
-          f"全屏后图标切换：{before} → {window._fullscreen_btn._kind}")
-    window._fullscreen_btn.click()
+    check(window.isFullScreen(), "触发全屏动作 → 进入全屏")
+    check(action.text() != before,
+          f"全屏后动作文案切换：{before!r} → {action.text()!r}")
+    window._toggle_fullscreen()
     pump(40)
-    check(not window.isFullScreen(), "再点 → 退出全屏")
-    check(window._fullscreen_btn._kind == before, "退出后图标切回")
+    check(not window.isFullScreen(), "再触发 → 退出全屏")
+    check(action.text() == before, "退出后动作文案切回")
 
     # 设置入口：打桩的 SettingsDialog 应当被打开
     import gui.main_window as mw

@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
-from PySide6.QtCore import (QEvent, QEasingCurve, QObject,
+from PySide6.QtCore import (QEvent, QEasingCurve, QObject, QPoint,
                              QPropertyAnimation, QStandardPaths, QTimer, Qt, Signal)
 from PySide6.QtGui import QAction, QColor, QIcon
 from PySide6.QtWidgets import (
@@ -114,6 +114,7 @@ from gui.onboarding import (
 )
 from utils import update_state
 from utils import ffmpeg7_runtime
+from utils.ui_prefs import PERF_PINNED, get_pref, set_pref
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
@@ -914,30 +915,25 @@ class MainWindow(QMainWindow):
     def _build_title_bar(self) -> TitleBar:
         """标题栏：品牌 + 图标操作区 + 窗口控制。
 
-        操作区按语义分成两组，中间用分隔线断开（Phase UI 液态玻璃改造）：
+        操作区按使用频率分两层（Phase UI 玻璃 2.0 改版，用户确认方案）：
 
-            [激活许可证] [设置] [全屏工作台]  │  [使用引导] [联系作者]
+            [激活许可证] [设置] │ [⋯]
 
-        - **功能组**：激活 / 配置 / 视图。「激活许可证」是全应用唯一被强调的
-          入口（variant=primary），放在组首而不是夹在中间。
-        - **帮助组**：低频、只读、不改任何业务状态，靠右收拢。
-        - 窗口按钮（最小化 / 最大化 / 关闭）仍由 TitleBar 自己贴角管理，
-          不参与分组，也不受本次改造影响。
+        - **常驻层**：授权 / 设置。授权是全应用唯一被强调的入口
+          （variant=primary），设置是次高频入口，两者都有理由常驻。
+        - **溢出层**：全屏工作台 / 使用引导 / 联系作者都是低频入口，
+          收进「⋯」菜单 —— 右上角从 5 个图标按钮降到 3 个，
+          窗口按钮不再挤在一排陌生图标里。
+        - 窗口按钮（最小化 / 最大化 / 关闭）仍由 TitleBar 自己贴角管理。
 
-        为什么仍然用图标而不是中文标签：五个中文标签会把标题栏挤满，且随
-        字号变化抖动；图标 + tooltip + accessibleName 在同样的宽度下更好辨认
-        （Phase UI-3.1 的结论，本次沿用）。
-
-        为什么不做"低频项收进溢出菜单"：现有测试把「帮助入口落在标题栏
-        操作区、objectName 为 titleIconBtn」当作事实断言
-        （test_first_run_onboarding.py:438、test_phase_ui3_1_layout.py:123）。
-        把按钮搬进菜单会让这些**当前通过**的断言失败 —— 属于"为改版而破坏
-        既有约定"。因此本次改为**分组 + 分隔线**来降低视觉杂乱，
-        功能入口一个不动。
+        历史注记：UI 液态玻璃改造时曾以「既有测试断言帮助入口在标题栏
+        操作区」为由拒绝溢出菜单；本次是用户明确拍板的交互重构，
+        相关断言已随本次改动同步更新（test_first_run_onboarding /
+        test_phase_ui3_1_layout），不再是"为改版而破坏既有约定"。
         """
         self._title_bar = TitleBar("LiveLens", "低延迟播放工作台")
 
-        # ---- 组 1：功能入口 ------------------------------------------
+        # ---- 常驻层：授权 / 设置 ------------------------------------
         # 「授权」保持唯一被强调的入口（图标按钮上的 variant=primary）
         self._license_btn = self._title_bar.add_icon_button(
             IconButton.LICENSE, "激活许可证：输入密钥为本机授权",
@@ -950,29 +946,32 @@ class MainWindow(QMainWindow):
             accessible_name="设置")
         self._settings_btn.clicked.connect(self._on_settings_clicked)
 
-        # 全屏工作台是【独立】入口：窗口按钮里的最大化仍然是普通最大化，
-        # 不能用全屏取代它（否则用户就没有"占满屏幕但保留任务栏"这条路了）。
-        self._fullscreen_btn = self._title_bar.add_icon_button(
-            IconButton.FULLSCREEN, "全屏工作台：隐藏标题栏与地址栏",
-            accessible_name="全屏工作台")
-        self._fullscreen_btn.clicked.connect(self._toggle_fullscreen)
-
         # ---- 分组分隔线 ----------------------------------------------
         self._title_bar.add_action_separator()
 
-        # ---- 组 2：帮助入口 ------------------------------------------
-        # 这两项都是只读入口，不改变直播 / OCR / 授权状态
-        self._help_btn = self._title_bar.add_icon_button(
-            IconButton.HELP, "使用引导：查看操作流程，可随时重新打开",
-            accessible_name="使用引导")
-        self._help_btn.clicked.connect(self._on_help_clicked)
-
-        self._contact_btn = self._title_bar.add_icon_button(
-            IconButton.CONTACT, "联系作者",
-            accessible_name="联系作者")
-        self._contact_btn.clicked.connect(self._on_contact_clicked)
+        # ---- 溢出层：低频入口收进「⋯」 -------------------------------
+        self._more_btn = self._title_bar.add_icon_button(
+            IconButton.MORE, "更多：全屏工作台 / 使用引导 / 联系作者",
+            accessible_name="更多")
+        self._more_menu = QMenu(self._more_btn)
+        self._fullscreen_action = QAction("全屏工作台", self._more_menu)
+        self._fullscreen_action.triggered.connect(self._toggle_fullscreen)
+        self._more_menu.addAction(self._fullscreen_action)
+        self._more_menu.addSeparator()
+        help_action = QAction("使用引导", self._more_menu)
+        help_action.triggered.connect(self._on_help_clicked)
+        self._more_menu.addAction(help_action)
+        contact_action = QAction("联系作者", self._more_menu)
+        contact_action.triggered.connect(self._on_contact_clicked)
+        self._more_menu.addAction(contact_action)
+        self._more_btn.clicked.connect(self._show_more_menu)
 
         return self._title_bar
+
+    def _show_more_menu(self) -> None:
+        """「⋯」溢出菜单：贴着按钮下沿弹出（与联系方式卡片同一锚定习惯）。"""
+        self._more_menu.exec(self._more_btn.mapToGlobal(
+            QPoint(0, self._more_btn.height() + 4)))
 
     def _build_address_bar(self) -> QFrame:
         """顶部地址栏：唯一地址输入 + 历史下拉 + 历史操作菜单 + 连接/断开。
@@ -999,21 +998,26 @@ class MainWindow(QMainWindow):
         self._url_input.textChanged.connect(self._sync_note_action)
         row.addWidget(self._url_input, 1)
 
-        # 历史入口：固定宽度按钮 + 卡片式弹窗（gui/history_panel.py）。
-        # 卡片只展示用户可识别信息（备注名/房间号/最近使用），不展示 URL；
-        # 弹窗每次打开都从 HistoryService 实时读取，无需在数据变化时刷新。
+        # 历史入口组：「历史」主入口 +「⋯」二级操作（备注/清除）装进同一个
+        # 胶囊容器 —— 两个按钮读作一个整体，而不是两颗来历不明的小方块。
+        group = QFrame()
+        group.setObjectName("historyGroup")
+        group_lay = QHBoxLayout(group)
+        group_lay.setContentsMargins(0, 0, 0, 0)
+        group_lay.setSpacing(0)
+
         self._history_btn = HistoryButton(self._history)
         self._history_btn.setFixedWidth(64)
         self._history_btn.enterRequested.connect(self._on_history_enter)
         # 首次进入直播间 → 询问备注（判定在 HistoryService，弹窗在 history_panel）
         self._history.set_remark_callback(self._history_btn.on_remark_request)
-        row.addWidget(self._history_btn)
+        group_lay.addWidget(self._history_btn)
 
         # 历史二级入口：备注 / 清除（原先各自占一个按钮，地址栏太挤）
         self._history_menu_btn = QToolButton()
         self._history_menu_btn.setObjectName("historyMenuBtn")
         self._history_menu_btn.setText("⋯")
-        self._history_menu_btn.setFixedSize(34, 34)
+        self._history_menu_btn.setFixedSize(30, 32)
         self._history_menu_btn.setToolTip("历史记录操作：编辑备注 / 清除历史")
         self._history_menu_btn.setCursor(Qt.PointingHandCursor)
         self._history_menu_btn.setPopupMode(QToolButton.InstantPopup)
@@ -1029,7 +1033,8 @@ class MainWindow(QMainWindow):
         self._clear_recent_action.triggered.connect(self._on_clear_recent_clicked)
         menu.addAction(self._clear_recent_action)
         self._history_menu_btn.setMenu(menu)
-        row.addWidget(self._history_menu_btn)
+        group_lay.addWidget(self._history_menu_btn)
+        row.addWidget(group)
 
         self._connect_btn = QPushButton("连接")
         set_property(self._connect_btn, "variant", "primary")
@@ -1165,8 +1170,18 @@ class MainWindow(QMainWindow):
         self._lbl_resolution.setText("分辨率 --")
         self._lbl_fps = self._make_chip()
         self._lbl_fps.setText("FPS --")
-        for chip in (self._lbl_status, self._lbl_resolution, self._lbl_fps):
+        # 延迟芯片：低延迟是本产品的核心卖点，读数（含 ok/warn/error 变色）
+        # 由 _on_stats 更新。历史上它在 _build_perf_bar 里创建却从未被加入
+        # 任何布局（死对象）—— 本次改版把它放到它该在的位置：FPS 旁边。
+        self._lbl_latency = self._make_chip()
+        self._lbl_latency.setText("延迟 --")
+        for chip in (self._lbl_status, self._lbl_resolution,
+                     self._lbl_fps, self._lbl_latency):
             row.addWidget(chip)
+
+        # 左读数、右控制：状态（未连接/分辨率/FPS/延迟）贴左，
+        # 音频控制（音量/模式/状态）贴右，中间留白断开两类语义。
+        row.addStretch(1)
 
         # 音频控制条：音量 / 模式 / 状态（转发给 AudioService，无音频逻辑在此）
         self._audio_panel = AudioPanel()
@@ -1174,8 +1189,6 @@ class MainWindow(QMainWindow):
         self._audio_panel.modeChanged.connect(self._audio.set_mode)
         self._audio.set_state_callback(self._audio_panel.on_service_state)
         row.addWidget(self._audio_panel)
-
-        row.addStretch(1)
         return bar
 
     # ------------------------------------------------------------------
@@ -1453,11 +1466,20 @@ class MainWindow(QMainWindow):
     # 底部：分组性能栏（挂在状态栏永久区，左侧保留瞬时消息）
     # ------------------------------------------------------------------
     def _build_perf_bar(self) -> None:
-        """底部性能栏：分组展示已有指标；没有数据的一律显示 "—"。"""
+        """底部状态栏：常驻用户状态，性能指标默认收进「诊断」弹层。
+
+        常驻：OCR 运行状态芯片、剪贴板反馈芯片、授权状态、
+              「诊断」入口（点开才是完整指标）。
+        诊断：链路 / 解码 / 渲染 / OCR 四组 10 项指标（set_frame p50/p95、
+              paint、管道积压等是开发者数据），默认装在弹层里，
+              设置「偏好」里可改回常驻（utils.ui_prefs，键 perf_pinned）。
+
+        指标容器（_perf_bar_widget）只有一份，常驻/弹层两种模式之间
+        用 addWidget 换父级搬运，数据照常采集、_set_perf 一如既往写标签。
+        """
         bar = self.statusBar()
         bar.setSizeGripEnabled(False)
 
-        self._lbl_latency = self._make_chip()
         self._lbl_ocr = self._make_chip()
         self._perf_values = {}
         self._perf_defaults = {}
@@ -1480,25 +1502,93 @@ class MainWindow(QMainWindow):
         )
         # 组与组之间插一条细分隔线：四组指标在没有分隔时会连成一整行密集字符串，
         # 用户分不清哪些数字属于哪一段（Phase UI-3.1）。
+        self._perf_bar_widget = QWidget()
+        perf_lay = QHBoxLayout(self._perf_bar_widget)
+        perf_lay.setContentsMargins(0, 0, 0, 0)
+        perf_lay.setSpacing(8)
         for index, (name, items) in enumerate(groups):
             if index:
                 divider = QFrame()
                 divider.setObjectName("perfDivider")
                 divider.setFixedWidth(1)
-                bar.addPermanentWidget(divider)
-            bar.addPermanentWidget(self._perf_group(name, items))
+                perf_lay.addWidget(divider)
+            perf_lay.addWidget(self._perf_group(name, items))
+        self._perf_bar_widget.hide()
+
+        # 诊断弹层（Qt.Popup：点击外部自动关闭）；指标容器平时住在这里
+        self._perf_popup = QFrame(self, Qt.Popup | Qt.FramelessWindowHint)
+        self._perf_popup.setAttribute(Qt.WA_TranslucentBackground)
+        self._perf_popup.setObjectName("perfPopup")
+        popup_lay = QVBoxLayout(self._perf_popup)
+        popup_lay.setContentsMargins(1, 1, 1, 1)
+        title = QLabel("诊断 · 性能指标")
+        title.setObjectName("perfPopupTitle")
+        popup_lay.addWidget(title)
+        popup_lay.addWidget(self._perf_bar_widget)
+        self._perf_popup.hide()
+
+        # 「诊断」入口：一枚低调的状态栏按钮（不与授权/OCR 状态抢注意力）
+        self._perf_toggle_btn = QPushButton("诊断")
+        self._perf_toggle_btn.setObjectName("statusButton")
+        self._perf_toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._perf_toggle_btn.setToolTip("性能指标：延迟 / 帧率 / 渲染耗时 / OCR")
+        self._perf_toggle_btn.clicked.connect(self._toggle_perf_popup)
         bar.addPermanentWidget(self._lbl_ocr)
         bar.addPermanentWidget(self._lbl_clipboard)
         self._access_status_label = QLabel()
         self._access_status_label.setObjectName("accessLabel")
         self._access_status_label.setProperty("tone", "neutral")
         bar.addPermanentWidget(self._access_status_label)
+        bar.addPermanentWidget(self._perf_toggle_btn)
 
         # 剪贴板芯片的 2 秒回落定时器（由 _on_copy_requested 启动）
         self._clipboard_chip_timer = QTimer(self)
         self._clipboard_chip_timer.setSingleShot(True)
         self._clipboard_chip_timer.timeout.connect(self._reset_clipboard_chip)
         self._reset_clipboard_chip()
+
+        self._set_perf_pinned(bool(get_pref(PERF_PINNED, False)), persist=False)
+
+    def _toggle_perf_popup(self) -> None:
+        """「诊断」按钮：在按钮上方弹出 / 收起指标弹层。"""
+        popup = self._perf_popup
+        if popup.isVisible():
+            popup.close()
+            return
+        # 弹层模式：容器上次可能随"常驻→弹层"切换被 hide 过，弹出前拉起
+        self._perf_bar_widget.setVisible(True)
+        popup.adjustSize()
+        btn = self._perf_toggle_btn
+        pos = btn.mapToGlobal(QPoint(
+            0, -(popup.height() + 8)))
+        # 右缘对齐按钮右缘，避免弹层往左铺出屏幕
+        x = min(pos.x(),
+                self.screen().geometry().right() - popup.width() - 8)
+        popup.move(max(8, x), pos.y())
+        popup.show()
+
+    def _set_perf_pinned(self, pinned: bool, persist: bool = True) -> None:
+        """常驻显示指标（True）或收进诊断弹层（False，默认）。
+
+        两种模式共用同一份指标容器：addWidget 换父级即可搬运，
+        PerformanceMonitor 的采集与 _set_perf 的写入完全不受影响。
+        """
+        widget = self._perf_bar_widget
+        if pinned:
+            self._perf_popup.hide()
+            self.statusBar().insertPermanentWidget(
+                0, widget)  # 指标放最左：与"常驻读数"的旧位置一致
+            widget.show()
+            self._perf_toggle_btn.setToolTip(
+                "性能指标已常驻（在设置 · 偏好中可改回弹层）")
+        else:
+            if widget.parent() is not self._perf_popup:
+                self._perf_popup.layout().insertWidget(1, widget)
+            widget.setVisible(self._perf_popup.isVisible())
+            self._perf_toggle_btn.setToolTip(
+                "性能指标：延迟 / 帧率 / 渲染耗时 / OCR")
+        if persist:
+            set_pref(PERF_PINNED, bool(pinned))
 
     def _perf_group(self, name: str, items) -> QWidget:
         box = QWidget()
@@ -2115,10 +2205,9 @@ class MainWindow(QMainWindow):
                 self._frameless.set_fullscreen(self.isFullScreen())
             self._title_bar.max_button.set_kind(
                 WindowButton.RESTORE if self.isMaximized() else WindowButton.MAX)
-            if getattr(self, "_fullscreen_btn", None) is not None:
-                self._fullscreen_btn.set_kind(
-                    IconButton.FULLSCREEN_EXIT if self.isFullScreen()
-                    else IconButton.FULLSCREEN)
+            if getattr(self, "_fullscreen_action", None) is not None:
+                self._fullscreen_action.setText(
+                    "退出全屏工作台" if self.isFullScreen() else "全屏工作台")
 
     # ------------------------------------------------------------------
     # 直播间历史（数据层见 stream/history.py，UI 见 gui/history_panel.py）
@@ -3867,8 +3956,8 @@ class MainWindow(QMainWindow):
             self.maybe_show_first_run_guide()
 
     def _on_contact_clicked(self):
-        """标题栏「联系作者」：在按钮下方弹出联系方式卡片。"""
-        self._open_contact_popup(self._contact_btn)
+        """「⋯」菜单里的「联系作者」：在溢出按钮下方弹出联系方式卡片。"""
+        self._open_contact_popup(self._more_btn)
 
     def _on_purchase_clicked(self):
         """未激活遮罩里的「购买授权」：用系统默认浏览器打开购买链接。
@@ -3910,7 +3999,7 @@ class MainWindow(QMainWindow):
         """窗口移动 / 缩放 / 最大化后，把还开着的卡片重新贴回按钮下方。"""
         popup = self._contact_popup
         if popup is not None and popup.isVisible():
-            popup.show_below(self._contact_btn)
+            popup.show_below(self._more_btn)
 
     def _on_settings_clicked(self):
         """设置中心：只读展示 + 追加授权入口，绝不停流 / 停 OCR / 动 ROI。"""
@@ -3919,6 +4008,7 @@ class MainWindow(QMainWindow):
             version=self.current_version(),
             access_status=self._access_status,
             append_license_callback=self._on_license_appended,
+            perf_pinned_callback=self._set_perf_pinned,
             parent=self,
         )
         dialog.exec()
@@ -4233,22 +4323,29 @@ class MainWindow(QMainWindow):
         self._reposition_contact_popup()
 
     def showEvent(self, event):  # noqa: N802
-        """首次显示后启用 Mica（失败即保持不透明深色，不做视觉欺骗）。"""
+        """首次显示后启用系统背景 Acrylic（失败即保持不透明深色，不做视觉欺骗）。
+
+        Acrylic（DWMSBT_TRANSIENTWINDOW）是真正的桌面高斯模糊 + 噪点，
+        玻璃感远强于 Mica 的"取色墙纸"；代价是常驻窗口用它超出微软的
+        推荐场景 —— 这里是产品视觉的明确选择，且 DWM 拒绝时整体回退。
+        """
         super().showEvent(event)
         # 构建期的同步发生在窗口显示之前，那时 isVisible() 一律为 False，
         # 顶部操作区会被当成"面板已收起"。显示之后再同步一次拿到真实状态。
         self._sync_address_columns()
         if getattr(self, "_backdrop", None) is None:
-            ok = theme.enable_backdrop(int(self.winId()), "mica")
-            self._backdrop = "mica" if ok else "opaque"
+            ok = theme.enable_backdrop(int(self.winId()), "acrylic")
+            self._backdrop = "acrylic" if ok else "opaque"
             if ok:
-                set_property(self._root, "mica", "true")
-                for widget in (self._root,):
+                # 窗口本体与 central widget 都要标记并重刷样式，
+                # QSS 才会把两者的不透明底色换成透明、露出系统模糊。
+                for widget in (self, self._root):
+                    set_property(widget, "mica", "true")
                     widget.style().unpolish(widget)
                     widget.style().polish(widget)
                 # 个别系统在窗口完成合成前设置会退回浅色，显示后再补一次
                 QTimer.singleShot(150, lambda: theme.enable_backdrop(
-                    int(self.winId()), "mica"))
+                    int(self.winId()), "acrylic"))
             logger.info("[UI] backdrop=%s", self._backdrop)
 
     def closeEvent(self, event):  # noqa: N802

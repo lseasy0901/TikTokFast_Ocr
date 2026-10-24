@@ -17,7 +17,8 @@ LiveLens 通用 UI 组件
 import math
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (QColor, QDesktopServices, QLinearGradient, QPainter,
+                           QPainterPath, QPen, QPixmap, QPolygonF)
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -431,6 +432,35 @@ def _draw_icon_glyph(painter, kind: str, cx: float, cy: float,
                              QPointF(cx + sx * a - sx * d, cy + sy * a))
             painter.drawLine(QPointF(cx + sx * a, cy + sy * a),
                              QPointF(cx + sx * a, cy + sy * a - sy * d))
+    elif kind == IconButton.MORE:
+        # 溢出菜单「⋯」：三枚实心圆点，比文字字形稳定（不随字体变宽变窄）
+        painter.setBrush(QColor(painter.pen().color()))
+        r = s * 0.16
+        for dx in (-s * 0.55, 0.0, s * 0.55):
+            painter.drawEllipse(QPointF(cx + dx, cy), r, r)
+    elif kind in (IconButton.SPEAKER, IconButton.SPEAKER_MUTE):
+        # 扬声器：喇叭主体（多边形）+ 右侧两道声波弧线；静音态改为一条斜杠。
+        # 取代旧的 emoji "🔊"——emoji 的粗细/基线随系统字体漂移，且与
+        # 整套自绘几何图标不同源。
+        body = QPolygonF([
+            QPointF(cx - s * 0.95, cy - s * 0.32),
+            QPointF(cx - s * 0.40, cy - s * 0.32),
+            QPointF(cx + s * 0.05, cy - s * 0.72),
+            QPointF(cx + s * 0.05, cy + s * 0.72),
+            QPointF(cx - s * 0.40, cy + s * 0.32),
+            QPointF(cx - s * 0.95, cy + s * 0.32),
+        ])
+        painter.setBrush(QColor(painter.pen().color()))
+        painter.drawPolygon(body)
+        painter.setBrush(Qt.NoBrush)
+        if kind == IconButton.SPEAKER:
+            for radius in (s * 0.42, s * 0.72):
+                rect = QRectF(cx + s * 0.02 - radius, cy - radius,
+                              radius * 2, radius * 2)
+                painter.drawArc(rect, -48 * 16, 96 * 16)
+        else:
+            painter.drawLine(QPointF(cx + s * 0.30, cy - s * 0.62),
+                             QPointF(cx + s * 0.98, cy + s * 0.62))
 
 
 def icon_pixmap(kind: str, size: int = 14,
@@ -466,9 +496,11 @@ class IconButton(QPushButton):
     ``variant="primary"`` 时字形用强调色，用于「授权」这个唯一被强调的入口。
     """
 
-    HELP, LICENSE, CONTACT, SETTINGS, FULLSCREEN, FULLSCREEN_EXIT = (
+    HELP, LICENSE, CONTACT, SETTINGS, FULLSCREEN, FULLSCREEN_EXIT, MORE = (
         "help", "license", "contact", "settings", "fullscreen",
-        "fullscreenExit")
+        "fullscreenExit", "more")
+    # 非标题栏复用字形（AudioPanel 音量键走 icon_pixmap 渲染成 QIcon）
+    SPEAKER, SPEAKER_MUTE = "speaker", "speakerMute"
 
     def __init__(self, kind: str, tooltip: str = "",
                  parent: QWidget | None = None,

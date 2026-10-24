@@ -46,42 +46,42 @@ __all__ = [
 
 
 # ======================================================================
-# 调色板：黑曜石深色底 + 烟灰半透明玻璃 + 蓝调强调色
+# 调色板：中性石墨底 + 青蓝强调色
 # ======================================================================
 class Palette:
     """全局颜色常量（注解表即 QSS 占位符表，不要删注解）。
 
-    取值来源：``design-system/livelens/MASTER.md`` §2.1（Phase 1 设计系统）。
-    对比度已按 WCAG 2.1 实测：主文字/次级文字/强调色/成功色 在三种底色上
-    全部通过 AA 4.5:1（10/10 组合），9/10 通过 AAA 7.0:1。
-    实测脚本：``docs/ui-redesign/evidence/contrast_check.py``。
+    取值原则：**无色偏**的中性碳灰做层级，唯一的色相留给强调色（青蓝）。
+    「液态玻璃」靠 rgba 半透明表面 + 系统级 Acrylic 模糊（Win11 22H2+，
+    见 :func:`enable_backdrop`）实现；不支持系统模糊的机器回退为不透明
+    深色，半透明令牌叠在 APP_BG 上仍然是同一套观感。
 
-    玻璃表面（DOCK_BG / HOVER / BORDER* 等）用 rgba：因为真正的"液态玻璃"
-    必须让底下的内容透出来，不透明色块做不出层次。
+    令牌变更后必须用 ``scripts`` 里的对比度脚本复验关键组合
+    （TEXT / TEXT_DIM / ACCENT / OK_TEXT 对 APP_BG、DOCK_BG 合成色）。
     """
 
     # ---- 背景层级 ----
-    APP_BG: str = "#090B10"          # 窗口底色（黑曜石）
-    CHROME_BG: str = "#171B24"       # 标题栏 / 状态栏
-    DOCK_BG: str = "rgba(37, 43, 54, 0.62)"   # 玻璃面板基色（半透明）
+    APP_BG: str = "#101214"          # 窗口底色（中性石墨）
+    CHROME_BG: str = "#17191C"       # 标题栏 / 状态栏
+    DOCK_BG: str = "rgba(32, 35, 39, 0.72)"   # 玻璃面板基色（半透明）
     DOCK_HEADER_BG: str = "rgba(255, 255, 255, 0.04)"  # 玻璃面板标题条
-    PANEL_BG: str = "#0B0D12"        # 预览区（最暗，让画面成为焦点）
-    POPUP_BG: str = "rgba(27, 32, 41, 0.96)"  # 下拉弹层（悬浮玻璃，更实）
-    INPUT_BG: str = "rgba(9, 11, 16, 0.60)"   # 输入框（比玻璃更深，形成凹陷）
-    ELEVATED: str = "#252B36"        # 面板之上的控件
+    PANEL_BG: str = "#0C0E10"        # 预览区（最暗，让画面成为焦点）
+    POPUP_BG: str = "rgba(25, 27, 31, 0.96)"  # 下拉弹层（悬浮玻璃，更实）
+    INPUT_BG: str = "rgba(10, 12, 14, 0.60)"  # 输入框（比玻璃更深，形成凹陷）
+    ELEVATED: str = "#202327"        # 面板之上的控件
     HOVER: str = "rgba(255, 255, 255, 0.07)"
     PRESSED: str = "rgba(255, 255, 255, 0.11)"
-    DISABLED_BG: str = "#14171D"
+    DISABLED_BG: str = "#151719"
     CHIP_BG: str = "transparent"
-    #: 「框架层」（标题栏/地址栏/性能栏）：半透明深色 —— 让 Mica 只作为
-    #: 很淡的底纹，避免系统亮色主题下出现浅色标题栏与深色主体割裂。
-    CHROME: str = "rgba(9, 11, 16, 0.72)"
+    #: 「框架层」（标题栏/地址栏/性能栏）：半透明深色 —— Acrylic 生效时
+    #: 让系统模糊透出来；回退时叠在 APP_BG 上成为普通深色框架。
+    CHROME: str = "rgba(13, 15, 17, 0.66)"
     #: 视频井：最暗的一层，让画面成为绝对视觉中心
-    WELL: str = "#080A0E"
+    WELL: str = "#090B0C"
     #: 浮层遮罩：盖在视频井之上的半透明深色（未激活遮罩用它压暗画面）
-    SCRIM: str = "rgba(9, 11, 16, 0.86)"
+    SCRIM: str = "rgba(10, 12, 14, 0.86)"
     #: 主操作（强调色实心按钮）上的文字色
-    ACCENT_INK: str = "#08121C"
+    ACCENT_INK: str = "#062330"
 
     # ---- 边框：低对比，1px + 顶部微亮边区分层级 ----
     BORDER: str = "rgba(255, 255, 255, 0.10)"
@@ -90,37 +90,36 @@ class Palette:
     BORDER_STRONG: str = "rgba(255, 255, 255, 0.18)"
 
     # ---- 文本 ----
-    TEXT: str = "#E9F0FF"
-    TEXT_DIM: str = "#A8B4C7"
-    TEXT_MUTED: str = "#7B8798"
-    TEXT_DISABLED: str = "#5A6472"
+    TEXT: str = "#F2F4F6"
+    TEXT_DIM: str = "#A9B0B7"
+    TEXT_MUTED: str = "#7C838B"
+    TEXT_DISABLED: str = "#565B61"
     #: 自绘图标线条的默认色。比 TEXT_DIM 亮一档：图标是 1.4px 细线，
     #: 用 TEXT_DIM 会在深色标题栏上明显发灰、难以辨认（Phase UI 改造）。
-    ICON: str = "#C2CBD9"
-    #: 键盘焦点环颜色。取自设计系统 MASTER.md 的强调色令牌
-    #: （design-system/livelens/MASTER.md §2.1 --ll-accent）。
-    FOCUS_RING: str = "#80BFFF"
+    ICON: str = "#C6CBD1"
+    #: 键盘焦点环颜色 = 强调色。
+    FOCUS_RING: str = "#4CC2FF"
 
-    # ---- 强调色（蓝）----
-    ACCENT: str = "#80BFFF"
-    ACCENT_HOVER: str = "#9CCFFF"
-    ACCENT_PRESSED: str = "#66A8E6"
-    ACCENT_TEXT: str = "#80BFFF"
-    ACCENT_DIM: str = "rgba(128, 191, 255, 0.14)"
-    ACCENT_EDGE: str = "rgba(128, 191, 255, 0.28)"
+    # ---- 强调色（青蓝）----
+    ACCENT: str = "#4CC2FF"
+    ACCENT_HOVER: str = "#6ED1FF"
+    ACCENT_PRESSED: str = "#2FB2F2"
+    ACCENT_TEXT: str = "#4CC2FF"
+    ACCENT_DIM: str = "rgba(76, 194, 255, 0.14)"
+    ACCENT_EDGE: str = "rgba(76, 194, 255, 0.30)"
 
     # ---- 状态色 ----
-    OK_TEXT: str = "#64D9A0"
-    OK_BG: str = "rgba(100, 217, 160, 0.12)"
-    OK_BORDER: str = "rgba(100, 217, 160, 0.28)"
-    WARN_TEXT: str = "#E0B76A"
-    WARN_BG: str = "rgba(224, 183, 106, 0.12)"
-    WARN_BORDER: str = "rgba(224, 183, 106, 0.28)"
-    DANGER: str = "#B4554E"
-    DANGER_TEXT: str = "#E08A82"
-    DANGER_BG: str = "rgba(224, 138, 130, 0.12)"
-    DANGER_BORDER: str = "rgba(224, 138, 130, 0.28)"
-    DANGER_HOVER: str = "#C4736B"
+    OK_TEXT: str = "#3FDD8C"
+    OK_BG: str = "rgba(63, 221, 140, 0.12)"
+    OK_BORDER: str = "rgba(63, 221, 140, 0.28)"
+    WARN_TEXT: str = "#F0B429"
+    WARN_BG: str = "rgba(240, 180, 41, 0.12)"
+    WARN_BORDER: str = "rgba(240, 180, 41, 0.28)"
+    DANGER: str = "#E1564A"
+    DANGER_TEXT: str = "#FF8A7C"
+    DANGER_BG: str = "rgba(255, 107, 94, 0.12)"
+    DANGER_BORDER: str = "rgba(255, 107, 94, 0.30)"
+    DANGER_HOVER: str = "#FF7A6C"
 
     # ---- 字体 ----
     FONT_FAMILY: str = '"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei"'
@@ -159,11 +158,11 @@ class Metrics:
 
 #: 状态语气 → 圆点颜色。用于状态下拉/芯片，保证「明显但克制」。
 _TONE_DOT = {
-    "neutral": "#6E7C8C",
-    "ok": "#3FB950",
-    "warn": "#D29922",
-    "error": "#E5534B",
-    "accent": "#3D8BFD",
+    "neutral": "#8A929A",
+    "ok": "#3FDD8C",
+    "warn": "#F0B429",
+    "error": "#FF6B5E",
+    "accent": "#4CC2FF",
 }
 
 
@@ -193,7 +192,14 @@ QMainWindow, QDialog {
     border: none;
 }
 
-/* Mica 生效时整窗透明：标题栏/地址栏/性能栏用 CHROME 叠一层深色 */
+/* 系统模糊（Acrylic）生效时整窗透明：窗口本体与 central widget 都要让位，
+   框架层（标题栏/地址栏/性能栏）只叠一层 CHROME，桌面模糊直接透出；
+   视频井与画面区域仍由不透明表面自绘，可读性不受影响。
+   属性名沿用 "mica"（历史命名），值为 "true" 即「系统背景已启用」。 */
+QMainWindow[mica="true"], QDialog[mica="true"] {
+    background-color: transparent;
+}
+
 #windowRoot[mica="true"] {
     background-color: transparent;
 }
@@ -833,6 +839,27 @@ QStatusBar QLabel {
     padding: 5px 8px;
 }
 
+/* 历史入口组：「历史」+「⋯」装进同一个胶囊，两个按钮读作一个整体 */
+#historyGroup {
+    background-color: {INPUT_BG};
+    border: 1px solid {BORDER};
+    border-radius: {RADIUS}px;
+}
+
+#historyGroup QPushButton, #historyGroup QToolButton {
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
+}
+
+#historyGroup QPushButton:hover, #historyGroup QToolButton:hover {
+    background-color: {HOVER};
+}
+
+#historyGroup QToolButton:last-child {
+    border-top-left-radius: 0px;
+}
+
 /* 历史二级入口（⋯）：与地址栏其余控件同高、同底色，但更窄更安静 */
 #historyMenuBtn {
     background-color: {INPUT_BG};
@@ -859,6 +886,55 @@ QStatusBar QLabel {
 #toolStrip {
     background-color: {DOCK_BG};
     border-top: 1px solid {BORDER_SOFT};
+}
+
+/* 音量滑块：4px 细轨 + 14px 圆手柄（margin 撑出可抓握区），
+   前段用强调色标示当前音量。宽滑块是"能按住拖"的前提。 */
+#audioSlider {
+    background: transparent;
+    min-height: 18px;
+}
+
+#audioSlider::groove:horizontal {
+    height: 4px;
+    border-radius: 2px;
+    background-color: {BORDER};
+}
+
+#audioSlider::sub-page:horizontal {
+    background-color: {ACCENT};
+    border-radius: 2px;
+}
+
+#audioSlider::handle:horizontal {
+    width: 14px;
+    height: 14px;
+    margin: -5px -5px;
+    border-radius: 7px;
+    background-color: {TEXT};
+}
+
+#audioSlider::handle:horizontal:hover {
+    background-color: {ACCENT_HOVER};
+}
+
+#audioSlider::handle:horizontal:pressed {
+    background-color: {ACCENT};
+}
+
+/* 静音键：透明底的图标按钮，与标题栏图标按钮同一种反馈语汇 */
+#audioMuteBtn {
+    background: transparent;
+    border: none;
+    border-radius: {RADIUS}px;
+}
+
+#audioMuteBtn:hover {
+    background-color: {HOVER};
+}
+
+#audioMuteBtn:pressed {
+    background-color: {PRESSED};
 }
 
 /* 右侧 OCR 面板：一条左细线分隔，不用卡片边框 */
@@ -923,6 +999,24 @@ QStatusBar QLabel {
     color: {TEXT_DIM};
     font-size: {FONT_SIZE_SMALL};
     font-family: {MONO_FAMILY};
+}
+
+/* 「诊断」弹层：状态栏上方悬浮的指标卡（默认收纳四组性能指标） */
+#perfPopup {
+    background-color: {POPUP_BG};
+    border: 1px solid {BORDER_STRONG};
+    border-radius: {RADIUS}px;
+}
+
+#perfPopupTitle {
+    color: {TEXT_MUTED};
+    font-size: {FONT_SIZE_SMALL};
+    font-weight: 600;
+    padding: 6px 10px 2px 10px;
+}
+
+#perfPopup #perfDivider {
+    margin: 4px 6px;
 }
 
 /* 会话识别历史：无边框列表，选中用明度差 */
