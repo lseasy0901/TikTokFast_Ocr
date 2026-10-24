@@ -13,6 +13,7 @@ LiveLens(原 Douyin Low Latency Viewer)是一款面向 Windows 的直播低延�
 ## 目录
 
 1. [功能特性](#功能特性)
+1. [新电脑复现(clone 即用)](#新电脑复现clone-即用)
 2. [界面预览](#界面预览)
 3. [目录结构](#目录结构)
 4. [环境要求](#环境要求)
@@ -117,6 +118,39 @@ LiveLens/
 - Python 3.11(源码运行)
 - FFmpeg 7(裸流链路;缺失时自动回退标准链路,发布包内置)
 
+## 新电脑复现(clone 即用)
+
+换机时按此顺序操作,所有开发/运行所需资产即可就位:
+
+```bash
+git clone <仓库地址> LiveLens && cd LiveLens
+
+# 1) 依赖
+python -m venv venv && venv\Scripts\activate
+pip install -r requirements.txt
+
+# 2) 运行时资产(模型/FFmpeg,不入库;脚本自动找源并按 SHA-256 校验)
+python scripts/provision_runtime.py --check   # 看缺什么
+python scripts/provision_runtime.py           # 自动补齐(可用 --src 指定
+                                              # 旧机器工作区或正式安装目录)
+
+# 3) 运行 / 测试
+python main.py
+python -m pytest tests/automation/ tests/test_clipboard.py
+```
+
+**已随仓库携带**(无需额外获取):验签公钥 `license_public_key.pem`、
+本地开发签名密钥 `license_server/test_rsa_key.pem`(仅用于本地联调,
+生产密钥独立保管、绝不在仓库)、预构建 `susi_helper.exe`(源码在
+`susi_helper/`,可用 Rust 工具链重建)、随包 ffprobe。
+
+**按需迁移**(个人数据,不入库):激活状态(新机重新激活即可)、
+历史记录与 ROI 记忆(`%LOCALAPPDATA%\LiveLens\`)。
+
+**生产服务器**不在 clone 链路里:部署与运维见 `license_server/ops/`
+(备份/迁移/回滚/冒烟脚本),生产配置与密钥永远只在服务器的 `.env`
+与数据目录中,不入任何 Git 仓库。
+
 ## 源码运行
 
 ```bash
@@ -127,7 +161,7 @@ python main.py
 ```
 
 - **自动加入**若目标游戏以管理员运行,请以管理员身份启动本程序(否则点击会被系统拒绝)
-- 激活弹窗需要 `susi_helper.exe`(Rust 构建,见 `susi_helper/`;开发期也可从正式安装目录回填)与 `license_public_key.pem`(不入库,按部署提供)
+- 激活所需的 `susi_helper.exe` 与 `license_public_key.pem` 均已随仓库携带(见「新电脑复现」)
 
 ### 环境变量
 
