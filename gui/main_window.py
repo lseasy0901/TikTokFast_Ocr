@@ -3793,13 +3793,26 @@ class MainWindow(QMainWindow):
 
         # 访问状态是「能不能用」的总开关，语气必须比普通读数更醒目：
         # 已到期用危险色，临近到期用警告色，正常则保持低调。
+        days_left = self._access_status.remaining_days()
         if denied:
             tone = "error"
         elif "即将到期" in status_text:
             tone = "warn"
+        elif days_left is not None and days_left <= 7:
+            tone = "warn"          # 天级续费提醒(2026-10-25):临期一周变黄
         else:
             tone = "ok"
         set_tone(self._access_status_label, tone)
+        if tone == "warn" and days_left is not None:
+            self._access_status_label.setToolTip(
+                f"授权将在 {days_left} 天后到期,请及时续费")
+            # 每次启动只提醒一次(toast),避免状态轮询反复弹
+            if not getattr(self, "_expiry_toast_shown", False):
+                self._expiry_toast_shown = True
+                self.show_toast(
+                    f"授权剩余 {days_left} 天,请及时续费", "warn")
+        else:
+            self._access_status_label.setToolTip("")
 
         # 激活入口始终可用：任何状态下都应允许用户激活许可证
         self._license_btn.setEnabled(True)

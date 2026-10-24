@@ -137,6 +137,22 @@ class AccessStatus:
             return f"即将到期 · 剩余 {int(remaining // 3600)}小时"
         return f"已激活 · 剩余 {int(remaining // 86400)}天"
 
+    def remaining_days(self):
+        """剩余有效天数(向上取整);永久授权/未激活返回 None。
+
+        供 UI 做"天级续费提醒"(小时级的 EXPIRING 文案由 get_status_text
+        负责,两者阈值刻意不同:提醒要提前,告警要精确)。
+        """
+        if not self._license_active or self._license_expires_at is None:
+            return None
+        import math
+        remaining = (
+            self._license_expires_at - datetime.now(timezone.utc)
+        ).total_seconds()
+        if remaining <= 0:
+            return 0
+        return math.ceil(remaining / 86400)
+
     def is_expired(self) -> bool:
         """是否不可用（已过期 / 无效 / 未激活）。
 
