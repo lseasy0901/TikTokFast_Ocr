@@ -1,530 +1,207 @@
-# LiveLens
+# LiveLens — 直播间低延迟观看 · 房间码 OCR · 一键自动加入
 
-低延迟直播画面实时提取与 OCR 工具
+LiveLens(原 Douyin Low Latency Viewer)是一款面向 Windows 的直播低延迟播放工作台:把直播画面以**尽可能小的延迟**呈现出来,从画面中 **OCR 识别自定义房间码**,并支持**一键自动加入**游戏房间(当前支持无畏契约国服自定义房)。内置完整的**授权体系**(激活码 / 设备绑定 / 管理后台 / 自动更新),面向商业分发。
 
-A Windows desktop viewer for Douyin (抖音) live streams built around a **latest-frame video pipeline**: it always displays the newest decoded frame and deliberately discards older ones, so stream latency does not accumulate over time.
+```
+直播流 ──► FFmpeg 解码 ──► 最新帧渲染(丢旧不攒延迟)
+                │
+                └──► ROI 裁剪 ──► OCR 识别 ──► 严格校验 ──► 剪贴板
+                                                        │
+                              全局热键 F8 ──► 自动切换游戏窗口 ──► 点粘贴 ──► 点加入
+```
 
-On top of that low-latency base the application adds **region OCR** — you draw a rectangle on the live video and the text inside it is recognized continuously and copied to the clipboard automatically whenever it changes.
+## 目录
 
-The repository also contains a **self-hosted license server** (`license_server/`) and a small Rust bridge (`susi_helper/`) that together provide device-bound, server-authoritative license activation with offline signature verification on the client.
+1. [功能特性](#功能特性)
+2. [界面预览](#界面预览)
+3. [目录结构](#目录结构)
+4. [环境要求](#环境要求)
+5. [源码运行](#源码运行)
+6. [测试](#测试)
+7. [性能基准](#性能)
+8. [打包发布](#打包发布)
+9. [授权系统](#授权系统license_server)
+10. [风险与合规声明](#风险与合规声明)
+11. [版本沿革](#版本沿革)
+12. [License](#license)
 
----
+## 功能特性
 
-## Table of Contents
+### 播放
+- **低延迟优先**:最新帧架构(latest-frame),积压帧直接丢弃,解码到显示全链路毫秒级观测
+- **多平台解析**:抖音直播(含关注页直播间)、虎牙、B 站(平台适配器架构,新增平台只需实现 `stream/adapters/base.py` 接口)
+- **裸流直取**(抖音):从页面直接获取 FLV 裸流,实测画面领先旧链路约 0.7 秒;FFmpeg 7 运行时自动管理,故障自动回退
+- **候选流自动切换**(failover):一个流地址起不来自动试下一个,断流自愈,看门狗
+- **音频**:独立音频服务,极速模式(最新声音优先)/同步模式(连贯优先),零缓冲直出;音量支持拖动/滚轮/点击图标静音
 
-1. [Key Features](#1-key-features)
-2. [Architecture Overview](#2-architecture-overview)
-3. [Low-Latency Design](#3-low-latency-design)
-4. [OCR, ROI and Clipboard Behaviour](#4-ocr-roi-and-clipboard-behaviour)
-5. [Recent Streams and Per-URL Notes](#5-recent-streams-and-per-url-notes)
-6. [Licensing Architecture and Business Rules](#6-licensing-architecture-and-business-rules)
-7. [Admin Backend](#7-admin-backend)
-8. [Requirements](#8-requirements)
-9. [Development Setup](#9-development-setup)
-10. [Running the Client](#10-running-the-client)
-11. [License Server Setup](#11-license-server-setup)
-12. [Configuration](#12-configuration)
-13. [PyInstaller Build](#13-pyinstaller-build)
-14. [Security Notes](#14-security-notes)
-15. [Current Project Status](#15-current-project-status)
-16. [Roadmap](#16-roadmap)
-17. [Disclaimer](#17-disclaimer)
-18. [License](#18-license)
+### OCR(房间码识别)
+- **游戏感知**:按游戏档配置房间码格式(三角洲行动 / 三角洲 1v1 / 无畏契约),逐位字符校验(LETTER/DIGIT),宁可无结果不可错结果
+- **逐位纠错**:有限映射表(如 `O→0`)、纠错次数封顶、无全局替换——不会把合法码 `IOI123` 改坏
+- **时序一致性**:同一码需连续多帧一致才输出;多 PSM 读法间只在已验证候选中仲裁
+- **选错游戏提醒**:读数与所选游戏明显冲突时只提醒不自动切换
+- **ROI 逐房间记忆**:框选识别区域,按直播间自动记忆
 
----
+### 自动加入(automation)
+- **热键一键**:OCR 识别到的码自动复制 → 按 `F8` → 自动把游戏窗口切到前台 → 依次点击「粘贴」小按钮与「加入房间」
+- **两点校准**:一次校准存**相对窗口客户区的比例坐标**,窗口移动/缩放/换分辨率不需要重新校准(宽高比变形 >5% 会警告)
+- **安全护栏**:激活失败绝不点击(前台验证闭环)、序列中窗口被切走立即中止、执行中防重入、未校准/无码/找不到窗口明确 toast 报错
+- **管理员要求**:游戏以管理员权限运行时(腾讯 ACE 反作弊的常态),LiveLens 也必须以管理员运行,否则模拟输入会被 Windows UIPI 拒绝
 
-## 1. Key Features
+### 授权与分发
+- **激活体系**:激活码一次性兑换 → RSA-2048 签名凭据 → 设备绑定(机器码),客户端只存公钥
+- **管理后台**:license_server 内置 Admin 2.0(密钥生成/兑换流水/设备管理/DAU 统计/CSV 导出)
+- **自动更新**:Velopack 增量更新,Full/Delta 双通道,OSS 分发
+- **界面**:液态玻璃风格深/浅双主题(设置内即时切换),MiSans 品牌字体,Acrylic 真模糊(Win11 22H2+,低版本自动回退)
 
-| Feature | Description |
+## 界面预览
+
+| 主工作台(UI 改版存档截图) | 双主题 |
 |---|---|
-| **Low-latency live playback** | Direct FFmpeg stream extraction and decode, latest-frame buffer, active frame dropping |
-| **Douyin room URL resolution** | Resolves a `live.douyin.com/<room_id>` page to the real FLV playback URL |
-| **Region OCR (ROI)** | Draw a rectangle over the live video; only that region is recognized |
-| **Automatic clipboard copy** | Recognized text is copied automatically whenever it changes |
-| **Recent streams** | Last 10 successful streams, de-duplicated, with a per-URL note field |
-| **Live performance readout** | FPS, glass-to-glass latency, resolution, connection state |
-| **License activation** | One-time key redemption, device binding, offline signature verification |
-| **Expiry gating** | Protected actions are gated while the local authorization is expired |
-| **Self-hosted license server** | FastAPI + SQLAlchemy service with a SQLAdmin operations console |
+| ![主窗口](docs/ui-redesign/evidence/screenshots/phase6_theme_main_window.png) | 设置 → 偏好 → 外观主题,深色/浅色即时切换 |
 
----
+> 截图为设计验证存档,最新界面以实际运行为准;开发者可用
+> `python scripts/capture_ui_layout.py --native` 抓取当前界面。
 
-## 2. Architecture Overview
+## 目录结构
 
 ```
-DouyinLowLatencyViewer/
-├── main.py                  # Entry point: QApplication + MainWindow
-├── config.yaml              # Runtime configuration (resolution, CUDA, monitoring)
-├── requirements.txt         # Client dependencies
-│
-├── gui/                     # PySide6 user interface
-│   ├── main_window.py       # Main window, stream control, OCR wiring, licensing
-│   ├── video_widget.py      # Frame painting + ROI overlay
-│   ├── activation_dialog.py # License key entry
-│   └── expired_dialog.py    # Expired-authorization notice
-│
-├── stream/                  # Video input pipeline
-│   ├── douyin.py            # Room URL -> real stream URL resolution
-│   ├── ffmpeg_reader.py     # FFmpeg subprocess reader (low-latency flags)
-│   ├── frame_buffer.py      # Single-slot LatestFrameBuffer
-│   └── video_info.py        # ffprobe-based stream probing
-│
-├── ocr/                     # Recognition pipeline
-│   ├── worker.py            # OCRWorker (QThread) — independent of video
-│   ├── engine.py            # Tesseract wrapper + locator + whitelist
-│   ├── preprocess.py        # Binarization / denoising for OCR input
-│   ├── roi_manager.py       # Current ROI state
-│   ├── roi_selector.py      # Drag-to-select ROI overlay
-│   └── clipboard.py         # Clipboard writes with filtering
-│
-├── utils/                   # Cross-cutting helpers
-│   ├── license_manager.py   # Activation, storage, verification orchestration
-│   ├── license_client.py    # HTTP client for the activation endpoint
-│   ├── license_store.py     # Local license persistence
-│   ├── susi_verifier.py     # susi_helper wrapper: machine code + signature check
-│   ├── access_status.py     # Expiry countdown and access gating
-│   ├── stream_history.py    # Recent streams + per-URL notes
-│   └── performance.py       # FPS / latency monitoring
-│
-├── license_server/          # FastAPI license server (separate deployment)
-│   ├── app/                 # Config, models, services, API routes, admin
-│   └── .env.example         # Server configuration template
-│
-├── susi_helper/             # Rust bridge to the Susi core library
-├── susi_source/             # Vendored Susi sources (compatibility reference)
-├── admin_web/               # Vendored SQLAdmin snapshot (not tracked in Git)
-└── runtime/                 # Bundled ffmpeg and Tesseract binaries
+LiveLens/
+├── main.py                    # 启动入口(Velopack 钩子/QApplication)
+├── config.yaml                # 运行配置
+├── gui/                       # PySide6 界面
+│   ├── main_window.py         #   主窗口(布局/状态机/接线)
+│   ├── theme.py               #   设计令牌体系(Palette/Metrics/QSS,双主题)
+│   ├── widgets.py             #   共享控件(GlassDialog/TitleBar/IconButton…)
+│   ├── settings_dialog.py     #   设置中心(授权/偏好/自动加入/反馈/关于)
+│   ├── audio_panel.py         #   音量(拖动/滚轮/静音)+ 模式分段控件
+│   └── toast.py / join_guide.py / watermark.py / …
+├── stream/                    # 拉流与解码(平台无关的播放核心)
+│   ├── ffmpeg_reader.py       #   FFmpeg 管道解码
+│   ├── frame_buffer.py        #   最新帧缓冲
+│   ├── bare_source.py         #   抖音裸流页面直取
+│   ├── failover.py            #   候选流切换
+│   └── adapters/              #   平台适配器(抖音/虎牙/B站;新增平台在此)
+├── ocr/                       # OCR 管线(格式感知 v2.1)
+│   ├── profiles.py            #   游戏档 → 房间码格式
+│   ├── room_code.py           #   识别管线(清洗→候选→纠错→严格校验)
+│   ├── temporal.py            #   时序一致性
+│   ├── onnx_engine.py / ppocr_engine.py   # 推理后端(PP-OCRv6/ONNX)
+│   └── roi_manager.py         #   识别区域管理
+├── automation/                # 自动加入房间
+│   ├── win32.py               #   窗口定位/前台激活/SendInput(物理像素)
+│   ├── join_controller.py     #   两步点击序列(逐步验证,可中止)
+│   ├── calibration.py         #   两点校准(独立线程轮询捕获)
+│   ├── hotkey.py              #   全局热键(F1–F12)
+│   └── join_config.py         #   配置与校准点持久化
+├── audio/                     # 音频服务(与视频解耦)
+├── utils/                     # 授权客户端/更新/性能/日志等
+├── license_server/            # 授权服务端(FastAPI + SQLite,含 Admin 2.0)
+├── susi_helper/               # 机器码与签名验证的 Rust 辅助程序
+├── susi_source/               # Susi 授权内核参考源码(上游快照,只读参考)
+├── tests/                     # 测试(pytest 型 + 自研脚本型,见「测试」)
+├── scripts/
+│   ├── velopack_release.py    #   三件套打包(Setup/Full/Delta)
+│   ├── benchmarks/            #   性能基准(启动/延迟归因/OCR 离线精度…)
+│   └── …                      #   调试/截图/校验/发布辅助工具
+├── docs/
+│   ├── reports/               #   历史工程报告归档(按阶段)
+│   └── ui-redesign/           #   UI 改版设计系统与验证证据
+├── design-system/livelens/    # 设计系统文档(MASTER/页面规格)
+├── resources/fonts/           # MiSans 品牌字体(免费可商用,可选加载)
+└── runtime/ffmpeg/            # 随包分发的 ffprobe(播放运行时另行注入)
 ```
 
-**Data flow at runtime**
+## 环境要求
 
-```
-Douyin room URL
-      │  stream/douyin.py
-      ▼
-Real stream URL ──► FFmpeg subprocess (rawvideo bgr24 over stdout)
-                          │
-                          ▼
-                LatestFrameBuffer (single slot)
-                          │
-        ┌─────────────────┴─────────────────┐
-        ▼                                   ▼
-  GUI paint thread                    OCR worker thread
-  (display + ROI overlay)             (crop ROI from source frame,
-                                       recognize, copy on change)
-```
+- Windows 10 / 11(x64;Acrylic 模糊需 Win11 22H2+,低版本自动回退纯色)
+- Python 3.11(源码运行)
+- FFmpeg 7(裸流链路;缺失时自动回退标准链路,发布包内置)
 
-The two consumers are independent: the OCR worker reads whatever the newest frame happens to be and never feeds anything back into the video path.
-
----
-
-## 3. Low-Latency Design
-
-The pipeline is built around one rule: **it is always better to drop a frame than to display a stale one.**
-
-**Single-slot `LatestFrameBuffer`** (`stream/frame_buffer.py`)
-
-The buffer holds exactly one frame. A write replaces the previous frame rather than appending to a queue, so a slow consumer can never cause a backlog. There is no `queue.Queue` and no frame history by design.
-
-**Skip-to-latest reading** (`stream/ffmpeg_reader.py`)
-
-After reading a frame, the reader non-blockingly checks how many bytes are already waiting in the FFmpeg stdout pipe (`PeekNamedPipe` on Windows, `select` on Unix). If a full additional frame is available, the current frame is discarded and the newer one is read instead. This repeats up to a safety cap of 30 frames per iteration, so the application always holds the newest frame the pipe can offer instead of draining a backlog.
-
-**Aggressive FFmpeg decode flags**
-
-The FFmpeg invocation includes, among others:
-
-```
--fflags nobuffer+flush_packets   -flags low_delay
--probesize 32768                 -analyzeduration 100000
--thread_queue_size 1             -max_delay 0
--avioflags direct                -flush_packets 1
--pix_fmt bgr24  -f rawvideo  pipe:1
-```
-
-Audio and subtitles are dropped (`-an -sn`) since only video is needed. Frames are converted to NumPy through `np.frombuffer` as a zero-copy view — there is no per-frame pixel copy in Python.
-
-**Isolation from the UI**
-
-FFmpeg runs in a child process; reading happens on a dedicated daemon thread; stderr is drained on a second thread so a full stderr pipe can never block decoding. The GUI thread only ever reads the current slot.
-
-**Not used for stream input**
-
-Deliberately excluded from this project:
-
-- Selenium
-- Playwright
-- browser screenshots
-- OBS (no OBS runtime or OBS integration)
-- OpenCV `VideoCapture`
-
-Stream input is obtained by resolving the Douyin playback URL and decoding it directly with FFmpeg. Window capture and browser automation are never part of the video path.
-
-**Measured latency**
-
-`utils/performance.py` timestamps capture and display to report a live glass-to-glass latency figure, alongside FPS and resolution, in the status bar.
-
----
-
-## 4. OCR, ROI and Clipboard Behaviour
-
-**OCR runs as an independent worker.** `ocr/worker.py` implements `OCRWorker` as a `QThread` that loops on its own timer. It reads the newest frame from the buffer and performs recognition without ever blocking, throttling, or feeding back into the video pipeline. If recognition is slow, video playback is unaffected — the worker simply samples a later frame next time.
-
-**Default interval: 300 ms.** `OCRWorker(interval_ms=300)` is the default, and the interval is adjustable at runtime. OCR starts and stops only via the existing OCR button (`开始OCR` / stop); nothing recognizes text until you start it.
-
-**ROI selection**
-
-- `选择识别区域` starts a selection pass; the current frame is shown frozen for drawing.
-- Drag to draw the rectangle, **Enter** confirms, **Esc** cancels.
-- Cancelling during a re-selection restores the previously confirmed ROI.
-- A confirmed ROI stays drawn on the live video as an **overlay that is visual only**. The overlay is never part of the image that gets recognized.
-- There is exactly one ROI.
-
-**OCR reads source-frame pixels.** The worker crops the ROI rectangle directly out of the raw frame taken from the buffer, then preprocesses and recognizes that crop. The on-screen overlay is drawn by the video widget and is not involved.
-
-**Recognized character set.** Tesseract is configured with a whitelist limited to English letters and digits:
-
-```
-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
-```
-
-No punctuation, and no spaces or newlines in the final copied text. There is no character-guessing or substitution heuristic — the engine reports what it recognizes, and multiple page-segmentation modes are tried in order.
-
-**Clipboard behaviour**
-
-- Text is copied to the clipboard **automatically whenever the recognized text changes**.
-- Unchanged text is not re-copied, so repeated identical results do not churn the clipboard.
-- Empty or whitespace-only results are **not** copied — a blank recognition never overwrites whatever you already had on the clipboard.
-- A brief confirmation indicator appears in the UI after a successful copy.
-
----
-
-## 5. Recent Streams and Per-URL Notes
-
-`utils/stream_history.py` maintains a persisted list of the most recent successful streams (up to 10 entries, stored as JSON next to the application).
-
-| Behaviour | Detail |
-|---|---|
-| Capacity | 10 entries maximum |
-| De-duplication | The same URL appears once; reconnecting updates its timestamp instead of adding a row |
-| Eviction | Least-recently-used entry is dropped past the limit |
-| Notes | Each URL carries a free-text note, editable from the UI via the `备注` button |
-| Persistence | Written to disk, so the list survives restarts |
-| Clearing | The `清除` button empties the list |
-
-Notes are purely local annotations — they are never sent to the license server, the stream provider, or anywhere else.
-
----
-
-## 6. Licensing Architecture and Business Rules
-
-### Product rule
-
-**A License Key is a one-time redeemable, time-and-feature entitlement credential.**
-
-| Situation | Result |
-|---|---|
-| Key is unused and redeemed successfully | The key becomes permanently `REDEEMED` and can never be redeemed again |
-| Target device has no authorization | A new Authorization is created, expiring at *server time + key duration* |
-| Target device has an **active** authorization | Duration is **accumulated** onto the existing expiry |
-| Target device has an **expired** authorization | Expiry **restarts** from authoritative server time + key duration |
-| Key already redeemed | Rejected with `already_redeemed`; no second Authorization, no expiry extension |
-
-Features are **unioned** across every key a device has redeemed. Different unused keys may be redeemed on different devices, producing separate Authorizations.
-
-### Server-authoritative, device-bound
-
-The server — not the client — decides the resulting expiry. Timestamps are derived from server time, and the entitlement is bound to a device identifier (a machine code produced by `susi_helper`). A credential is only accepted by the client when the signature is valid **and** the embedded machine code matches the current machine.
-
-### Server-side data model
-
-| Entity | Meaning | Key fields |
-|---|---|---|
-| `License` | A single issued key | `key_hash`, `duration_days`, `state`, `features`, `redeemed_at`, `authorization_id` |
-| `Authorization` | A device's current entitlement | `device_id`, `expires_at`, `state`, `activated_at` |
-
-License keys are stored **only as a SHA-256 hash** (`key_hash`). The plaintext key exists in memory at generation time and is never persisted, so a database dump cannot be replayed as usable keys.
-
-### Signed licenses and offline verification
-
-On successful redemption the server returns a **SignedLicense** — a payload (license identifier, features, expiry, bound machine codes) plus an RSA signature over its bytes.
-
-- Signing uses **RSA PKCS#1 v1.5 with SHA-256**, performed by the Rust Susi core through `susi_helper`.
-- The client verifies the signature **locally, with no network access**, using a bundled public key.
-- Client verification order is: structural validity → signature → machine binding → expiry. The signed license is only persisted after all four pass.
-
-**Key provisioning.** The signing private key lives on the license server and is supplied through configuration — it is never committed to this repository. Only the **public** key is shipped with the client (bundled into the packaged application). Public-key resolution order on the client is: environment variable → bundled/repository public key → application data directory. For production, a deployment provisions its own keypair and places only the public half in the client build.
-
-### Activation endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/api/v1/licenses/activate` | Redeem a key, return a SignedLicense |
-| `POST` | `/api/v1/licenses/validate` | Validate a key without redeeming |
-| `POST` | `/api/v1/admin/licenses` | Create a license (API-key protected) |
-
-### Client storage
-
-The client stores its result at `%APPDATA%\DouyinLowLatencyViewer\license.json` — activation timestamp, device identifier, server URL, and the SignedLicense. On startup the stored license is re-verified **locally**; no server round-trip is required to remain active.
-
-### Susi integration status
-
-Susi is used as the **cryptographic and device-identification layer only** — signing, verification, and machine-code generation, reached through the `susi_helper` bridge.
-
-Susi's own native License→Machine issuance model is **not** used. The entitlement semantics above (one-time redemption, duration accumulation, feature union, server-authoritative expiry) are implemented by this project's own business layer in `license_server/app/services/redemption_service.py`. The vendored `susi_source/` tree is kept as a compatibility reference; it is not the licensing backend.
-
----
-
-## 7. Admin Backend
-
-The license server exposes a **SQLAdmin** operations console at `/admin`, mounted alongside the JSON API without modifying it.
-
-**Vendored, not installed.** The SQLAdmin snapshot is vendored under `admin_web/sqladmin/`, which is excluded from Git and provisioned separately per deployment. If that directory is absent — for example in a fresh clone — the server **skips mounting `/admin` entirely and starts normally**; the license API is unaffected. The admin console is an optional local operations interface, not a startup requirement.
-
-**Authentication.** Login username is `admin`; the password must equal the configured `ADMIN_API_KEY`, compared in constant time. If `ADMIN_API_KEY` is unset, **all logins fail closed**. Sessions are signed with `SECRET_KEY`.
-
-**Supported operations**
-
-| Operation | Where | Notes |
-|---|---|---|
-| Generate license keys | `/admin/generate-keys` | Batch generation: duration preset, quantity, feature list |
-| Browse / search license keys | License Key list | Shows the key fingerprint, not the plaintext key |
-| Inspect a license | License detail | Includes features and the linked authorization |
-| Export license list | License Key list | Export enabled |
-| Revoke a license | License Key actions | **Unused keys only** — redeemed keys cannot be revoked, and existing device authorizations are not withdrawn |
-| Redemption history | `/admin/redeemed-history` | Redeemed keys with their timestamps |
-| Inspect authorizations | Authorization list | Device, state, expiry, activation time |
-| Per-device redemption history | Authorization detail | The keys that device has redeemed |
-
-**Deliberate restrictions.** Both the License and Authorization views disable create, edit, and delete. Keys are generated by the business layer (which the built-in form cannot do), the license state machine should only be driven by redemption and revocation, and issued records should not be erased for audit reasons. Authorization revocation is not offered — no code path in the current business layer sets a revoked authorization state.
-
----
-
-## 8. Requirements
-
-**Client**
-
-| Requirement | Notes |
-|---|---|
-| Windows 10 / 11 | The client targets Windows; the stream reader has partial cross-platform checks but the product is Windows |
-| Python 3.10+ | Recent verification was performed on Python 3.14 |
-| FFmpeg | `ffmpeg` and `ffprobe` must be available on `PATH` — used for stream decoding and probing |
-| Tesseract OCR | Located under `runtime/tesseract/` next to the application, or from a system installation |
-| NVIDIA GPU (optional) | Enables CUDA hardware decoding; decoding falls back to CPU when disabled |
-
-Client Python packages (`requirements.txt`): PySide6, opencv-python, numpy, pyyaml, requests, psutil.
-
-> **Note:** the OCR engine additionally imports `pytesseract`, which is not currently declared in `requirements.txt`. Install it explicitly (`pip install pytesseract`) or OCR will be unavailable.
-
-**License Server** (`license_server/requirements.txt`): fastapi, uvicorn, sqlalchemy, pydantic, pydantic-settings, python-multipart, wtforms, jinja2, itsdangerous.
-
-**Build tooling**: PyInstaller, and a Rust toolchain if you need to build `susi_helper` from source.
-
----
-
-## 9. Development Setup
+## 源码运行
 
 ```bash
-# 1. Clone
-git clone <repository-url>
-cd DouyinLowLatencyViewer
-
-# 2. Install client dependencies
+python -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
-
-# 3. Make FFmpeg available on PATH
-ffmpeg -version     # must succeed
-
-# 4. Make Tesseract available
-#    Either install it system-wide, or place a portable build in runtime/tesseract/
-```
-
----
-
-## 10. Running the Client
-
-```bash
 python main.py
 ```
 
-**Typical workflow**
+- **自动加入**若目标游戏以管理员运行,请以管理员身份启动本程序(否则点击会被系统拒绝)
+- 激活弹窗需要 `susi_helper.exe`(Rust 构建,见 `susi_helper/`;开发期也可从正式安装目录回填)与 `license_public_key.pem`(不入库,按部署提供)
 
-1. Paste a Douyin live room URL (`https://live.douyin.com/<room_id>`) into the URL field and press **连接**.
-2. The resolved stream starts playing with the live FPS / latency / resolution readout in the status bar.
-3. Press **选择识别区域**, drag a rectangle over the text you want, and press **Enter** to confirm (**Esc** cancels).
-4. Press **开始OCR** to begin continuous recognition; recognized text is copied to the clipboard automatically whenever it changes.
-5. Use the **备注** button to attach a note to the current URL, and **清除** to empty the recent list.
+### 环境变量
 
-Activation is available from the **激活许可证** button; when a local authorization has expired, protected actions are gated and an expiry notice is shown.
+| 变量 | 作用 |
+|---|---|
+| `DLV_LICENSE_SERVER_URL` | 覆盖授权服务器地址(默认生产) |
+| `DLV_FFPROBE_PATH` / `DLV_FFMPEG7_EXE` | 覆盖随包运行时路径 |
+| `DLV_PLATFORM_BILIBILI` | 启用 B 站解析(门控开关) |
+| `DLV_BARE_STREAM` | 抖音裸流链路门控 |
+| `DLV_TEST_PENDING_CODE` | 测试钩子:预置自动加入待加入码(或项目根 `_test_pending_code.txt`) |
+| `QT_QPA_PLATFORM=offscreen` | 无头运行(截图/CI) |
 
----
+## 测试
 
-## 11. License Server Setup
-
-The license server is a separate FastAPI application. It is **not deployed anywhere yet** — the steps below are for running it locally or on your own host.
-
-**Run locally**
+两类测试并存,运行方式不同:
 
 ```bash
-cd license_server
+# pytest 型(框架内断言;tests/conftest.py 自动把项目根加入 sys.path)
+python -m pytest tests/automation/ tests/test_clipboard.py tests/test_stream_resolver.py
 
-# 1. Create your configuration from the template
-cp .env.example .env      # then edit it
-
-# 2. Run the server
-python -m uvicorn main:app --app-dir app --host 127.0.0.1 --port 8000
+# 自研脚本型(check 风格,直接运行,退出码 0/1)
+python tests/test_first_run_onboarding.py        # 225 项
+python tests/ui_redesign/test_toolbar_contract.py
 ```
 
-The `--app-dir app` flag is required: the server's modules are laid out so that `app/` is on `sys.path` and the application module is named `main`.
+- 边界测试:`tests/automation/test_join_unit.py`(17 项单元级,pytest 常驻)+
+  `tests/automation/input_boundary_live.py`(15 项真实输入验收,需真实桌面,一次性运行)
+- 界面截图:`python scripts/capture_ui_layout.py [输出目录] [--native]`
 
-**Pointing the client at a server**
+## 性能
 
-The client resolves its activation endpoint from the `DLV_LICENSE_SERVER_URL` environment variable, falling back to a local development default. This lets one build target different deployments without code changes.
+延迟是本项目的第一指标,基准脚本归档在 `scripts/benchmarks/`:
 
-**Admin console**
+- 启动基线(`bench_startup_baseline.py`)、延迟归因(`bench_phase_3_4_latency_attribution.py`)
+- 裸流端到端对照:双实例并排录屏互相关,结论为裸流领先旧链路 +0.70s(8/8 段一致)
+- OCR 离线精度(`bench_phase_ocr7_offline_accuracy.py`,配合 `ocr_anomaly_registry.csv` 异常登记)
+- UI 改版性能 A/B(水印/空闲 CPU/启动三项,证据见 `docs/ui-redesign/evidence/`)
 
-With the vendored SQLAdmin snapshot provisioned under `admin_web/`, the operations console is served at `/admin`. Set `ADMIN_API_KEY` before starting — logging in is impossible while it is unset.
+## 打包发布
 
----
-
-## 12. Configuration
-
-**Client — `config.yaml`**
-
-```yaml
-stream:
-  width: 1920       # output frame width
-  height: 1080      # output frame height (must match; auto-detected if omitted)
-
-ffmpeg:
-  cuda: true        # enable CUDA hardware decoding
-  low_delay: true   # low-latency decode flags
-
-performance:
-  monitor_interval: 1   # performance sampling interval, seconds
-```
-
-**License server — `.env`** (see `license_server/.env.example`)
-
-| Variable | Purpose |
-|---|---|
-| `SECRET_KEY` | Signs admin session cookies — change in production |
-| `ADMIN_API_KEY` | Admin password and API key for license creation |
-| `DATABASE_URL` | SQLAlchemy database URL |
-| `DEBUG` | When true, serves interactive API docs; they are disabled otherwise |
-| `API_PREFIX` | API route prefix (default `/api/v1`) |
-| `SUSI_DEVELOPMENT_PRIVATE_KEY_FILE` | Path to the signing private key PEM — **preferred form** |
-| `SUSI_DEVELOPMENT_PRIVATE_KEY` | Inline signing key; may use escaped `\n` |
-| `SUSI_HELPER_PATH` | Override for the `susi_helper` executable location |
-
-Precedence is environment variable → `.env` → built-in default. The server resolves its `.env` from its own location rather than the process working directory, so it can be started by a process manager or service unit without settings silently falling back to defaults.
-
-Use the **file** form for the signing key. A multi-line PEM does not survive a bare `.env` value: unquoted it is silently truncated to its first line, and a value pasted from PowerShell may be UTF-16, whose NUL bytes a PEM parser rejects. The server reports these cases explicitly instead of failing with a misleading parse error.
-
----
-
-## 13. PyInstaller Build
-
-The build is driven by `douyin_viewer.spec` and must be run **from the repository root**, because the spec resolves its inputs relative to the working directory.
+PyInstaller + Velopack 双层打包,产物三件套(Setup / Full / Delta):
 
 ```bash
-pyinstaller --noconfirm --clean douyin_viewer.spec
+python scripts/velopack_release.py        # 支持增量包参数,见脚本说明
 ```
 
-Output is a one-directory bundle at `dist/DouyinLowLatencyViewer/`.
+- 打包清单在 `douyin_viewer.spec` 与 `build_package.py`;`resources/`、`runtime/` 随包注入
+- 更新服务端与发布清单见 `license_server/app/services/release_service.py` 及 `docs/reports/` 内发布阶段报告
 
-**Bundled artifacts**
+## 授权系统(license_server)
 
-| Artifact | Why it is bundled |
+- **凭据**:RSA-2048 签名的 `SignedLicense`(到期时间/功能集/设备绑定),客户端仅持公钥验签,**私钥永不随客户端分发、不入本仓库**
+- **机器码**:BIOS UUID + CPUID 的 SHA-256(经 `susi_helper` 取得)
+- **兑换规则**:激活码一次性;同设备续期按授权状态累加;**过期授权的兑换从服务器时间重启**(stale-ACTIVE 处理,见 `redemption_service.py`)
+- **本地运行**:`license_server/` 为独立 FastAPI 应用,`pip install -r license_server/requirements.txt` 后用 `run_server.py` 启动;配置项见 `.env.example`;历史数据修复工具 `repair_stale_active_renewals.py`(默认 dry-run)
+- **Admin 2.0 后台**:`/admin2`(密钥/兑换流水/设备/DAU/CSV 导出),经典 SQLAdmin 控制台在 `/admin`
+- 本仓库**不含**任何私钥、数据库或生产凭据
+
+## 风险与合规声明
+
+- **自动加入依赖模拟输入(SendInput)**:目标游戏带有内核级反作弊(ACE),模拟输入在其检测能力范围内,**存在封号风险**。该功能默认关闭,启用即视为已知悉并自担风险;建议先行小号验证。
+- 本软件用于观看直播与辅助识别公开画面信息;使用者应遵守各直播平台与游戏的服务条款。
+- 本项目为商业授权软件,未获授权不得分发。
+
+## 版本沿革
+
+| 版本 | 要点 |
 |---|---|
-| `license_public_key.pem` | Lets the client verify SignedLicenses offline |
-| `susi_helper` executable | Required to compute a machine code and verify signatures |
-| `config.yaml` | Runtime configuration |
+| 2.2.0 | 裸流直取(领先 +0.7s)、B 站支持、购买授权入口、增量更新 |
+| 2.1.0 | 授权体系上线、OSS 增量更新通道、音频服务 |
+| dev | 液态玻璃 UI(双主题/GlassDialog/MiSans)、诊断弹层、音量交互重构、**自动加入房间(热键一键)**、授权 stale-ACTIVE 修复 |
 
-**The build fails loudly rather than silently.** Two of those inputs are deliberately not tracked in Git — the public key is provisioned per deployment, and the helper is a compiled Rust binary. PyInstaller's default behaviour is to warn about a missing data file and produce a broken executable anyway, which would surface as "activation does not work" on a user's machine long after the build. The spec therefore verifies both inputs up front and **aborts the build** with an explicit list of what is missing and how to provision it.
+完整工程报告按阶段归档于 `docs/reports/`。
 
----
+## License
 
-## 14. Security Notes
-
-- **Private keys never enter this repository.** The signing private key is supplied to the license server through configuration and must live outside the source tree. Only the public key is distributed with the client, and it is public by design.
-- **Keys are stored hashed.** The license database keeps only a SHA-256 fingerprint of each key, so a database compromise does not yield usable keys.
-- **Verification is cryptographic.** A client accepts a license only if the signature validates against the provisioned public key *and* the bound machine code matches — an edited local license file is rejected.
-- **Admin access fails closed.** With no `ADMIN_API_KEY` configured, the admin login rejects every attempt rather than allowing an unprotected console.
-- **Interactive API docs are development-only.** The FastAPI documentation routes are mounted only when `DEBUG` is enabled; in production they are absent so the API surface is not advertised.
-- **The server binds to the loopback interface** by default and never enables auto-reload, which is a development convenience that would restart processes in production.
-- **Do not commit** `.env` files, signing keys, license databases, or build output. The repository's `.gitignore` already excludes these categories.
-- **Verify your deployment's own keys.** Any development keypair shipped with the source tree is for local testing only and must not be used to issue real licenses.
-
----
-
-## 15. Current Project Status
-
-**Completed**
-
-- Low-latency FFmpeg direct-stream playback with a single-slot latest-frame buffer
-- Douyin room URL resolution and stream probing
-- ROI selection with visual-only overlay
-- OCR worker with a 300 ms default interval and automatic clipboard copy on change
-- Recent stream history with per-URL notes
-- Full licensing stack: FastAPI server, one-time redemption, duration accumulation, feature union, server-authoritative expiry, device binding, RSA-signed licenses with offline client verification
-- SQLAdmin operations console with batch key generation, license inspection, revocation, and redemption history
-- Expiry gating in the client
-
-**Phase 7.2-8 production hardening** — complete, committed, and verified:
-
-| Area | Work |
-|---|---|
-| Client/server portability | Removed machine-specific absolute paths; OS-aware helper resolution |
-| Configuration | `.env` and configuration paths resolved independently of the working directory |
-| Database | SQLite WAL journal mode and a 30-second busy timeout for concurrent access |
-| Startup hardening | Interactive API docs gated on `DEBUG`; loopback binding; auto-reload never enabled |
-| Build safety | Fail-loud build guard aborting on missing bundled artifacts |
-| Test coverage | Regression suites for portability, configuration, concurrency, startup, and the build guard |
-| Key rotation | Test fixtures repaired to use a single matching test keypair, with an added assertion that the production public key rejects foreign signatures |
-
-**Verified end-to-end locally.** A production-signed license was issued and activated against a locally running server using a production-keyed client build; the client reported active, re-verified the license locally after a restart with no server round-trip, and a repeated redemption of the same key was correctly rejected without creating a second authorization or extending the expiry. The production public key was confirmed to reject signatures made with a different key.
-
-**Not yet done**
-
-- **The license server has not been deployed to any cloud host.** All verification so far has been local. Cloud deployment, production key custody on the server, and re-verification against a remote endpoint remain outstanding.
-- Authorization revocation is not implemented.
-- The feature set is not yet used to gate functionality beyond expiry.
-
----
-
-## 16. Roadmap
-
-- Deploy the license server to a cloud host with production key custody on the server side
-- Re-run end-to-end activation against the remote endpoint
-- Move the license database off SQLite for multi-instance deployment
-- Implement authorization revocation end-to-end
-- Tie license features to actual client capabilities
-- Expand OCR language and charset coverage (currently English letters and digits only)
-
----
-
-## 17. Disclaimer
-
-- This project is **not affiliated with, endorsed by, or associated with Douyin, ByteDance, or any of their affiliates.**
-- It is intended for **personal, educational, and research use**. You are responsible for complying with the terms of service of any platform you use it with, and with any applicable laws in your jurisdiction.
-- It does not circumvent, bypass, or break any access control, and it does not redistribute or re-host any stream content. It resolves and plays a stream that the platform already serves to the requesting client.
-- OCR output is produced by Tesseract and is **best-effort**. It can be wrong, incomplete, or empty; it must not be relied upon for any decision where an error would cause harm.
-- Use at your own risk. The authors accept no liability for any loss or damage arising from use of this software.
-
----
-
-## 18. License
-
-This repository does not currently include a license file, so **no license is granted** for the project's own code — all rights are reserved by the author by default. If you intend to use, modify, or distribute this project, contact the author to agree on terms.
-
-Third-party components vendored or bundled with this repository remain under their own upstream terms:
-
-| Component | Notes |
-|---|---|
-| SQLAdmin snapshot (`admin_web/sqladmin/`) | BSD-3-Clause |
-| Susi sources (`susi_source/`) | Vendored for compatibility reference; carries its own upstream terms |
-| FFmpeg binaries (`runtime/ffmpeg/`) | Subject to FFmpeg's own license terms |
-| Tesseract OCR (`runtime/tesseract/`) | Subject to Tesseract's own license terms |
-
-Anyone redistributing a build of this application is responsible for complying with the licensing terms of these bundled components.
+本仓库源码仅供学习与内部研究。**LiveLens 软件本体为商业授权产品,保留所有权利**;未经授权,禁止复制、分发或用于商业用途。联系方式见软件内「设置 → 意见反馈」。

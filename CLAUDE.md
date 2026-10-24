@@ -4,9 +4,26 @@
 
 Before modifying code:
 - read this file
-- read relevant PROJECT_STATE.md sections
 - inspect existing implementation
 - do not assume missing functionality
+
+## 2026-10-25 Structure & Additions (supersedes stale layout references)
+
+- Historical engineering reports (incl. PROJECT_STATE.md) moved to `docs/reports/`.
+- All root-level `test_*.py` moved to `tests/` (pytest-type tests rely on
+  `tests/conftest.py` adding the project root to sys.path; self-contained
+  script-type tests are run directly with `python tests/xxx.py`).
+- Benchmarks live in `scripts/benchmarks/`; dev/release utilities in `scripts/`.
+- UI: the Phase 8 layout was superseded by the "liquid glass" redesign
+  (dark/light dual themes via `theme.set_theme`, GlassDialog dialogs, toast);
+  the token discipline below is unchanged and still authoritative.
+- automation/: auto-join (VALORANT custom rooms) — hotkey-triggered, two-click
+  sequence (paste button -> join), proportional client-area coordinates,
+  requires the app to run elevated when the game does (UIPI). Never send
+  background-injected input to the game; foreground-visible SendInput only.
+- Licensing: stale-ACTIVE renewals restart from server time (see
+  license_server/services/redemption_service.py); production is deployed
+  separately from this repo checkout.
 
 ## Current Phase
 
