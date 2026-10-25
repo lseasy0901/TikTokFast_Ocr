@@ -189,78 +189,45 @@ def test_address_bar() -> None:
     section("B. 顶部地址栏")
     window = build_window()
 
-    # B1. 只有一处显示直播地址：历史下拉不显示 URL
-    #     先清空：StreamHistory 会把源码树根部的 legacy stream_history.json
-    #     迁移进临时数据目录，不清掉就不能假定从零开始。
-    window._stream_history.clear()
-    window._stream_history.add_or_update("https://live.douyin.com/111", "甲")
-    window._stream_history.add_or_update("https://live.douyin.com/222", "乙")
-    window._load_recent_streams()
-    pump(20)
+    # B1. 地址的唯一事实来源是输入框;历史走「历史按钮 + 卡片弹窗」,
+    #     卡片只展示备注名/房间号/最近使用,**不展示 URL**(Phase UI-3.1
+    #     重构后的形态;旧版"历史下拉显示 URL"已不存在)。
+    check(not hasattr(window, "_recent_combo"),
+          "旧版历史下拉已不存在(地址不会同时出现在两处)")
+    check(window._url_input.placeholderText().find("live.douyin.com") >= 0,
+          "地址输入框以占位文案指明用途")
+    check(bool(window._history_btn.toolTip()),
+          "历史入口有 tooltip 说明")
 
-    check(window._recent_combo.currentIndex() == -1,
-          "刷新历史后下拉停在占位状态（不显示任何 URL）")
-    check(window._recent_combo.currentText() == "",
-          "下拉可见文本为空，地址不会同时出现在两处")
-    check(window._recent_combo.placeholderText() == "历史记录",
-          "下拉平时显示「历史记录」占位文案")
-    check(window._recent_combo.count() == 2, "两条历史都在下拉里")
+    # B2. 历史服务读写闭环(数据层;卡片渲染见 history_panel 冒烟)。
+    #     现行接口是 record_success(成功进入房间才入史),数据层保留 URL。
+    #     备注回调置空防弹窗:首次记录会触发备注询问模态框,offscreen
+    #     下无人可关,测试会挂死(2026-10-25 实测)。
+    window._history.set_remark_callback(None)
+    window._history.clear()
+    window._history.record_success("https://live.douyin.com/111", "111")
+    window._history.record_success("https://live.douyin.com/222", "222")
+    items = window._history.items()
+    check(len(items) == 2 and all(getattr(it, "url", None) for it in items),
+          f"历史服务收录 2 条且数据层保留 URL(仅 UI 不展示):{len(items)} 条")
 
-    # B2. 选中历史项 → 只写进地址输入框，下拉立刻复位
-    window._recent_combo.setCurrentIndex(0)
-    pump(20)
-    chosen = window._url_input.text()
-    check(chosen.startswith("https://live.douyin.com/"),
-          f"选中历史后地址写入输入框：{chosen}")
-    check(window._recent_combo.currentIndex() == -1,
-          "选中后下拉复位，不会与输入框同时显示地址")
+    # B3. 历史卡片 UI 不显示 URL:渲染代码里 URL 只出现在注释/服务调用中
+    import inspect
+    from gui.history_panel import HistoryPopup
+    src = inspect.getsource(HistoryPopup)
+    code_lines = [l for l in src.splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+    shown_url = any("url" in l and ".get(" not in l and "service" not in l
+                    and "item[" not in l for l in code_lines)
+    check(not shown_url, "历史弹窗不以 URL 作为展示文案")
 
-    # B3. 地址输入框是唯一事实来源
-    window._url_input.setText("https://live.douyin.com/333")
-    pump(10)
-    check(window._selected_url_for_note == "https://live.douyin.com/333",
-          "备注目标跟随地址输入框")
-    check(window._edit_note_action.isEnabled(), "有地址时备注可用")
-
-    window._url_input.setText("")
-    pump(10)
-    check(not window._edit_note_action.isEnabled(), "地址为空时备注不可用")
-
-    # B4. 顶部右只剩连接/断开作为主操作；备注与清除收进二级入口
-    bar = window._address_bar
-    buttons = [b for b in bar.findChildren(QPushButton)
-               if b.objectName() != "qt_clear_button" and b.text()]
-    labels = sorted(b.text() for b in buttons)
-    check(labels == ["连接"], f"地址栏文字按钮只剩连接/断开：{labels}")
-
-    # 注意：不能按类型找 QToolButton —— QLineEdit 的清除按钮也是一个 QToolButton
-    entry = bar.findChildren(QToolButton, "historyMenuBtn")
-    check(len(entry) == 1, "有且只有一个历史二级入口按钮")
-    menu = entry[0].menu() if entry else None
-    check(menu is not None, "二级入口挂了菜单")
-    actions = [a.text() for a in menu.actions() if a.text()]
-    check(actions == ["编辑备注…", "清除历史记录…"],
-          f"备注与清除都在历史菜单里：{actions}")
-
-    # B5. 备注 / 清除仍然可用（功能没有丢）。
-    #     不能真的 trigger：编辑备注会开模态输入框、清除会弹确认框，
-    #     在无头环境里都会永久阻塞，因此这里只查信号是否还接着处理器。
-    check(window._edit_note_action.receivers("2triggered()") > 0,
-          "「编辑备注」仍接着原处理器")
-    check(window._clear_recent_action.receivers("2triggered()") > 0,
-          "「清除历史记录」仍接着原处理器")
-
-    # B6. 连接入口仍然只有一个且是主操作
+    # B4. 连接主操作固定在地址栏右端且为 primary
+    check(window._connect_btn.text() in ("连接", "断开"),
+          "连接/断开按钮存在")
     check(window._connect_btn.property("variant") == "primary",
-          "连接仍是地址栏唯一的 primary 操作")
-
-    window.close()
-    pump(10)
+          "连接按钮是 primary 强调样式")
 
 
-# ======================================================================
-# C. OCR 面板 / 本次会话历史
-# ======================================================================
 def test_ocr_panel_history() -> None:
     section("C. OCR 面板与本次会话历史")
     window = build_window()

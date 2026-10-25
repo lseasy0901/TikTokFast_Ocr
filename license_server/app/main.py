@@ -3,7 +3,7 @@
 FastAPI application for the License Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException, Security, status
+from fastapi import FastAPI, Depends, HTTPException, Request, Security, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.security import APIKeyHeader
 from contextlib import asynccontextmanager
@@ -17,6 +17,7 @@ from services import (
     feijipan_resolver,
     heartbeat_service,
     license_service,
+    rate_limit,
     redemption_service,
     release_service,
 )
@@ -89,6 +90,12 @@ async def create_license(
     return license
 
 
+#: 激活接口速率限制(2026-10-25 加固):每 IP 60 秒 30 次兑换尝试。
+#: 正常用户(手动输码)不可能触到;目标是拖慢批量撞码脚本的节奏。
+_activate_limiter = rate_limit.SlidingWindowLimiter(max_events=30,
+                                                    window_seconds=60)
+
+
 @app.post(
     f"{config.settings.API_PREFIX}/licenses/activate",
     response_model=dict,
@@ -96,9 +103,14 @@ async def create_license(
 )
 async def activate_license(
     activation_data: schemas.LicenseActivate,
+    request: Request,
     db=Depends(database.get_db)
 ):
     """Activate/redeem a license key and return SignedLicense"""
+    client_ip = request.client.host if request.client else "unknown"
+    if _activate_limiter.hit(client_ip):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="rate_limited")
     service = redemption_service.RedemptionService(db, susi_security_service)
     try:
         license, response = service.redeem_license(activation_data)

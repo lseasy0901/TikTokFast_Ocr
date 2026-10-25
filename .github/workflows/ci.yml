@@ -33,4 +33,4 @@ jobs:
         run: |
           cd license_server
           pip install -r requirements.txt
-          pytest tests/test_stale_active_renewal.py -q
+          pytest tests/test_stale_active_renewal.py tests/test_rate_limit.py -q

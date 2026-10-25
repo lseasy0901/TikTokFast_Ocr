@@ -1,0 +1,8 @@
+# 开发/测试期依赖(运行时不需要;CI 与本机开发安装)
+pytest>=8
+ruff>=0.6
+PyYAML>=6
+# license_server 完整接口测试需要(经典 admin 依赖 vendored admin_web,见
+# license_server/requirements.txt 注释)
+sqladmin>=0.31
+httpx>=0.25

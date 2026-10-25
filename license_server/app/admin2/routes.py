@@ -136,7 +136,17 @@ async def login_submit(request: Request):
         }, status_code=403)
         return no_store(resp)
 
+    throttle = a2auth.login_throttle()
+    client_key = (request.client.host if request.client else "unknown")
+    if throttle.is_locked(client_key):
+        resp = templates.TemplateResponse(request, "login.html", {
+            "request": request, "error": "尝试次数过多，请 10 分钟后再试。",
+            "csrf_token": a2auth.get_csrf_token(request),
+        }, status_code=429)
+        return no_store(resp)
+
     if not a2auth.verify_credentials(form.get("username"), form.get("password")):
+        throttle.record_failure(client_key)
         # 不区分「用户名错误/密码错误/未配置凭据」，避免泄露信息
         resp = templates.TemplateResponse(request, "login.html", {
             "request": request,
@@ -146,6 +156,7 @@ async def login_submit(request: Request):
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    throttle.record_success(client_key)
     a2auth.login_session(request)
     return RedirectResponse("/admin2/", status_code=303)
 

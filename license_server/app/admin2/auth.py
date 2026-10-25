@@ -18,6 +18,18 @@ from admin.auth import SESSION_KEY, ADMIN_USERNAME
 #: 会话中保存 CSRF token 的键
 CSRF_SESSION_KEY = "admin2_csrf_token"
 
+#: 登录失败锁定(2026-10-25 加固):15 分钟窗口内连错 5 次锁 10 分钟。
+#: 内存态,重启即清——目标是拖慢在线爆破,不追求持久惩罚。
+from services.rate_limit import LoginThrottle  # noqa: E402
+
+_login_throttle = LoginThrottle(max_failures=5, failure_window=900.0,
+                                lock_seconds=600.0)
+
+
+def login_throttle() -> LoginThrottle:
+    """暴露给登录路由:按 IP 记录成败;锁定期内直接拒绝。"""
+    return _login_throttle
+
 
 def is_authenticated(request) -> bool:
     try:
