@@ -616,12 +616,15 @@ def test_single_entry_point():
     section("[12] 所有候选都经过同一个 _start_playback（无第二套初始化）")
     import inspect
 
-    source = inspect.getsource(MainWindow)
+    # Phase 3 拆分:播放实现移至 PlaybackCoordinator,"唯一构造/唯一入口"
+    # 的语义在窗口+协调器两文件的合并范围内继续成立。
+    from gui.playback import PlaybackCoordinator
+    source = inspect.getsource(MainWindow) + inspect.getsource(PlaybackCoordinator)
     check(source.count("FFmpegReader(") == 1,
-          "MainWindow 中只有一处创建 FFmpegReader（%d 处）"
+          "播放域只有一处创建 FFmpegReader（%d 处）"
           % source.count("FFmpegReader("))
     check(source.count("_FrameBridge(") == 1,
-          "MainWindow 中只有一处创建 _FrameBridge")
+          "播放域只有一处创建 _FrameBridge")
     check("def _start_playback" in source, "存在唯一的播放初始化入口")
     check(source.count("frameReady.connect(") == 1,
           "frameReady 只在 _start_playback 里接线一次")
