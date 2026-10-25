@@ -37,8 +37,6 @@ from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QFrame,
     QLabel,
-    QPushButton,
-    QToolButton,
 )
 
 from gui import theme  # noqa: E402
