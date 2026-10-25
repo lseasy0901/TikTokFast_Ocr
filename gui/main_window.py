@@ -41,12 +41,11 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
-from PySide6.QtCore import (QEvent, QEasingCurve, QObject, QPoint,
-                             QPropertyAnimation, QStandardPaths, QTimer, Qt, Signal)
-from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon
+from PySide6.QtCore import (QEvent, QPoint,
+                             QStandardPaths, QTimer, Qt, Signal)
+from PySide6.QtGui import QAction, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -55,7 +54,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -75,12 +73,22 @@ from gui import theme
 from gui.theme import Metrics, Palette
 from gui.video_widget import VideoWidget
 from gui.watermark import WatermarkOverlay
+# Phase 1 拆分:模块级私有类外迁至专职模块,此处按**原名** re-export——
+# tests 直接 import 这些名字并 monkeypatch(mw._ConnectWorker 等),
+# 保持 main_window 命名空间不变 = 既有测试零改动。
+from gui.playback_workers import (  # noqa: F401
+    _BareResolveResult,
+    _BareResolveWorker,
+    _ConnectWorker,
+)
+from gui.frame_bridge import _FrameBridge, _FrameNotifier  # noqa: F401
+from gui.activation_overlay import _ActivationOverlay  # noqa: F401
+
 from gui.widgets import (
     DockPanel,
     FramelessController,
     IconButton,
     InfoPopup,
-    icon_pixmap,
     OverlayHost,
     TitleBar,
     WindowButton,
@@ -125,12 +133,11 @@ from automation import (
 from utils.heartbeat_schedule import HeartbeatScheduler
 from utils.update_service import UpdateError, UpdateService
 from utils.license_manager import LicenseManager, LicenseResult, LicenseStatus
-from stream.models import StreamCandidate, StreamInfo, StreamResolveError
+from stream.models import StreamCandidate, StreamInfo
 from stream.resolver import StreamResolver
 from stream.failover import CandidateFailover
 from stream.ffmpeg_reader import FFmpegReader
-from stream.bare_source import (bare_stream_applicable, probe_video_bare,
-                                reason_message, REASON_DISABLED)
+from stream.bare_source import (bare_stream_applicable, reason_message, REASON_DISABLED)
 from stream.frame_buffer import LatestFrameBuffer
 from audio import AudioService
 from gui.audio_panel import AudioPanel
@@ -164,275 +171,6 @@ from utils.startup_timing import (
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.main_window")
 
 
-# ======================================================================
-# 后台连接线程：执行流解析（平台无关），不阻塞 GUI
-# ======================================================================
-class _ConnectWorker:
-    """后台线程：把直播间 URL 解析为统一的 StreamInfo"""
-
-    def __init__(self, live_url: str, on_success, on_error, resolver=None):
-        """
-        :param live_url:   直播间 URL
-        :param on_success: 成功回调，签名为 callback(info: StreamInfo)
-        :param on_error:   失败回调，签名为 callback(error_msg: str)
-        :param resolver:   StreamResolver；不传则新建一个默认的
-        """
-        self._live_url = live_url
-        self._on_success = on_success
-        self._on_error = on_error
-        self._resolver = resolver if resolver is not None else StreamResolver()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="connect-worker",
-            daemon=True,
-        )
-
-    def start(self):
-        self._thread.start()
-
-    def is_running(self) -> bool:
-        return self._thread.is_alive()
-
-    def _run(self):
-        try:
-            info = self._resolver.resolve(self._live_url)
-            logger.info("[GUI] stream resolved: platform=%s room=%s type=%s url=%s",
-                        info.platform, info.room_id, info.protocol,
-                        (info.url or "")[:80])
-            self._on_success(info)
-        except StreamResolveError as e:
-            logger.error("[GUI] stream resolve failed: %s", e)
-            self._on_error(str(e))
-        except Exception as e:
-            logger.exception("连接过程未知异常")
-            self._on_error(f"连接异常: {e}")
-
-
-# ======================================================================
-# 后台裸流解析线程：FFmpeg7 运行时校验 + 裸流 URL 页面直取（不阻塞 GUI）
-# ======================================================================
-@dataclass(frozen=True)
-class _BareResolveResult:
-    """一次会话取流准备的结论（由后台线程产出，经 Signal 回到 GUI 线程）。
-
-    RELEASE-02-B5-CLEANUP：这是**唯一**运行时/取流入口的结论。失败时不存在
-    "降级到旧路径"的分支 —— 只有明确原因，由 GUI 给用户一句人话并结束会话。
-    所有平台都必须先通过 FFmpeg 7 运行时校验（内置 FFmpeg 6 已随本任务移除，
-    不再存在任何内置解码器）。
-
-    :param url:         视频版裸流 URL；None = 非裸流平台，或本次取不到
-    :param exe:         已通过校验的 FFmpeg7 运行时路径；None = 不可用
-    :param runtime_ok:  运行时是否可用（False → 需要给用户可见提示）
-    :param live:        页面是否显示该房间正在直播（用于区分"未开播"与"取不到"）
-    :param reason:      稳定枚举（运行时或取流），供 GUI 映射人话
-    :param detail:      给日志的技术细节（不进 UI）
-    """
-
-    url: str | None = None
-    exe: str | None = None
-    runtime_ok: bool = False
-    live: bool = False
-    reason: str | None = None
-    detail: str = ""
-
-
-class _BareResolveWorker:
-    """后台线程：校验 FFmpeg7 运行时；（裸流平台）再取本次会话的裸流 URL。
-
-    与 `_ConnectWorker` 同一模式（普通类 + daemon 线程 + 回调），不引入
-    新的线程模型：线程只做阻塞 IO（运行时探测、页面 GET），结果通过
-    MainWindow 的 Signal 回到 GUI 线程，绝不直接触碰任何 QWidget。
-
-    **可取消**：`cancel()` 置位后，线程在发出结果前检查并放弃——
-    因此"快速切换房间 / 重复点击 / 关闭窗口"场景下，旧请求的结果不会
-    被应用（在途 HTTP 请求会在 `bare_source.FETCH_TIMEOUT_S` 内自行结束，
-    其返回值被丢弃）。
-    """
-
-    def __init__(self, request_id: int, platform: str, room_id: str,
-                 want_bare: bool, on_done):
-        self._request_id = request_id
-        self._platform = platform
-        self._room_id = room_id
-        self._want_bare = want_bare
-        self._on_done = on_done
-        self._cancelled = False
-        self._thread = threading.Thread(
-            target=self._run,
-            name="bare-resolve-worker",
-            daemon=True,
-        )
-
-    def start(self):
-        self._thread.start()
-
-    def is_running(self) -> bool:
-        return self._thread.is_alive()
-
-    def cancel(self):
-        """放弃本次结果（在途请求自行结束，结果被丢弃）。"""
-        self._cancelled = True
-
-    def _run(self):
-        result = _BareResolveResult()
-        try:
-            # 1) 运行时校验（带缓存；首次会拉起子进程探测，故必须在后台线程）。
-            #    所有平台共用同一个 FFmpeg 7 运行时 —— 内置 FFmpeg 6 已移除。
-            st = ffmpeg7_runtime.status()
-            if not st.ok:
-                result = _BareResolveResult(
-                    url=None, exe=None, runtime_ok=False,
-                    reason=st.reason, detail=st.detail,
-                )
-            elif not self._want_bare:
-                # 非裸流平台（虎牙 / B 站）：只需运行时就绪，候选由适配器给出。
-                # 抖音但总开关被显式关闭 → 记录原因：抖音唯一取流路径就是裸流，
-                # 关掉它意味着本会话无可播放来源（不许静默降级）。
-                reason = None
-                detail = "非裸流平台，使用适配器候选"
-                if (self._platform or "").lower() == "douyin":
-                    reason = REASON_DISABLED
-                    detail = "抖音总开关被显式关闭，无可用取流来源"
-                result = _BareResolveResult(
-                    url=None, exe=st.path, runtime_ok=True,
-                    reason=reason, detail=detail,
-                )
-            else:
-                # 2) 页面直取裸流 URL（有界超时的阻塞请求）
-                probe = probe_video_bare(self._platform, self._room_id)
-                result = _BareResolveResult(
-                    url=probe.url, exe=st.path, runtime_ok=True,
-                    live=probe.live, reason=probe.reason, detail=probe.detail,
-                )
-        except Exception as e:  # noqa: BLE001 - 取流失败转结构化原因，不抛出
-            logger.exception("[BARE] 取流线程异常")
-            result = _BareResolveResult(
-                url=None, exe=None, runtime_ok=False,
-                reason=ffmpeg7_runtime.REASON_PROBE_FAILED,
-                detail=f"取流线程异常: {e}",
-            )
-
-        if self._cancelled:
-            logger.info("[BARE] 请求 %d 已取消，丢弃结果", self._request_id)
-            return
-        self._on_done(self._request_id, result)
-
-
-# ======================================================================
-# 帧桥接线程：FFmpegReader → LatestFrameBuffer
-# ======================================================================
-class _FrameNotifier(QObject):
-    """跨线程"帧已到达"通知器（Phase B-2）
-
-    由 FrameBridge 子线程在写入 LatestFrameBuffer 之后调用 notify()，
-    经 Qt 队列连接把 GUI 唤到 GUI 线程消费。设计要点：
-
-    - **可合并**：上一通知未被消费前，后续通知只计数不再发信号，
-      因此事件队列里最多只有一个待处理通知，不会无限堆积。
-    - **不携带内容**：信号不带帧数据，GUI 被唤醒后自己重读
-      LatestFrameBuffer 的当前最新帧，因此永远不会消费到旧帧。
-    - 只发信号、不触碰任何 QWidget，子线程不会直接操作 GUI。
-    """
-
-    frameReady = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._lock = threading.Lock()
-        self._pending = False
-        self.notify_count = 0      # 实际发出的通知数
-        self.coalesced_count = 0   # 因 pending 未清而被合并掉的通知数
-
-    def notify(self) -> None:
-        """帧已写入 buffer：请求一次 GUI 唤醒（子线程调用，不阻塞）"""
-        with self._lock:
-            if self._pending:
-                self.coalesced_count += 1
-                return
-            self._pending = True
-            self.notify_count += 1
-        self.frameReady.emit()
-
-    def clear_pending(self) -> None:
-        """GUI 线程的消费者在处理通知前调用，允许下一帧再次唤醒"""
-        with self._lock:
-            self._pending = False
-
-
-class _FrameBridge:
-    """
-    后台线程：持续从 FFmpegReader 读取最新帧，写入 LatestFrameBuffer
-
-    运行频率 1ms 轮询，保证 buffer 始终持有最新帧，
-    即使 GUI 消费间隔内有多个新帧，buffer 只保留最新的，
-    天然实现"宁可丢帧，不要累计延迟"。
-
-    每次写入 buffer 后调用 perf.on_capture() 记录采集时间戳，
-    用于后续计算 capture → display 延迟；随后通过 notifier 唤醒 GUI
-    （不再依赖 GUI 侧的固定周期轮询）。
-    """
-
-    def __init__(
-        self,
-        reader: FFmpegReader,
-        buffer: LatestFrameBuffer,
-        perf: PerformanceMonitor,
-    ):
-        self._reader = reader
-        self._buffer = buffer
-        self._perf = perf
-        self._running = False
-        self._thread: threading.Thread | None = None
-        self._last_reader_frame_id: int = -1
-        # 每次连接新建一个：旧 bridge 停止后其通知器一并废弃，
-        # 因此重连不会产生重复的信号连接。
-        self.notifier = _FrameNotifier()
-
-    def start(self):
-        """启动桥接线程"""
-        self._running = True
-        self._last_reader_frame_id = -1
-        self._thread = threading.Thread(
-            target=self._run,
-            name="frame-bridge",
-            daemon=True,
-        )
-        self._thread.start()
-        logger.info("FrameBridge 已启动")
-
-    def stop(self):
-        """停止桥接线程"""
-        self._running = False
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2)
-        self._thread = None
-        logger.info("FrameBridge 已停止")
-
-    def _run(self):
-        """桥接循环：reader → buffer + perf.on_capture()"""
-        _log_count = 0
-        while self._running:
-            current_id = self._reader.frame_id
-            if current_id != self._last_reader_frame_id and current_id > 0:
-                frame = self._reader.read_frame()
-                if frame is not None:
-                    self._buffer.update(frame)
-                    # 记录采集时间戳（在 buffer 写入后立即记录）
-                    self._perf.on_capture()
-                    # 唤醒 GUI 消费（可合并、不携带帧数据、不阻塞本线程）
-                    self.notifier.notify()
-                    self._last_reader_frame_id = current_id
-                    _log_count += 1
-                    if _log_count <= 3 or _log_count % 100 == 0:
-                        logger.info(
-                            "[BRIDGE] frame %d -> buffer: shape=%s dtype=%s",
-                            _log_count, frame.shape, frame.dtype,
-                        )
-
-            time.sleep(0.001)
-
-
-# ======================================================================
 # 主窗口
 # ======================================================================
 #: 游戏选择器里的可选项：(profile_id, 界面短名)。
@@ -514,123 +252,6 @@ _ADDR_ACTIONS_CHROME = 160
 #: 检查是三者中唯一「晚几秒毫无损失」的一个。延迟也顺带降低了服务端被所有
 #: 客户端同时打点的并发压力。
 UPDATE_CHECK_DELAY_MS = 5000
-
-
-class _ActivationOverlay(QWidget):
-    """视频区上方的未激活遮罩：品牌 + 轻呼吸 + 「请激活 LiveLens」+ 激活入口。
-
-    纯展示：只发一个 clicked 信号，不调用任何生命周期方法；呼吸动画用 Qt 原生
-    属性动画，只在可见时运行，隐藏即停（不引入周期性定时器，也不碰视频线程）。
-    """
-
-    activate_clicked = Signal()
-    purchase_clicked = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("activationOverlay")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-
-        col = QVBoxLayout(self)
-        col.setContentsMargins(24, 24, 24, 24)
-        col.setSpacing(10)
-        col.addStretch(1)
-
-        self._brand = QLabel("LiveLens")
-        self._brand.setObjectName("activationBrand")
-        self._brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        col.addWidget(self._brand)
-
-        self._breath = QGraphicsOpacityEffect(self._brand)
-        self._brand.setGraphicsEffect(self._breath)
-        self._anim = QPropertyAnimation(self._breath, b"opacity", self)
-        self._anim.setDuration(2400)
-        self._anim.setStartValue(0.55)
-        self._anim.setEndValue(1.0)
-        self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-        self._anim.setLoopCount(-1)
-
-        self._prompt = QLabel("请激活 LiveLens")
-        self._prompt.setObjectName("activationPrompt")
-        self._prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        col.addWidget(self._prompt)
-
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        row.addStretch(1)
-        self._activate_btn = QPushButton("立即激活")
-        self._activate_btn.setFixedHeight(34)
-        self._activate_btn.setMinimumWidth(120)
-        self._activate_btn.setProperty("variant", "primary")
-        self._activate_btn.clicked.connect(self.activate_clicked.emit)
-        row.addWidget(self._activate_btn)
-
-        # 次要入口：尚未激活的人同样需要能买到授权，因此放在「立即激活」旁边，
-        # 但保持次要样式 —— 主操作仍然只有激活一个。点击直接调系统默认浏览器
-        # 打开购买链接（RELEASE-01）。
-        self._contact_btn = QPushButton("购买授权")
-        self._contact_btn.setFixedHeight(34)
-        self._contact_btn.setMinimumWidth(120)
-        self._contact_btn.setIcon(
-            QIcon(icon_pixmap(IconButton.CONTACT, 14, Palette.TEXT_DIM)))
-        self._contact_btn.setCursor(Qt.PointingHandCursor)
-        self._contact_btn.setToolTip("购买授权：用系统默认浏览器打开购买链接")
-        self._contact_btn.clicked.connect(self.purchase_clicked.emit)
-        row.addWidget(self._contact_btn)
-
-        row.addStretch(1)
-        col.addLayout(row)
-
-        self._hint = QLabel("激活后即可连接直播并开始 OCR 识别")
-        self._hint.setObjectName("activationHint")
-        self._hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        col.addWidget(self._hint)
-        col.addStretch(1)
-
-    def show_unlocked(self) -> None:
-        """解锁过渡：把遮罩切成"已激活"文案（视觉过渡，随后由调用方收起）。"""
-        self._anim.stop()
-        self._breath.setOpacity(1.0)
-        self._brand.setText("LiveLens")
-        self._prompt.setText("已激活")
-        self._hint.setText("正在解锁工作台…")
-        self._activate_btn.hide()
-
-    def reset_prompt(self) -> None:
-        """恢复未激活文案（下次显示遮罩时用）。"""
-        self._prompt.setText("请激活 LiveLens")
-        self._hint.setText("激活后即可连接直播并开始 OCR 识别")
-        self._activate_btn.show()
-
-    # -- 呼吸动画生命周期 --------------------------------------------------
-    def set_suspended(self, suspended: bool) -> None:
-        """窗口最小化 / 完全被遮挡时挂起呼吸动画。
-
-        QGraphicsOpacityEffect 的重绘范围是整个品牌标签所在的遮罩区域，
-        动画跑一轮就是 2.4s × 60fps 的持续重绘；窗口反正看不见，
-        白烧 1~2.6% CPU（Phase 7 实测）。pause/resume 保留相位，
-        恢复时从断点继续而不是跳回起点。
-        """
-        if suspended:
-            self._anim.pause()
-        elif self.isVisible():
-            # 原条件 `not self._anim.state()` 在 pause 后是 Paused(非 0),
-            # resume 分支永不触发(挂起一次就再也不动了)。正确语义:
-            # Paused→resume(保相位),Stopped(尚未启动,如窗口刚显示)→start。
-            if self._anim.state() == QPropertyAnimation.Paused:
-                self._anim.resume()
-            elif self._anim.state() == QPropertyAnimation.Stopped:
-                self._anim.start()
-
-    def showEvent(self, event):  # noqa: N802
-        super().showEvent(event)
-        if not getattr(self, "_suspended", False):
-            self._anim.start()
-
-    def hideEvent(self, event):  # noqa: N802
-        self._anim.stop()
-        self._breath.setOpacity(1.0)
-        super().hideEvent(event)
 
 
 class MainWindow(QMainWindow):
