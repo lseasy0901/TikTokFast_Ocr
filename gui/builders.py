@@ -575,6 +575,14 @@ def build_ocr_panel(w) -> QFrame:
     roi_row.addWidget(w._roi_note, 1)
     col.addLayout(roi_row)
 
+    # ---- 3.5) 二维码识别开关(直播画面中的二维码 → 弹窗展示) ----
+    w._qr_toggle = QCheckBox("识别画面中的二维码")
+    w._qr_toggle.setToolTip(
+        "识别直播画面中出现的二维码(粉丝团/购物车等),"
+        "识别到后弹出放大重生成的清晰码;关闭后零开销")
+    w._qr_toggle.toggled.connect(w._on_qr_toggle)
+    col.addWidget(w._qr_toggle)
+
     # ---- 4) OCR 启停固定在面板底部 ----
     w._ocr_btn = QPushButton("开始OCR")
     w._ocr_btn.setEnabled(False)

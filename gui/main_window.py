@@ -42,7 +42,8 @@ import os
 from datetime import datetime
 
 from PySide6.QtCore import (QEvent, QPoint,
-                             QStandardPaths, QTimer, Qt, Signal)
+                             QStandardPaths, QTimer, Qt, Signal,
+                             QThread)
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -375,6 +376,7 @@ class MainWindow(QMainWindow):
         self._license_loaded_sig.connect(self._on_license_loaded)
         self._heartbeat_done_sig.connect(self._on_heartbeat_done)
         self._update_check_done_sig.connect(self._on_update_check_done)
+        self._qr_worker = None
         # 单次触发：启动后查一次即可，本次不做周期性复查。
 
         # 上一次显示的 buffer frame_id
@@ -762,6 +764,64 @@ class MainWindow(QMainWindow):
         if ok and cfg is not None:
             cfg.save()
             self._sync_join_hotkey()
+
+    # ------------------------------------------------------------------
+    # 二维码识别(qr_detect:直播画面中的二维码 → 弹窗展示)
+    # ------------------------------------------------------------------
+    def _on_qr_toggle(self, enabled: bool) -> None:
+        """二维码识别开关:挂/摘 LatestFrameBuffer 上的检测线程。
+
+        切流纪律(与原版一致):先 stop 再起新 worker;stop 未返回提示
+        稍候,绝不并行两个检测线程。断开连接时随会话拆除(_disconnect)。
+        """
+        if enabled:
+            if getattr(self, "_qr_worker", None) is not None:
+                return
+            if not self._connected:
+                self.show_toast("请先连接直播间,再开启二维码识别", "warn")
+                self._qr_toggle.setChecked(False)
+                return
+            from qr_detect.worker import QrDetectionWorker
+
+            worker = QrDetectionWorker(
+                frame_getter=lambda: self._frame_buffer.get_with_seq()
+                if self._frame_buffer is not None else (None, None),
+                min_scan_interval_ms=300)
+            worker.qr_detected.connect(self._on_qr_detected)
+            worker.error_occurred.connect(
+                lambda m: logger.warning("[QR] 检测异常: %s", m))
+            worker.start(QThread.HighPriority)
+            self._qr_worker = worker
+            self.show_toast("二维码识别已开启", "ok")
+        else:
+            worker = getattr(self, "_qr_worker", None)
+            if worker is None:
+                return
+            self._qr_worker = None
+            if not worker.stop(wait_ms=45000):
+                worker.terminate()
+                logger.warning("[QR] 检测线程未在 45 秒内结束,已 terminate")
+
+    def _on_qr_detected(self, det) -> None:
+        """识别到新码:置顶弹窗(重生成 500px 清晰码)+ 自动复制内容。"""
+        from PySide6.QtWidgets import QApplication
+        from qr_detect.popup import QrPopupDialog
+
+        dlg = QrPopupDialog(det.content, parent=self, auto_close_ms=15000)
+        dlg.show()
+        QApplication.clipboard().setText(det.text)
+        self.show_toast(f"识别到二维码,内容已复制(长度 {len(det.text)})", "ok")
+
+    def _teardown_qr_worker(self) -> None:
+        """断开/关窗时停掉检测线程(幂等)。"""
+        worker = getattr(self, "_qr_worker", None)
+        if worker is None:
+            return
+        self._qr_worker = None
+        if not worker.stop(wait_ms=45000):
+            worker.terminate()
+        if getattr(self, "_qr_toggle", None) is not None:
+            self._qr_toggle.setChecked(False)
 
     def show_toast(self, text: str, tone: str = "neutral") -> None:
         """右下角 toast：不抢焦点、2.6s 自动消退（gui/toast.py）。"""
@@ -2009,6 +2069,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         """窗口关闭时确保资源释放"""
+        self._teardown_qr_worker()
         # RELEASE-02-B5：先置关闭标志 —— 此后到达的裸流解析结果一律丢弃，
         # 不再向正在销毁的 Qt 对象投递任何更新。
         self._closing = True

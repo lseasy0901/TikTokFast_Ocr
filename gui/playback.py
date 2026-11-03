@@ -656,6 +656,10 @@ class PlaybackCoordinator:
 
     def _disconnect(self):
         """断开连接，停止一切"""
+        # 二维码检测线程随会话拆除(failover 期间不拆,帧源自适应新 buffer)
+        teardown_qr = getattr(self._w, "_teardown_qr_worker", None)
+        if teardown_qr is not None:
+            teardown_qr()
         # 先让所有在途 attempt 失效：任何排队中的回调都不会再启动 reader
         self._w._attempt_id += 1
 

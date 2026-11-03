@@ -588,6 +588,16 @@ datas += [(dll, _RUNTIME_FFMPEG_DEST) for dll in _FFPROBE_DLLS]
 datas += [(_FFMPEG7_EXE, _RUNTIME_FFMPEG7_DEST)]
 datas += [(dll, _RUNTIME_FFMPEG7_DEST) for dll in _FFMPEG7_DLLS]
 
+# qr_detect 原生解码/编码库(zbar-0/iconv-2/qrencode,2026-10-25 二维码识别)。
+# 落 <MEIPASS>/qr_detect/bin/ —— qr_detect.zbar_backend / encode_backend 的
+# DLL 查找顺序已覆盖该位置(QR_DETECT_ZBAR_DLL 环境变量 → qr_detect/bin → …)。
+_QR_BIN_SRC = os.path.join(PROJECT_ROOT, "qr_detect", "bin")
+_QR_BIN_DEST = os.path.join("qr_detect", "bin")
+for _qr_dll in ("zbar-0.dll", "iconv-2.dll", "qrencode.dll"):
+    _qr_path = os.path.join(_QR_BIN_SRC, _qr_dll)
+    assert os.path.isfile(_qr_path), f"qr_detect DLL 缺失: {_qr_path}"
+    datas += [(_qr_path, _QR_BIN_DEST)]
+
 # ONNX OCR artifacts. Both sources are files, so dest is the directory they must
 # land in and the frozen probe path <MEIPASS>/runtime/onnx/<name> is exactly what
 # ONNXModelLocator._bundled_candidates() looks for.
@@ -608,6 +618,14 @@ additional_binaries = []
 
 # Hidden imports
 hiddenimports = [
+    # 二维码识别(qr_detect):worker 在 MainWindow 里延迟构造,threading
+    # 帧循环内动态 import 后端,modulegraph 发现不了,必须显式声明。
+    "qr_detect",
+    "qr_detect.detector",
+    "qr_detect.worker",
+    "qr_detect.popup",
+    "qr_detect.zbar_backend",
+    "qr_detect.encode_backend",
     "PySide6.QtCore",
     "PySide6.QtWidgets",
     "PySide6.QtGui",
