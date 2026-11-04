@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.join(
 from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from cryptography.hazmat.primitives import serialization  # noqa: E402
 
-import config  # noqa: E402
 from services.susi_security_service import (  # noqa: E402
     SusiSecurityService, KNOWN_TEST_KEY_PUB_SHA256, _private_key_pub_sha256)
 

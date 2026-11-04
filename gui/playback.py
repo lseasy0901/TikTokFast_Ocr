@@ -25,7 +25,6 @@ from stream.models import StreamCandidate, StreamInfo
 from utils import ffmpeg7_runtime
 from utils.performance import PerformanceMonitor
 from utils.startup_timing import STAGE_CANDIDATE_SELECTED, STAGE_FIRST_DISPLAY, StartupTiming
-from gui.widgets import set_property
 from utils.stage_tracker import stage_tracker
 
 
@@ -43,6 +42,9 @@ class PlaybackCoordinator:
 
     def __init__(self, window):
         self._w = window
+        from gui.playback_ui import PlaybackUI
+
+        self._ui = PlaybackUI(window)
         w = window
         w._attempt_id = 0
         w._startup_timing = None
@@ -109,9 +111,9 @@ class PlaybackCoordinator:
         if not self._guard_access("连接直播流"):
             return
 
-        url = self._w._url_input.text().strip()
+        url = self._ui.read_url()
         if not url:
-            self._w.statusBar().showMessage("错误：请输入直播间URL")
+            self._ui.status_message("错误：请输入直播间URL")
             return
 
         # FFmpeg7 运行时前置(2026-10-25 排障改造):唯一拉流架构下,运行时
@@ -121,18 +123,16 @@ class PlaybackCoordinator:
         f7 = ffmpeg7_runtime.status()
         if f7 is not None and not f7.ok:
             fallback_dir = r"%LOCALAPPDATA%\LiveLens\runtime\ffmpeg7"
-            self._w.statusBar().showMessage(
+            self._ui.status_message(
                 "无法连接：FFmpeg 7 播放运行时缺失（可能被安全软件隔离），"
                 "请重新安装 LiveLens")
-            self.show_toast(
+            self._ui.show_toast(
                 "播放运行时缺失，无法连接直播。请重新安装 LiveLens,"
                 "或将 ffmpeg.exe 放回 " + (f7.path or fallback_dir), "error")
             return
 
-        self._w._connect_btn.setEnabled(False)
-        self._w._connect_btn.setText("连接中...")
-        self._w._url_input.setEnabled(False)
-        self._w.statusBar().showMessage(f"正在解析直播间: {url}")
+        self._ui.enter_connecting()
+        self._ui.status_message(f"正在解析直播间: {url}")
 
         # 历史记录在**成功进入直播间**后才写入（_handle_connect_success），
         # 失败的链接不进历史 —— 这里只记住本次目标 URL。
@@ -155,7 +155,7 @@ class PlaybackCoordinator:
 
     def _handle_connect_success(self, info: StreamInfo):
         """在 GUI 线程中处理连接成功：建立候选迭代器，启动第一个候选"""
-        self._w.statusBar().showMessage(
+        self._ui.status_message(
             f"已获取流地址 (room={info.room_id}, type={info.protocol})，"
             f"正在连接视频流..."
         )
@@ -179,7 +179,7 @@ class PlaybackCoordinator:
         # _on_bare_resolved()；虎牙 / B 站直接使用适配器给出的候选。
         self._w._failover = CandidateFailover(info)
         self._w._playback_info = info
-        self._w.show_toast("已解析直播间，正在连接视频流…", "ok")
+        self._ui.show_toast("已解析直播间，正在连接视频流…", "ok")
 
         # RELEASE-02-B5-CLEANUP：唯一取流入口。运行时校验与裸流页面直取都在
         # 后台线程完成（不阻塞 GUI），拿到结果后才开始播放 —— 全程只有一条
@@ -292,7 +292,7 @@ class PlaybackCoordinator:
         logger.warning("[BARE] 会话终止: reason=%s detail=%s", reason, detail)
         self._disconnect()
         # 写在 _disconnect() 之后：否则会被它结尾的"已断开"覆盖
-        self._w.statusBar().showMessage(message)
+        self._ui.status_message(message)
 
 
     def _start_runtime_probe(self) -> None:
@@ -463,29 +463,21 @@ class PlaybackCoordinator:
         因为不碰资源，所以可以在每次 failover 切成功之后重复调用（幂等）。
         """
         self._w._connected = True
-        self._w._connect_btn.setEnabled(True)
-        self._w._connect_btn.setText("断开")
-        # 连接后主按钮语义从「执行」变为「中断」，用危险色把这一点说清楚
-        set_property(self._w._connect_btn, "variant", "danger")
-        self._w._url_input.setEnabled(False)
-        # 连接后启用 ROI 选择（访问被拒绝时保持禁用）
-        self._w._roi_btn.setEnabled(not self._w._access_status.is_expired())
-
-        # 隐藏连接状态消息
-        self._w._connection_status_label.hide()
+        # 连接后 ROI 选择启用与否由访问状态决定;控件操作全部走操作面
+        self._ui.enter_connected(roi_enabled=not self._w._access_status.is_expired())
 
         # 更新性能面板（分辨率随候选更新，尽量反映当前实际播放的那一路）。
         # 尺寸未知的候选（Phase 3.3）此刻还没探测完：显示"--"而不是 "None × None"，
         # 真正的数值会在首帧到达后由每秒一次的状态刷新补上（见 _on_status_timeout）。
         if self._reader is not None:
             if self._reader.width and self._reader.height:
-                self._w._set_chip(
-                    self._w._lbl_resolution,
+                self._ui.set_chip(
+                    "resolution",
                     f"{self._reader.width} × {self._reader.height}",
                 )
             else:
-                self._w._set_chip(self._w._lbl_resolution, "分辨率 --")
-        self._w._set_chip(self._w._lbl_status, "连接中", "warn", dot=True)
+                self._ui.set_chip("resolution", "分辨率 --")
+        self._ui.set_chip("status", "连接中", "warn", dot=True)
 
         # 更新 OCR 按钮状态
         self._w._update_ocr_button_state()
@@ -535,8 +527,8 @@ class PlaybackCoordinator:
         stage_tracker.fail("NET-310", "所有候选流均无法启动(含自动换 Cookie 重试)",
                            hint="查看 logs/stream-diag.log 中的失败原因")
         # 写在 _disconnect() 之后：否则会被它结尾的"已断开"覆盖掉
-        self._w.statusBar().showMessage("连接失败：所有候选流均不可用")
-        self._w.show_toast("连接失败：所有候选流均不可用", "error")
+        self._ui.status_message("连接失败：所有候选流均不可用")
+        self._ui.show_toast("连接失败：所有候选流均不可用", "error")
 
 
     def _handle_playback_failure(self, status_message: str):
@@ -560,7 +552,7 @@ class PlaybackCoordinator:
 
         if ever_played or self._failover is None:
             # 曾经成功播放过（或没有 failover 上下文）：保持既有行为
-            self._w.statusBar().showMessage(status_message)
+            self._ui.status_message(status_message)
             self._disconnect()
             return
 
@@ -591,7 +583,7 @@ class PlaybackCoordinator:
             )
             # 会话仍是 connected：只刷新 UI，不进入断开流程
             self._apply_connected_ui()
-            self._w.statusBar().showMessage(
+            self._ui.status_message(
                 f"已切换到备用线路 ({self._failover.attempt_number}/"
                 f"{self._failover.total})，正在连接视频流..."
             )
@@ -601,8 +593,8 @@ class PlaybackCoordinator:
         logger.warning("[FAILOVER] attempt %d 失败，且已无更多候选可用", attempt)
         self._disconnect()
         # 同上：写在 _disconnect() 之后才不会被"已断开"覆盖
-        self._w.statusBar().showMessage("连接失败：所有候选流均不可用")
-        self._w.show_toast("连接失败：所有候选流均不可用", "error")
+        self._ui.status_message("连接失败：所有候选流均不可用")
+        self._ui.show_toast("连接失败：所有候选流均不可用", "error")
 
 
     def _on_connect_error(self, error_msg: str):
@@ -614,7 +606,7 @@ class PlaybackCoordinator:
     def _handle_connect_error(self, error_msg: str):
         """在 GUI 线程中处理连接失败"""
         self._reset_connect_ui()
-        self._w.statusBar().showMessage(f"连接失败: {error_msg}")
+        self._ui.status_message(f"连接失败: {error_msg}")
         logger.warning("连接失败: %s", error_msg)
 
 
@@ -719,9 +711,7 @@ class PlaybackCoordinator:
         # 重置 UI
         self._reset_connect_ui()
         self._reset_perf_ui()
-        self._w._roi_btn.setEnabled(False)
-        self._w._connection_status_label.show()
-        self._w.statusBar().showMessage("已断开")
+        self._ui.enter_disconnected_visuals()
 
         # 断开后重新套用访问限制：访问已到期时连接入口应保持关闭
         self._w._on_access_status_changed()
@@ -729,21 +719,18 @@ class PlaybackCoordinator:
 
     def _reset_connect_ui(self):
         """重置连接按钮和输入框为初始状态"""
-        self._w._connect_btn.setEnabled(True)
-        self._w._connect_btn.setText("连接")
-        set_property(self._w._connect_btn, "variant", "primary")
-        self._w._url_input.setEnabled(True)
+        self._ui.enter_idle()
         self._w._connected = False
         self._w._sync_note_action()
 
 
     def _reset_perf_ui(self):
         """重置性能面板为初始状态"""
-        self._w._set_chip(self._w._lbl_fps, "FPS --")
-        self._w._set_chip(self._w._lbl_latency, "延迟 --")
-        self._w._set_chip(self._w._lbl_resolution, "分辨率 --")
-        self._w._set_chip(self._w._lbl_status, "就绪", dot=True)
-        self._w._lbl_roi.setText("未选择")
+        self._ui.set_chip("fps", "FPS --")
+        self._ui.set_chip("latency", "延迟 --")
+        self._ui.set_chip("resolution", "分辨率 --")
+        self._ui.set_chip("status", "就绪", dot=True)
+        self._ui.set_roi_text("未选择")
         self._w._set_ocr_state(False)
         self._w._set_result_text("")
 
@@ -795,7 +782,7 @@ class PlaybackCoordinator:
                     self._perf.on_display()
                 self._video_widget.set_frame(frame)
                 # 隐藏连接状态消息（当有帧时）
-                self._w._connection_status_label.hide()
+                self._ui.hide_connection_notice()
                 self._w._last_displayed_frame_id = buffer_frame_id
                 if buffer_frame_id <= 3 or buffer_frame_id % 100 == 0:
                     logger.info(
@@ -870,7 +857,7 @@ class PlaybackCoordinator:
 
         # FPS
         fps = snap["fps"]
-        self._w._set_chip(self._w._lbl_fps, f"FPS {fps:.0f}" if fps > 0 else "FPS --")
+        self._ui.set_chip("fps", f"FPS {fps:.0f}" if fps > 0 else "FPS --")
 
         # Latency（当前延迟 / 平均延迟）
         cur_lat = snap["current_latency_ms"]
@@ -884,22 +871,22 @@ class PlaybackCoordinator:
                 tone = "warn"
             else:
                 tone = "error"
-            self._w._set_chip(self._w._lbl_latency, f"延迟 {cur_lat / 1000:.2f}s", tone)
+            self._ui.set_chip("latency", f"延迟 {cur_lat / 1000:.2f}s", tone)
         else:
-            self._w._set_chip(self._w._lbl_latency, "延迟 --")
+            self._ui.set_chip("latency", "延迟 --")
 
         # Resolution
         if self._reader.connected:
             w, h = self._reader.width, self._reader.height
-            self._w._set_chip(self._w._lbl_resolution, f"{w} × {h}")
+            self._ui.set_chip("resolution", f"{w} × {h}")
 
         # Status
         if self._reader.connected:
-            self._w._set_chip(self._w._lbl_status, "直播中", "ok", dot=True)
+            self._ui.set_chip("status", "直播中", "ok", dot=True)
         elif self._reader.is_running:
-            self._w._set_chip(self._w._lbl_status, "连接中", "warn", dot=True)
+            self._ui.set_chip("status", "连接中", "warn", dot=True)
         else:
-            self._w._set_chip(self._w._lbl_status, "已停止", "error", dot=True)
+            self._ui.set_chip("status", "已停止", "error", dot=True)
 
         # 底部性能栏：分组展示已有指标；没有数据源的一律显示 "—"
         if self._reader.connected:
@@ -936,7 +923,7 @@ class PlaybackCoordinator:
         else:
             for key in ("latency", "first", "skip", "pipe", "decode_fps",
                         "input_fps", "set_frame", "paint", "ocr_frames"):
-                self._w._perf_values[key].setText(self._w._perf_defaults.get(key, "—"))
+                self._ui.reset_perf_value(key)
 
             # 延迟诊断日志（每5秒输出一次）
             if runtime > 0 and int(runtime) % 5 == 0 and int(runtime) != int(runtime - 1):
@@ -980,7 +967,7 @@ class PlaybackCoordinator:
         if not self._w._access_status.is_expired():
             return True
 
-        self._w.statusBar().showMessage(
+        self._ui.status_message(
             f"{self._w._access_status.get_status_text()}，无法{action}"
         )
         logger.info("访问被拒绝: %s", action)
