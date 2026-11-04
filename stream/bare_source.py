@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 logger = logging.getLogger("DouyinLowLatencyViewer.stream.bare_source")
@@ -57,6 +58,33 @@ _FALSY = ("0", "false", "no", "off")
 #: 页面直取的有界超时（秒）。正常取流为亚秒级（且带 45s 缓存），
 #: 超时即视为"本次取不到"，由调用方给出明确提示，不让用户为一次慢请求久等。
 FETCH_TIMEOUT_S = 6.0
+
+#: 最近一次页面获取的元信息(诊断快照用):状态码/页面长度。
+_last_fetch_meta: dict = {}
+
+
+def _snapshot(room_id: str, result: "BareProbe") -> None:
+    """取流失败/判据未命中时落一份**脱敏**诊断快照,供用户回报排障。
+
+    用户在发布版里没有日志可看(2.2.0 时代 stdout 不落盘),这是目前唯一
+    的证据来源。只记状态码/页面长度/房间号/原因,不记完整 URL(含令牌)。
+    """
+    try:
+        from utils.logger import log_dir
+
+        directory = log_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "stream-diag.log"
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(
+                "%s room=%s reason=%s detail=%s http=%s page_len=%s\n"
+                % (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   room_id, result.reason, result.detail,
+                   _last_fetch_meta.get("status"),
+                   _last_fetch_meta.get("len")))
+    except Exception:  # noqa: BLE001 - 诊断快照绝不影响主流程
+        pass
+_last_fetch_meta: dict = {}
 
 #: 视频版裸流：basename 恰为 stream-<id>.flv 的完整 URL（含参数链）
 _BARE_URL_RE = re.compile(r'https?://[^\s"<>\\]+?/stream-\d+\.flv\?[^\s"<>\\]*')
@@ -170,7 +198,7 @@ def page_is_live(page_html: str) -> bool:
     return any(marker in page_html for marker in _LIVE_MARKERS)
 
 
-def _fetch_page(live_url: str) -> str | None:
+def _fetch_page(live_url: str, refresh_cookies: bool = False) -> str | None:
     """取直播间页面文本（复用 douyin 适配器的 Cookie 体系）。
 
     **阻塞调用**（有界超时 `FETCH_TIMEOUT_S`）：调用方必须在后台线程执行。
@@ -181,16 +209,20 @@ def _fetch_page(live_url: str) -> str | None:
 
         sess = requests.Session()
         try:
-            ensure_session_cookies(sess)
+            ensure_session_cookies(sess, refresh=refresh_cookies)
         except Exception as e:  # noqa: BLE001 - 无 Cookie 时直接匿名请求
             logger.debug("[BARE] Cookie 装载失败（匿名请求）: %s", e)
         r = sess.get(live_url, headers={"User-Agent": _UA,
                                         "Referer": "https://live.douyin.com/"},
                      timeout=FETCH_TIMEOUT_S)
-        logger.info("[BARE] 页面获取 HTTP %d len=%d", r.status_code, len(r.text))
+        logger.info("[BARE] 页面获取 HTTP %d len=%d refresh_cookie=%s",
+                    r.status_code, len(r.text), refresh_cookies)
+        _last_fetch_meta["status"] = r.status_code
+        _last_fetch_meta["len"] = len(r.text)
         return r.text if r.status_code == 200 else None
     except Exception as e:  # noqa: BLE001 - 取流失败不抛，转结构化原因
         logger.warning("[BARE] 页面获取失败: %s", e)
+        _last_fetch_meta["status"] = f"exception:{e}"
         return None
 
 
@@ -221,9 +253,20 @@ def probe_video_bare(platform: str, room_id: str) -> BareProbe:
         return prev
 
     page = _fetch_page(live_url)
+    if page is None or not extract_video_bare(page):
+        # ===== 2026-10-25 自愈重试(排障实录驱动) =====
+        # 单次页面取流失败(6s 超时/偶发风控)或提取不到裸流时,先换**全新
+        # ttwid** 再试一次:用户实测同一房间同一时刻"他失败我成功",根因
+        # 是客户端指纹差异(cookie 被风控标记/IP 信誉),不是流本身。
+        # 旧 ttwid 一旦进风控名单,不换新就永远取不到(缓存曾无 TTL)。
+        logger.warning("[BARE] 首次取流未成功(%s),换新 Cookie 重试一次",
+                       _last_fetch_meta.get("status"))
+        page = _fetch_page(live_url, refresh_cookies=True)
+
     if page is None:
         result = BareProbe(reason=REASON_FETCH_FAILED,
-                           detail="页面获取失败（HTTP 非 200 或网络异常）")
+                           detail="页面获取失败（HTTP 非 200 或网络异常,已重试）")
+        _snapshot(room_id, result)
         _CACHE[live_url] = (now, result)
         return result
 
@@ -241,5 +284,6 @@ def probe_video_bare(platform: str, room_id: str) -> BareProbe:
         logger.warning("[BARE] 页面在播但未找到视频版裸流（房间 %s）", room_id)
         result = BareProbe(url=None, live=True, reason=REASON_NO_BARE,
                            detail="页面在播但判据未命中（可能页面结构变化）")
+        _snapshot(room_id, result)      # 判据未命中=可能页面结构变化,留证据
     _CACHE[live_url] = (now, result)
     return result

@@ -113,6 +113,21 @@ class PlaybackCoordinator:
             self._w.statusBar().showMessage("错误：请输入直播间URL")
             return
 
+        # FFmpeg7 运行时前置(2026-10-25 排障改造):唯一拉流架构下,运行时
+        # 缺失/被杀软隔离 = 抖音全部候选都起不来。启动探测已缓存状态,
+        # 这里只读缓存(不拉子进程),缺失时给用户能看懂的原因并中止,
+        # 不再等解析失败后给出含混的"所有候选流均不可用"。
+        f7 = ffmpeg7_runtime.status()
+        if f7 is not None and not f7.ok:
+            fallback_dir = r"%LOCALAPPDATA%\LiveLens\runtime\ffmpeg7"
+            self._w.statusBar().showMessage(
+                "无法连接：FFmpeg 7 播放运行时缺失（可能被安全软件隔离），"
+                "请重新安装 LiveLens")
+            self.show_toast(
+                "播放运行时缺失，无法连接直播。请重新安装 LiveLens,"
+                "或将 ffmpeg.exe 放回 " + (f7.path or fallback_dir), "error")
+            return
+
         self._w._connect_btn.setEnabled(False)
         self._w._connect_btn.setText("连接中...")
         self._w._url_input.setEnabled(False)

@@ -68,16 +68,40 @@ def _cookie_store_path() -> Path:
     return Path(default_data_dir()) / _COOKIE_FILENAME
 
 
-def _load_cached_cookies() -> dict | None:
-    """读取持久化 Cookie；无文件/损坏/缺 ttwid 一律视为无缓存（不抛）。"""
+#: Cookie 缓存时效（秒）。ttwid 长时效但**会被风控拉黑**：实测同一份缓存
+#: 永久复用时，个别用户的 ttwid 进入风控名单后页面永远取不到流（换新
+#: ttwid 立即恢复）。过期后强制走首页重新获取。
+_COOKIE_TTL_S = 7 * 24 * 3600
+
+
+def _load_cached_cookies(refresh: bool = False) -> dict | None:
+    """读取持久化 Cookie；无文件/损坏/缺 ttwid/过期一律视为无缓存（不抛）。
+
+    :param refresh: True = 忽略缓存（用于页面取流失败后的强制换新重试，
+        绕开已被风控标记的旧 ttwid）。
+    """
     try:
         path = _cookie_store_path()
         if not path.exists():
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
         cookies = data.get("cookies") if isinstance(data, dict) else None
-        if isinstance(cookies, dict) and cookies.get("ttwid"):
-            return {str(k): str(v) for k, v in cookies.items() if v}
+        if not (isinstance(cookies, dict) and cookies.get("ttwid")):
+            return None
+        if refresh:
+            # 语义 = 强制换新:忽略缓存,让调用方走首页重新获取 ttwid。
+            # (取流失败后的自愈重试依赖此路径换掉被风控标记的旧 ttwid;
+            #  此前实现只跳过 TTL 检查仍返回旧缓存,重试等于没换——测试抓住)
+            logger.info("[Cookie] refresh=True,忽略持久化缓存")
+            return None
+        import time
+        fetched = data.get("fetched_at") or data.get("saved_at")
+        if isinstance(fetched, (int, float)):
+            if time.time() - fetched > _COOKIE_TTL_S:
+                logger.info("[Cookie] 持久化 Cookie 已过期（>%d 天），强制刷新",
+                            _COOKIE_TTL_S // 86400)
+                return None
+        return {str(k): str(v) for k, v in cookies.items() if v}
     except Exception as e:  # noqa: BLE001 - 缓存读不出来就当没有，走正常获取
         logger.debug("[Cookie] 读取持久化 Cookie 失败（忽略）: %s", e)
     return None
@@ -105,7 +129,8 @@ def _save_cookies(cookies: dict) -> None:
         logger.debug("[Cookie] Cookie 持久化失败（忽略）: %s", e)
 
 
-def ensure_session_cookies(session: requests.Session) -> dict:
+def ensure_session_cookies(session: requests.Session,
+                           refresh: bool = False) -> dict:
     """让 session 带上可用 Cookie：优先持久化缓存，否则首页获取一次并落盘。
 
     裸流页面直取复用同一份 Cookie 体系（ttwid 提升页面稳定性）。**尽力而为**：
@@ -113,7 +138,7 @@ def ensure_session_cookies(session: requests.Session) -> dict:
 
     :return: 本次装载进 session 的 Cookie 字典（可能为空）
     """
-    cached = _load_cached_cookies()
+    cached = _load_cached_cookies(refresh=refresh)
     if cached:
         session.cookies.update(cached)
         logger.info("[Cookie] 使用持久化 Cookie（%s）",
