@@ -26,6 +26,7 @@ from utils import ffmpeg7_runtime
 from utils.performance import PerformanceMonitor
 from utils.startup_timing import STAGE_CANDIDATE_SELECTED, STAGE_FIRST_DISPLAY, StartupTiming
 from gui.widgets import set_property
+from utils.stage_tracker import stage_tracker
 
 
 def _mw():
@@ -445,6 +446,7 @@ class PlaybackCoordinator:
         self._w._last_displayed_frame_id = 0
 
         # 启动连接健康检查定时器（不再消费帧；帧消费由 frameReady 通知驱动）
+        stage_tracker.enter("PLY-900", "等待首帧显示")
         self._frame_timer.start(16)
         # 启动状态栏刷新（每秒更新一次）
         self._status_timer.start(1000)
@@ -525,9 +527,13 @@ class PlaybackCoordinator:
 
 
     def _failover_exhausted(self):
-        """所有候选都试过且都起不来：结束整条连接"""
+        """所有候选都试过且都起不来：结束整条连接(整体功能不可用卡点)"""
         logger.warning("[FAILOVER] 全部候选均启动失败，结束连接")
         self._disconnect()
+        # 卡点码必须写在 _disconnect() 之后：它开头的 stage_tracker.clear()
+        # 会删状态文件,先记后清=白记(与状态栏消息同一覆盖顺序约定)
+        stage_tracker.fail("NET-310", "所有候选流均无法启动(含自动换 Cookie 重试)",
+                           hint="查看 logs/stream-diag.log 中的失败原因")
         # 写在 _disconnect() 之后：否则会被它结尾的"已断开"覆盖掉
         self._w.statusBar().showMessage("连接失败：所有候选流均不可用")
         self._w.show_toast("连接失败：所有候选流均不可用", "error")
@@ -672,6 +678,7 @@ class PlaybackCoordinator:
     def _disconnect(self):
         """断开连接，停止一切"""
         # 二维码检测线程随会话拆除(failover 期间不拆,帧源自适应新 buffer)
+        stage_tracker.clear()
         teardown_qr = getattr(self._w, "_teardown_qr_worker", None)
         if teardown_qr is not None:
             teardown_qr()
@@ -798,6 +805,7 @@ class PlaybackCoordinator:
 
 
     def _mark_first_display(self):
+        stage_tracker.clear()   # 首帧已出:连接→播放全链路完成,回正常态
         """Phase 3.2：记录本次尝试的首帧已被 GUI 取走，并输出启动分段汇总。
 
         标记点是「取到帧、即将 set_frame」的那一刻，刻意**不含渲染耗时**；

@@ -18,6 +18,8 @@
 import logging
 from urllib.parse import urlsplit
 
+from datetime import datetime, timezone
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
@@ -346,6 +348,42 @@ class SettingsDialog(GlassDialog):
     # ------------------------------------------------------------------
     # 意见反馈页
     # ------------------------------------------------------------------
+    def _collect_diagnostics(self) -> str:
+        """一键诊断包(文本):版本/卡点状态/日志尾/流诊断。
+
+        全部来自本机文件与内存,不含任何密钥或完整流地址——用户复制后
+        直接粘贴反馈即可,客服凭错误码+卡点即可定位阶段。
+        """
+
+        from gui.theme import Palette as _P  # noqa: F401
+        lines = [f"LiveLens 诊断信息 {datetime.now(timezone.utc).isoformat(timespec='seconds')}"]
+        try:
+            lines.append(f"版本: {self._version}")
+        except Exception:  # noqa: BLE001
+            pass
+        from utils.stage_tracker import read_last_state
+        state = read_last_state()
+        if state:
+            lines.append(f"上次卡点: {state.get('code')} {state.get('detail')}"
+                         f" ({state.get('since')})")
+        try:
+            from utils.logger import log_dir
+            log_path = log_dir() / "livelens.log"
+            if log_path.exists():
+                tail = log_path.read_text(encoding="utf-8",
+                                          errors="replace").splitlines()[-40:]
+                lines.append("--- 日志尾(40 行) ---")
+                lines.extend(tail)
+            diag_path = log_dir() / "stream-diag.log"
+            if diag_path.exists():
+                tail = diag_path.read_text(encoding="utf-8",
+                                           errors="replace").splitlines()[-20:]
+                lines.append("--- 取流诊断(20 行) ---")
+                lines.extend(tail)
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"(日志读取失败: {e})")
+        return "\n".join(lines)
+
     def _copy_text(self, text: str, button: QPushButton, done: str = "已复制 ✓") -> None:
         """复制到剪贴板，按钮短暂显示「已复制」作为就地反馈。"""
         QApplication.clipboard().setText(text)
@@ -408,6 +446,22 @@ class SettingsDialog(GlassDialog):
 
         col.addWidget(self._feedback_card(
             IconButton.CONTACT, "邮件反馈", CONTACT_EMAIL, CONTACT_EMAIL))
+
+        col.addSpacing(6)
+        col.addWidget(self._label("诊断信息"))
+        diag_row = QHBoxLayout()
+        diag_hint = QLabel("反馈问题时,先点此按钮复制诊断信息一并发送,"
+                           "可以大幅加快定位速度。")
+        diag_hint.setObjectName("setHint")
+        diag_hint.setWordWrap(True)
+        diag_row.addWidget(diag_hint, 1)
+        diag_btn = QPushButton("复制诊断信息")
+        diag_btn.setObjectName("fbCopyBtn")
+        diag_btn.setCursor(Qt.PointingHandCursor)
+        diag_btn.clicked.connect(lambda: self._copy_text(
+            self._collect_diagnostics(), diag_btn))
+        diag_row.addWidget(diag_btn)
+        col.addLayout(diag_row)
 
         col.addSpacing(6)
         col.addWidget(self._label("交流"))

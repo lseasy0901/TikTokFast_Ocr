@@ -400,7 +400,8 @@ def test_settings_dialog() -> None:
     copy_btns = page.findChildren(QPushButton, name="fbCopyBtn")         if hasattr(page.findChildren(QPushButton, name="fbCopyBtn"), "__len__")         else page.findChildren(QPushButton)
     copy_btns = [b for b in page.findChildren(QPushButton)
                  if b.objectName() == "fbCopyBtn"]
-    check(len(copy_btns) == 2, f"两张反馈卡各有一个复制按钮，实际 {len(copy_btns)}")
+    # 3 个复制按钮:邮箱 / QQ 群 两张反馈卡 + 「复制诊断信息」(P4 排障)
+    check(len(copy_btns) == 3, f"复制按钮应有 3 个(邮箱/QQ 群/诊断),实际 {len(copy_btns)}")
     from PySide6.QtWidgets import QApplication as _QA
     _QA.clipboard().setText("sentinel")
     copy_btns[0].click()
