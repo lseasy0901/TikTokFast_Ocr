@@ -116,6 +116,29 @@ def _resolve_helper_path(configured: Optional[str] = None) -> str:
     return _default_helper_path()
 
 
+#: 开发者默认测试密钥(test_rsa_key.pem)的**公钥** SHA-256 指纹。
+#: 该私钥随 Git 仓库公开分发,任何人可持有——若生产服务器误用它签发
+#: 凭据,任何人都能伪造激活,整个授权体系的信任链即告失效。因此加载
+#: 签名密钥后立即比对指纹,命中即拒绝签名(2026-11-05 P0 整改)。
+KNOWN_TEST_KEY_PUB_SHA256 = (
+    "f7876afda2d2ef288ee46158c03e208514e4d12d4959a9ea2119324c5e85ea59")
+
+
+def _private_key_pub_sha256(pem: str) -> "str | None":
+    """从私钥 PEM 导出公钥指纹;无法解析返回 None(不影响启动)。"""
+    try:
+        import hashlib
+
+        from cryptography.hazmat.primitives import serialization
+        key = serialization.load_pem_private_key(pem.encode(), password=None)
+        pub = key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo)
+        return hashlib.sha256(pub).hexdigest()
+    except Exception:  # noqa: BLE001 - 解析失败交由签名环节自行报错
+        return None
+
+
 class SusiSecurityService:
     """Service for Susi security operations using susi_helper subprocess"""
 
@@ -144,6 +167,19 @@ class SusiSecurityService:
                 "or SUSI_DEVELOPMENT_PRIVATE_KEY is set.",
                 self._private_key_source,
             )
+        else:
+            # 防呆断言(P0):测试密钥公开分发,绝不允许它签发生产凭据。
+            # 命中指纹 → _signature_forbidden=True,create_signed_license
+            # 直接拒绝(服务器不启动失败——授权/查询功能保持可用,
+            # 只封死"用公开密钥签发"这一条路径)。
+            self._signature_forbidden = (
+                _private_key_pub_sha256(self.development_private_key)
+                == KNOWN_TEST_KEY_PUB_SHA256)
+            if self._signature_forbidden:
+                logger.error(
+                    "[SECURITY] 签名密钥是随仓库公开分发的测试密钥"
+                    "(test_rsa_key.pem)——已禁止签发凭据。生产部署请配置"
+                    " SUSI_DEVELOPMENT_PRIVATE_KEY_FILE 指向真正的生产私钥。")
 
     def _resolve_private_key(self) -> Tuple[str, str]:
         """Resolve the development signing key PEM.
@@ -313,6 +349,11 @@ class SusiSecurityService:
         Returns:
             Dict containing signed_license (optional) and any error information
         """
+        if getattr(self, "_signature_forbidden", False):
+            raise RuntimeError(
+                "签名密钥是随仓库公开分发的测试密钥,已禁止签发凭据。"
+                "生产部署必须配置真正的生产私钥"
+                "(SUSI_DEVELOPMENT_PRIVATE_KEY_FILE)。")
         logger.debug("Creating signed license for device %s", device_id)
 
         # The binding must name the client that activated, not this host.
