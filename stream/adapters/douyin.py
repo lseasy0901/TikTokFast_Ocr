@@ -26,6 +26,7 @@
 
 import json
 import logging
+import re
 import os
 import tempfile
 import time
@@ -187,6 +188,17 @@ class DouyinStream:
     #: 抖音域名（www 与不带 www 等价）。只认这几个，绝不整站认领。
     _DOUYIN_HOSTS = frozenset({"douyin.com", "www.douyin.com", "live.douyin.com"})
 
+    #: 分享短链域名:抖音 App 分享按钮生成 v.douyin.com/xxxx 短链,
+    #: 需要跟随跳转才能拿到真实直播间地址(get_room_id 里做网络展开,
+    #: 因此 v 不进 _DOUYIN_HOSTS —— 它无法在本地解析)。
+    _SHORT_HOSTS = frozenset({"v.douyin.com"})
+
+    #: 从用户粘贴的**任意文本**中提取 URL:分享文案形如
+    #: 「来我直播间看比赛 https://v.douyin.com/xxx/ 打开抖音」。
+    #: 排除 CJK 标点(。,、;:!?)与引号括号,避免把句子标点吃进 URL。
+    _TEXT_URL_RE = re.compile(
+        r'''https?://[^\s"'<>\\[\]【】（）「」『』。,,、;;!!??]+''')
+
     #: 路径里表示「这里是一个直播间」的语义段。
     _LIVE_PATH_SEGMENTS = frozenset({"live"})
 
@@ -215,20 +227,113 @@ class DouyinStream:
     # 从 URL 解析 room_id
     # ------------------------------------------------------------------
     def get_room_id(self):
-        """从URL解析room_id"""
+        """从URL解析room_id
+
+        支持(2026-10-25 补全解析):v.douyin.com 分享短链(跟随跳转,
+        网络操作——仅在后台线程调用本方法)、嵌在分享文案里的链接、
+        纯数字房间号直填。
+        """
         if not self.live_url or not isinstance(self.live_url, str):
             raise DouyinStreamError("URL格式错误：直播间URL为空或类型不正确")
 
-        candidates = self._parse_room_id_candidates(self.live_url.strip())
+        url = self.live_url.strip()
+        # 纯数字 = 用户直填房间号(口播/评论区抄的号码),无需任何解析
+        if self._is_room_id(url) and len(url) >= 5:
+            self._room_id_candidates = [url]
+            self.room_id = url
+            logger.info("直填房间号 = %s", url)
+            return self.room_id
+        try:
+            host = (urlsplit(url).hostname or "").lower()
+        except ValueError:
+            host = ""
+        if host in self._SHORT_HOSTS:
+            url = self.expand_short_link(url)
+
+        candidates = self._parse_room_id_candidates(url)
+        if not candidates:
+            # 兜底:原输入可能整段是文案(短链解析失败时)再提一次
+            extracted = self.extract_url(url)
+            if extracted and extracted != url:
+                candidates = self._parse_room_id_candidates(extracted)
         if not candidates:
             raise DouyinStreamError(
-                f"URL格式错误：无法解析room_id -> {self.live_url}"
+                f"NET-320 无法从该链接解析直播间房间号 -> {url[:120]}"
+                "(请使用抖音 App 分享按钮的「复制链接」)"
             )
 
         self._room_id_candidates = candidates
         self.room_id = candidates[0]
         logger.info("解析 room_id 候选 = %s", candidates)
         return self.room_id
+
+    # ------------------------------------------------------------------
+    # 短链 / 文本粘贴(2026-10-25 补全解析)
+    # ------------------------------------------------------------------
+    def expand_short_link(self, url: str) -> str:
+        """跟随 v.douyin.com 短链跳转,返回最终 URL;失败原样返回(不抛)。
+
+        **网络操作**:仅在后台线程调用(get_room_id 经 _ConnectWorker)。
+        """
+        try:
+            r = requests.get(url, headers=PAGE_HEADERS, timeout=10,
+                             allow_redirects=True)
+            final = r.url
+            logger.info("[Douyin] 短链展开: %s -> %s (HTTP %d)",
+                        url, final, r.status_code)
+            return final or url
+        except requests.RequestException as e:
+            logger.warning("[Douyin] 短链展开失败(用原链接继续): %s", e)
+            return url
+
+    @classmethod
+    def extract_url(cls, text):
+        """从任意粘贴文本中提取抖音相关 URL;没有返回 None。
+
+        优先级:live.douyin.com(完整直播地址)> v.douyin.com(短链)>
+        其它 douyin.com 链接。
+        """
+        if not text:
+            return None
+        urls = cls._TEXT_URL_RE.findall(text)
+        if not urls:
+            return None
+        rank = {"live.douyin.com": 0, "v.douyin.com": 1}
+
+        def _key(u):
+            try:
+                host = (urlsplit(u).hostname or "").lower()
+            except ValueError:
+                host = ""
+            return rank.get(host, 2 if "douyin" in host else 9)
+
+        for u in sorted(set(urls), key=_key):
+            if "douyin" in u.lower():
+                return u
+        return None
+
+    @classmethod
+    def prepare_url(cls, raw):
+        """把用户粘贴的**任意内容**规范化为可解析的 URL(不发网络请求)。
+
+        支持:纯数字房间号直填 / 文本中提取链接 / 规范 URL 原样通过。
+        完全识别不出时抛 StreamResolveError(NET-320,用户可见错误码)。
+        """
+        text = (raw or "").strip()
+        if not text:
+            raise StreamResolveError("NET-320 请输入直播间地址")
+        # 纯数字 = 房间号直填(用户从主播口播/评论区抄的号码)
+        if cls._is_room_id(text) and len(text) >= 5:
+            return f"https://live.douyin.com/{text}"
+        chosen = cls.extract_url(text)
+        if chosen:
+            return chosen
+        # 已是带协议的 URL(非 douyin 也原样交给路由,报"无匹配平台")
+        if text.lower().startswith(("http://", "https://")):
+            return text
+        raise StreamResolveError(
+            "NET-320 无法从粘贴内容中识别抖音直播间链接:"
+            "请使用抖音 App 分享按钮的「复制链接」后重试")
 
     @staticmethod
     def _split(url: str):
@@ -288,6 +393,18 @@ class DouyinStream:
         return None
 
     @classmethod
+    def _room_id_from_segments(cls, host, segments) -> "str | None":
+        """在给定段序列上应用语义规则(路径+fragment 合并解析用)。"""
+        for index, segment in enumerate(segments):
+            if (segment.lower() in cls._LIVE_PATH_SEGMENTS
+                    and index + 1 < len(segments)
+                    and cls._is_room_id(segments[index + 1])):
+                return segments[index + 1]
+        if host in cls._LIVE_HOSTS and segments and cls._is_room_id(segments[0]):
+            return segments[0]
+        return None
+
+    @classmethod
     def _room_id_from_query(cls, parts) -> "str | None":
         """query 回退：只认明确命名为直播间资源的参数。"""
         params = parse_qs(parts.query)
@@ -311,10 +428,13 @@ class DouyinStream:
         if parts is None:
             return False
         host = (parts.hostname or "").lower()
-        if host not in cls._DOUYIN_HOSTS:
+        if host not in cls._DOUYIN_HOSTS and host not in cls._SHORT_HOSTS:
             return False
         # 直播专用域名：整站都是直播间
         if host in cls._LIVE_HOSTS:
+            return True
+        # 分享短链：默认按直播间处理(展开在 get_room_id,需网络)
+        if host in cls._SHORT_HOSTS:
             return True
         # 路径里有直播语义段
         if any(seg.lower() in cls._LIVE_PATH_SEGMENTS
@@ -342,7 +462,25 @@ class DouyinStream:
         if (parts.hostname or "").lower() not in cls._DOUYIN_HOSTS:
             return []
 
-        room_id = cls._room_id_from_path(parts) or cls._room_id_from_query(parts)
+        room_id = (cls._room_id_from_path(parts)
+                   or cls._room_id_from_query(parts))
+        if room_id:
+            return [room_id]
+
+        # 2026-10-25 补全解析:两条兜底(均仅限 live.douyin.com 域,风险有界)
+        if (parts.hostname or "").lower() in cls._LIVE_HOSTS:
+            segments = (cls._path_segments(parts)
+                        + [seg for seg in (parts.fragment or "").split("/")
+                           if seg])
+            # 1) fragment 形态(#/live/<id>、#/follow/live/<id>):语义段规则
+            room_id = cls._room_id_from_segments(
+                (parts.hostname or "").lower(), segments)
+            # 2) 路径变体兜底(/from/xxx/<id> 等):取最后一个 len>=7 的纯数字
+            #    段。真实房间号 8~13 位;≤6 位的活动号/栏目号刻意排除。
+            if not room_id:
+                digits = [seg for seg in segments
+                          if cls._is_room_id(seg) and len(seg) >= 7]
+                room_id = digits[-1] if digits else None
         return [room_id] if room_id else []
 
     # ------------------------------------------------------------------
@@ -389,6 +527,9 @@ class DouyinAdapter(PlatformAdapter):
         resolve() 并报原来的 "URL格式错误：无法解析room_id"。
         """
         return DouyinStream.is_live_url(url)
+
+    def prepare_url(self, raw: str):
+        return DouyinStream.prepare_url(raw)
 
     def resolve(self, url: str) -> StreamInfo:
         """:raises DouyinStreamError: 解析失败"""

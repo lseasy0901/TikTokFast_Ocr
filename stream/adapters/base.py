@@ -31,6 +31,14 @@ class PlatformAdapter(ABC):
         必须只依据 URL 本身判断，不做任何网络请求。
         """
 
+    def prepare_url(self, raw: str) -> "str | None":
+        """从用户粘贴的任意内容中提取本平台的可解析 URL。
+
+        返回 None = 该内容不含本平台链接。默认 None,平台按需覆写。
+        仅供连接发起前的输入规范化使用(纯字符串操作,不发网络请求)。
+        """
+        return None
+
     @abstractmethod
     def resolve(self, url: str) -> StreamInfo:
         """解析直播间 URL，返回统一 StreamInfo。

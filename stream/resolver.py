@@ -21,6 +21,10 @@ class StreamResolver:
     def registry(self) -> PlatformRegistry:
         return self._registry
 
+    def prepare_input(self, raw: str) -> str:
+        """规范化用户输入(见 registry.prepare_input)。"""
+        return self._registry.prepare_input(raw)
+
     def resolve(self, live_url: str) -> StreamInfo:
         """解析直播间 URL。
 

@@ -83,7 +83,8 @@ def expect_live_without_id(url: str, note: str) -> None:
         DouyinStream(url).get_room_id()
         check(False, f"{note}：应当报错")
     except StreamResolveError as e:
-        check("URL格式错误" in str(e), f"{note}：报 URL 格式错误 -> {e}")
+        # 2026-10-25 补全解析后,本地解析失败统一报 NET-320(用户可见错误码)
+        check("NET-320" in str(e), f"{note}：报 NET-320 无法解析 -> {e}")
 
 
 # ======================================================================

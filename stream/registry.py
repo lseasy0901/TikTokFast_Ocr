@@ -29,6 +29,30 @@ class PlatformRegistry:
     def adapters(self):
         return list(self._adapters)
 
+    def prepare_input(self, raw: str) -> str:
+        """把用户粘贴的任意内容规范化为可解析 URL(2026-10-25 补全解析)。
+
+        逐适配器询问(平台各自从文本提取链接/识别房间号);都认不出时:
+        raw 本身是 http(s) URL 就原样返回(交给 resolve 报"无匹配平台"),
+        否则抛 StreamResolveError(NET-320,用户可见错误码)。
+        """
+        text = (raw or "").strip()
+        if not text:
+            raise StreamResolveError("NET-320 请输入直播间地址")
+        for adapter in self._adapters:
+            prepared = None
+            try:
+                prepared = adapter.prepare_url(text)
+            except Exception:  # noqa: BLE001 - 单个适配器失败不影响其它平台
+                continue
+            if prepared:
+                return prepared
+        if text.lower().startswith(("http://", "https://")):
+            return text
+        raise StreamResolveError(
+            "NET-320 无法从粘贴内容中识别直播间链接:"
+            "请使用抖音 App 分享按钮的「复制链接」后重试")
+
     def get_adapter(self, url: str):
         """返回能处理该 URL 的适配器；没有则 None"""
         for a in self._adapters:

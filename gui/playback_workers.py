@@ -50,7 +50,8 @@ class _ConnectWorker:
 
     def _run(self):
         try:
-            info = self._resolver.resolve(self._live_url)
+            live_url = self._resolver.prepare_input(self._live_url)
+            info = self._resolver.resolve(live_url)
             logger.info("[GUI] stream resolved: platform=%s room=%s type=%s url=%s",
                         info.platform, info.room_id, info.protocol,
                         (info.url or "")[:80])
