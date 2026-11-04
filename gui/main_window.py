@@ -89,7 +89,9 @@ from gui.widgets import (
     open_external_url,
     set_property,
     set_tone,
+    OCR_RESULT_PLACEHOLDER,
 )
+
 from gui.settings_dialog import (
     CONTACT_QQ,
     PURCHASE_URL,
@@ -126,7 +128,7 @@ from ocr.sample_capture import SampleCapture
 # 线程都在开关为 True 时才（惰性）导入并构造，见 __init__ 里那一段。
 # 开关本体定义在 ocr/dataset_capture.py，全项目只有那一处。
 from ocr.dataset_capture import DATASET_CAPTURE_ENABLED, TARGET_FORMATS
-from ocr.profiles import game_profiles
+from ocr.profiles import (DEFAULT_OCR_GAME_PROFILE_ID)
 from stream.history import HistoryService
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.main_window")
@@ -134,24 +136,6 @@ logger = logging.getLogger("DouyinLowLatencyViewer.gui.main_window")
 
 # 主窗口
 # ======================================================================
-#: 游戏选择器里的可选项：(profile_id, 界面短名)。
-#:
-#: 直接由 ocr/profiles.py 的注册表派生，不在 GUI 里再手写一份——两份清单
-#: 各自维护时，新增一款游戏很容易只改一边（注册了档位却选不到，或者反过来）。
-#: 界面短名来自 GameProfile.short_name，与游戏配置同处一地。
-#:
-#: 只暴露具体游戏——"auto" 仅作为内部默认档保留，不出现在 UI 上，
-#: 因为用户显式选择某一款游戏才能消除不同位数之间的长度歧义。
-OCR_GAME_CHOICES = tuple(
-    (profile.profile_id, profile.short_name) for profile in game_profiles()
-)
-
-#: profile_id → 界面短名（左栏场景列表与右栏下拉框共用同一份文案）
-GAME_LABELS = dict(OCR_GAME_CHOICES)
-
-#: 默认游戏档（= 注册表里的第一款游戏）
-DEFAULT_OCR_GAME_PROFILE_ID = OCR_GAME_CHOICES[0][0]
-
 #: OCR 检测到「游戏选错了」时给用户看的固定文案。
 #: 只说明需要重新选择，不含任何技术细节（不出现位数、格式名、档位名，
 #: 不暗示程序认为应该是哪款游戏），也不附加任何操作入口。
@@ -176,12 +160,6 @@ OCR_GAME_MISMATCH_MESSAGE = "检测到选择错误，请重新选择游戏类型
 #:
 #: 隐藏的是内部诊断/采样入口，**不**包括正式产品功能：「导出 CSV」（本次
 #: 会话房间码流水）、历史记录、备注、导出路径等都照常显示。
-SHOW_INTERNAL_DIAGNOSTICS = False
-
-#: 房间码还没有结果时的占位文案。刻意用文字而不是 "--"：后者在等宽大字下
-#: 和真实房间码难以区分，用户会把占位当成识别结果。
-OCR_RESULT_PLACEHOLDER = "尚未识别"
-
 #: 本次会话历史为空时的说明（占位项，不参与业务）。
 SESSION_EMPTY_HINT = "暂无记录 —— 复制成功的房间号会出现在这里"
 

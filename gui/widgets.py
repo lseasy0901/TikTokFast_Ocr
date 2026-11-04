@@ -35,6 +35,16 @@ from PySide6.QtWidgets import (
 from gui import theme
 from gui.theme import Metrics, Palette
 
+#: OCR 结果面板在无识别结果时的占位文案(刻意用文字而非 "--":
+#: 等宽大字下 "--" 与真实房间码难以区分)。2026-11-05 自 main_window
+#: 正名搬家——builders 与 main_window 共用。
+OCR_RESULT_PLACEHOLDER = "尚未识别"
+
+#: 生产 UI 内部诊断入口的可见性开关(默认 False=隐藏)。置 True 完整恢复
+#: 原样,不需要改其它代码(见 main_window 注释)。2026-11-05 正名搬家:
+#: builders(构建期读取)与 main_window 共用,归属 UI 可见性策略。
+SHOW_INTERNAL_DIAGNOSTICS = False
+
 __all__ = [
     "DockPanel",
     "TitleBar",

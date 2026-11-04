@@ -24,11 +24,15 @@ from gui.activation_overlay import _ActivationOverlay
 from gui.audio_panel import AudioPanel
 from gui.history_panel import HistoryButton
 from gui.join_guide import JoinGuideBar
+from ocr.dataset_capture import DATASET_CAPTURE_ENABLED
+from ocr.profiles import OCR_GAME_CHOICES
 from gui.theme import Metrics
 from gui.toast import Toast
 from gui.video_widget import VideoWidget
 from gui.watermark import WatermarkOverlay
-from gui.widgets import IconButton, OverlayHost, TitleBar, h_line, set_property
+from gui.widgets import (IconButton, OCR_RESULT_PLACEHOLDER, OverlayHost,
+                         SHOW_INTERNAL_DIAGNOSTICS, TitleBar, h_line,
+                         set_property)
 from utils.ui_prefs import PERF_PINNED, get_pref
 
 logger = logging.getLogger("DouyinLowLatencyViewer.gui.builders")
@@ -347,7 +351,7 @@ def build_ocr_panel(w) -> QFrame:
 
     # ---- 1) 当前房间码（视觉优先级最高）----
     col.addWidget(w._section_label("当前房间码"))
-    w._lbl_ocr_text = QLabel(_mw().OCR_RESULT_PLACEHOLDER)
+    w._lbl_ocr_text = QLabel(OCR_RESULT_PLACEHOLDER)
     w._lbl_ocr_text.setObjectName("resultBox")
     w._lbl_ocr_text.setProperty("filled", "false")
     w._lbl_ocr_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -467,14 +471,14 @@ def build_ocr_panel(w) -> QFrame:
     # 隐藏控件在 QBoxLayout 里是空项：不占高度、不产生行间距，所以关闭后
     # 不会留下空白带，也不会出现"不可见但仍占位"的控件。
     for row in (diag_row, obs_row, cap_row):
-        row.setVisible(_mw().SHOW_INTERNAL_DIAGNOSTICS)
+        row.setVisible(SHOW_INTERNAL_DIAGNOSTICS)
 
     # ---- 数据集采集入口（测试用，可一键关闭）----
     # 与上面那三个"内部诊断"入口分开受控：它由 ocr/dataset_capture.py 的
-    # 总开关 _mw().DATASET_CAPTURE_ENABLED 决定，**不受** _mw().SHOW_INTERNAL_DIAGNOSTICS
+    # 总开关 DATASET_CAPTURE_ENABLED 决定，**不受** SHOW_INTERNAL_DIAGNOSTICS
     # 影响（后者是生产 UI 收口，默认关；本入口按需求默认开）。
     # 关闭时这个 QWidget 连创建都不创建，界面上不留任何痕迹。
-    if _mw().DATASET_CAPTURE_ENABLED:
+    if DATASET_CAPTURE_ENABLED:
         ds_row = QWidget()
         ds_row_layout = QHBoxLayout(ds_row)
         ds_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -518,7 +522,7 @@ def build_ocr_panel(w) -> QFrame:
     # ---- 3) 游戏与 ROI ----
     col.addWidget(w._section_label("游戏"))
     w._ocr_game_combo = QComboBox()
-    for profile_id, label in _mw().OCR_GAME_CHOICES:
+    for profile_id, label in OCR_GAME_CHOICES:
         w._ocr_game_combo.addItem(label, profile_id)
     w._ocr_game_combo.setCurrentIndex(
         w._ocr_game_combo.findData(w._ocr_profile_id)

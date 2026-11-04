@@ -205,3 +205,28 @@ def get_profile(profile_id: Optional[str] = None) -> GameProfile:
         raise ValueError(
             f"未知的游戏档 {profile_id!r}，已注册: {', '.join(PROFILES)}"
         ) from None
+
+
+# ======================================================================
+# GUI 选择项(2026-11-05 自 gui/main_window.py 正名搬家:数据源自本注册表,
+# 归属也应在注册表;此前 gui 层自定义导致"注册了档位却选不到"的分叉风险)
+# ======================================================================
+
+#: OCR 游戏选择器的可选项:(profile_id, 界面短名)。
+#: 只暴露具体游戏——"auto" 仅作为内部默认档保留,不出现在 UI 上,
+#: 因为用户显式选择某一款游戏才能消除不同位数之间的长度歧义。
+OCR_GAME_CHOICES = tuple(
+    (profile.profile_id, profile.short_name) for profile in game_profiles()
+)
+
+#: profile_id → 界面短名(游戏下拉框共用同一份文案)
+GAME_LABELS = dict(OCR_GAME_CHOICES)
+
+#: 默认游戏档(= 注册表里的第一款游戏)
+DEFAULT_OCR_GAME_PROFILE_ID = OCR_GAME_CHOICES[0][0]
+
+__all__ = [
+    "OCR_GAME_CHOICES",
+    "GAME_LABELS",
+    "DEFAULT_OCR_GAME_PROFILE_ID",
+]
